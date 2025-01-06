@@ -133,3 +133,197 @@ class Event:
     def from_json(cls, line: str) -> Event:
         """Parse a single JSON line into an Event."""
         return cls.from_envelope(json.loads(line))
+
+    # ------------------------------------------------------------------
+    # Convenience constructors for each event type.
+    #
+    # These give typed callers a clear shape for each event's content
+    # without requiring a separate dataclass per type.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def mail_received(
+        cls,
+        timestamp: datetime,
+        *,
+        sender: str,
+        subject: str,
+        body: str = "",
+        message_id: str = "",
+        recipients: list[str] | None = None,
+        thread_id: str = "",
+    ) -> Event:
+        content = {
+            "sender": sender,
+            "subject": subject,
+            "body": body,
+            "message_id": message_id,
+            "recipients": recipients or [],
+            "thread_id": thread_id,
+        }
+        return cls(EventType.MAIL_RECEIVED, timestamp, content)
+
+    @classmethod
+    def mail_sent(
+        cls,
+        timestamp: datetime,
+        *,
+        to: list[str],
+        subject: str,
+        body: str = "",
+        message_id: str = "",
+        thread_id: str = "",
+    ) -> Event:
+        content = {
+            "to": to,
+            "subject": subject,
+            "body": body,
+            "message_id": message_id,
+            "thread_id": thread_id,
+        }
+        return cls(EventType.MAIL_SENT, timestamp, content)
+
+    @classmethod
+    def meeting_scheduled(
+        cls,
+        timestamp: datetime,
+        *,
+        title: str,
+        start_time: str,
+        end_time: str,
+        attendees: list[str] | None = None,
+        location: str = "",
+        meeting_id: str = "",
+    ) -> Event:
+        content = {
+            "title": title,
+            "start_time": start_time,
+            "end_time": end_time,
+            "attendees": attendees or [],
+            "location": location,
+            "meeting_id": meeting_id,
+        }
+        return cls(EventType.MEETING_SCHEDULED, timestamp, content)
+
+    @classmethod
+    def meeting_held(
+        cls,
+        timestamp: datetime,
+        *,
+        title: str,
+        attendees: list[str] | None = None,
+        notes: str = "",
+        meeting_id: str = "",
+    ) -> Event:
+        content = {
+            "title": title,
+            "attendees": attendees or [],
+            "notes": notes,
+            "meeting_id": meeting_id,
+        }
+        return cls(EventType.MEETING_HELD, timestamp, content)
+
+    @classmethod
+    def note(cls, timestamp: datetime, *, text: str, author: str = "", note_id: str = "") -> Event:
+        content = {"text": text, "author": author, "note_id": note_id}
+        return cls(EventType.NOTE, timestamp, content)
+
+    @classmethod
+    def task_update(
+        cls,
+        timestamp: datetime,
+        *,
+        task_id: str,
+        title: str,
+        status: str,
+        owner: str = "",
+        due_date: str = "",
+        previous_status: str = "",
+    ) -> Event:
+        content = {
+            "task_id": task_id,
+            "title": title,
+            "status": status,
+            "owner": owner,
+            "due_date": due_date,
+            "previous_status": previous_status,
+        }
+        return cls(EventType.TASK_UPDATE, timestamp, content)
+
+    @classmethod
+    def document_change(
+        cls,
+        timestamp: datetime,
+        *,
+        doc_id: str,
+        title: str,
+        change_type: str,
+        author: str = "",
+        diff_summary: str = "",
+    ) -> Event:
+        content = {
+            "doc_id": doc_id,
+            "title": title,
+            "change_type": change_type,
+            "author": author,
+            "diff_summary": diff_summary,
+        }
+        return cls(EventType.DOCUMENT_CHANGE, timestamp, content)
+
+    @classmethod
+    def chat_message(
+        cls,
+        timestamp: datetime,
+        *,
+        sender: str,
+        body: str,
+        channel: str = "",
+        thread_id: str = "",
+        message_id: str = "",
+    ) -> Event:
+        content = {
+            "sender": sender,
+            "body": body,
+            "channel": channel,
+            "thread_id": thread_id,
+            "message_id": message_id,
+        }
+        return cls(EventType.CHAT_MESSAGE, timestamp, content)
+
+    @classmethod
+    def commitment_ack(
+        cls,
+        timestamp: datetime,
+        *,
+        commitment_id: str,
+        owed_by: str,
+        owed_to: str,
+        description: str,
+        due_date: str = "",
+        status: str = "acknowledged",
+    ) -> Event:
+        content = {
+            "commitment_id": commitment_id,
+            "owed_by": owed_by,
+            "owed_to": owed_to,
+            "description": description,
+            "due_date": due_date,
+            "status": status,
+        }
+        return cls(EventType.COMMITMENT_ACK, timestamp, content)
+
+    @classmethod
+    def focus_block(
+        cls,
+        timestamp: datetime,
+        *,
+        duration_minutes: int,
+        topic: str = "",
+        tags: list[str] | None = None,
+    ) -> Event:
+        content = {
+            "duration_minutes": duration_minutes,
+            "topic": topic,
+            "tags": tags or [],
+        }
+        return cls(EventType.FOCUS_BLOCK, timestamp, content)

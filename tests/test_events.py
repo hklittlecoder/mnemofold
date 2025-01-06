@@ -170,3 +170,109 @@ class TestImmutability:
         evt = Event(EventType.NOTE, SAMPLE_TS, {"text": "hi"})
         # Ensure the content we stored matches what we see.
         assert evt.content["text"] == "hi"
+
+
+class TestConvenienceConstructors:
+    def test_mail_received_shape(self):
+        evt = Event.mail_received(
+            SAMPLE_TS,
+            sender="alice@example.com",
+            subject="Q1 planning",
+            body="Let's sync next week.",
+            message_id="<abc@example.com>",
+            recipients=["bob@example.com"],
+            thread_id="t1",
+        )
+        assert evt.event_type == EventType.MAIL_RECEIVED
+        assert evt.content["sender"] == "alice@example.com"
+        assert evt.content["subject"] == "Q1 planning"
+        assert evt.content["recipients"] == ["bob@example.com"]
+
+    def test_mail_sent_shape(self):
+        evt = Event.mail_sent(SAMPLE_TS, to=["carol@example.com"], subject="Re: hi", body="ok")
+        assert evt.event_type == EventType.MAIL_SENT
+        assert evt.content["to"] == ["carol@example.com"]
+
+    def test_meeting_scheduled_shape(self):
+        evt = Event.meeting_scheduled(
+            SAMPLE_TS,
+            title="Design review",
+            start_time="2025-03-14T15:00:00+00:00",
+            end_time="2025-03-14T16:00:00+00:00",
+            attendees=["alice", "bob"],
+        )
+        assert evt.event_type == EventType.MEETING_SCHEDULED
+        assert evt.content["title"] == "Design review"
+        assert len(evt.content["attendees"]) == 2
+
+    def test_meeting_held_shape(self):
+        evt = Event.meeting_held(
+            SAMPLE_TS,
+            title="Standup",
+            attendees=["alice"],
+            notes="Discussed blockers",
+        )
+        assert evt.event_type == EventType.MEETING_HELD
+        assert evt.content["notes"] == "Discussed blockers"
+
+    def test_note_shape(self):
+        evt = Event.note(SAMPLE_TS, text="Remember to file TPS report", author="bob")
+        assert evt.event_type == EventType.NOTE
+        assert evt.content["text"] == "Remember to file TPS report"
+        assert evt.content["author"] == "bob"
+
+    def test_task_update_shape(self):
+        evt = Event.task_update(
+            SAMPLE_TS,
+            task_id="T-123",
+            title="Fix login bug",
+            status="in_progress",
+            owner="alice",
+            previous_status="todo",
+        )
+        assert evt.event_type == EventType.TASK_UPDATE
+        assert evt.content["status"] == "in_progress"
+        assert evt.content["previous_status"] == "todo"
+
+    def test_document_change_shape(self):
+        evt = Event.document_change(
+            SAMPLE_TS,
+            doc_id="doc-42",
+            title="API spec",
+            change_type="edit",
+            author="carol",
+            diff_summary="added auth section",
+        )
+        assert evt.event_type == EventType.DOCUMENT_CHANGE
+        assert evt.content["change_type"] == "edit"
+
+    def test_chat_message_shape(self):
+        evt = Event.chat_message(SAMPLE_TS, sender="dave", body="deployed", channel="team")
+        assert evt.event_type == EventType.CHAT_MESSAGE
+        assert evt.content["body"] == "deployed"
+        assert evt.content["channel"] == "team"
+
+    def test_commitment_ack_shape(self):
+        evt = Event.commitment_ack(
+            SAMPLE_TS,
+            commitment_id="C-7",
+            owed_by="alice",
+            owed_to="bob",
+            description="Deliver design doc",
+            due_date="2025-04-01",
+        )
+        assert evt.event_type == EventType.COMMITMENT_ACK
+        assert evt.content["owed_by"] == "alice"
+        assert evt.content["status"] == "acknowledged"
+
+    def test_focus_block_shape(self):
+        evt = Event.focus_block(SAMPLE_TS, duration_minutes=25, topic="writing", tags=["deep"])
+        assert evt.event_type == EventType.FOCUS_BLOCK
+        assert evt.content["duration_minutes"] == 25
+        assert evt.content["tags"] == ["deep"]
+
+    def test_constructors_round_trip_through_json(self):
+        original = Event.note(SAMPLE_TS, text="hello", author="alice")
+        restored = Event.from_json(original.to_json())
+        assert restored.event_id == original.event_id
+        assert restored.content["text"] == "hello"
