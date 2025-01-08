@@ -160,3 +160,111 @@ def start_of_day(d: date, tz: timezone = UTC) -> datetime:
 def is_same_day(a: datetime, b: datetime, tz: timezone = UTC) -> bool:
     """Return True if two timestamps fall on the same calendar day in tz."""
     return day_bucket(a, tz) == day_bucket(b, tz)
+
+
+WEEKEND_DAYS = frozenset({5, 6})  # Saturday=5, Sunday=6 in date.weekday()
+
+
+@dataclass(frozen=True)
+class WorkdayCalendar:
+    """A simple workday calendar with configurable weekend and holidays.
+
+    Weekend days are specified as a frozenset of weekday numbers
+    (Monday=0 ... Sunday=6).  Holidays are explicit date objects.
+
+    The calendar is timezone-naive (it operates on calendar dates),
+    which is the right level of abstraction for typical deadline and
+    due-date arithmetic — you convert to a date first using day_bucket.
+    """
+
+    weekend_days: frozenset[int] = WEEKEND_DAYS
+    holidays: frozenset[date] = frozenset()
+
+    def is_workday(self, d: date) -> bool:
+        """Return True if ``d`` is a working day."""
+        if d.weekday() in self.weekend_days:
+            return False
+        return d not in self.holidays
+
+    def next_workday(self, d: date) -> date:
+        """Return the next workday on or after ``d``."""
+        current = d
+        while not self.is_workday(current):
+            current += timedelta(days=1)
+        return current
+
+    def prev_workday(self, d: date) -> date:
+        """Return the previous workday on or before ``d``."""
+        current = d
+        while not self.is_workday(current):
+            current -= timedelta(days=1)
+        return current
+
+    def add_workdays(self, d: date, n: int) -> date:
+        """Add ``n`` working days to ``d``.
+
+        If ``n`` is negative, subtracts workdays instead.
+        """
+        current = d
+        step = 1 if n >= 0 else -1
+        remaining = abs(n)
+        while remaining > 0:
+            current += timedelta(days=step)
+            if self.is_workday(current):
+                remaining -= 1
+        return current
+
+    def workdays_between(self, start: date, end: date) -> int:
+        """Count workdays in [start, end).
+
+        That is, ``start`` is included if it's a workday, ``end`` is
+        never included.  If end <= start, returns 0.
+        """
+        if end <= start:
+            return 0
+        count = 0
+        current = start
+        while current < end:
+            if self.is_workday(current):
+                count += 1
+            current += timedelta(days=1)
+        return count
+
+
+# A default calendar: Mon-Fri working week, no holidays.
+DEFAULT_CALENDAR = WorkdayCalendar()
+
+
+def deadline_from_due_date(
+    due: date,
+    end_of_day_hour: int = 17,
+    tz: timezone = UTC,
+    calendar: WorkdayCalendar = DEFAULT_CALENDAR,
+) -> datetime:
+    """Return the effective deadline datetime for a due date.
+
+    If the due date is not a workday, the deadline rolls forward to the
+    next workday's end-of-day.  End-of-day is defined as
+    ``end_of_day_hour`` in the given timezone.
+    """
+    effective_due = calendar.next_workday(due)
+    naive = datetime(effective_due.year, effective_due.month, effective_due.day, end_of_day_hour)
+    # For fixed-offset timezones this is always valid.
+    return naive.replace(tzinfo=tz)
+
+
+def compute_overdue(
+    due: datetime,
+    now: datetime,
+    calendar: WorkdayCalendar = DEFAULT_CALENDAR,
+) -> timedelta:
+    """Return how much time has passed since the deadline.
+
+    Returns ``timedelta(0)`` if the deadline has not yet passed.
+    Uses calendar-day deltas (not just workdays) because overdue
+    accumulation includes weekends and holidays — the clock doesn't
+    stop ticking.
+    """
+    if now <= due:
+        return timedelta(0)
+    return now - due

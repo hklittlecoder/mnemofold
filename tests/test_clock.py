@@ -6,7 +6,17 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
-from mnemofold.clock import Clock, ClockConfig, day_bucket, is_same_day, start_of_day
+from mnemofold.clock import (
+    DEFAULT_CALENDAR,
+    Clock,
+    ClockConfig,
+    WorkdayCalendar,
+    compute_overdue,
+    day_bucket,
+    deadline_from_due_date,
+    is_same_day,
+    start_of_day,
+)
 
 SAMPLE_START = datetime(2025, 1, 15, 9, 0, 0, tzinfo=UTC)
 
@@ -188,3 +198,137 @@ class TestIsSameDay:
         tz_plus10 = timezone(timedelta(hours=10))
         assert is_same_day(a, b, UTC)
         assert not is_same_day(a, b, tz_plus10)
+
+
+class TestWorkdayCalendar:
+    def test_weekdays_are_workdays(self):
+        cal = WorkdayCalendar()
+        # Monday 2025-01-06 through Friday 2025-01-10
+        for i in range(5):
+            d = date(2025, 1, 6 + i)
+            assert cal.is_workday(d), f"{d} should be a workday"
+
+    def test_weekends_are_not_workdays(self):
+        cal = WorkdayCalendar()
+        # Saturday 2025-01-11, Sunday 2025-01-12
+        assert not cal.is_workday(date(2025, 1, 11))
+        assert not cal.is_workday(date(2025, 1, 12))
+
+    def test_holidays_are_not_workdays(self):
+        holiday = date(2025, 1, 1)  # Wednesday
+        cal = WorkdayCalendar(holidays=frozenset({holiday}))
+        assert not cal.is_workday(holiday)
+        # Day after is still a workday
+        assert cal.is_workday(date(2025, 1, 2))
+
+    def test_next_workday_from_weekday(self):
+        cal = WorkdayCalendar()
+        # Friday 2025-01-10 → next workday is Monday 2025-01-13
+        assert cal.next_workday(date(2025, 1, 10)) == date(2025, 1, 10)
+
+    def test_next_workday_from_saturday(self):
+        cal = WorkdayCalendar()
+        assert cal.next_workday(date(2025, 1, 11)) == date(2025, 1, 13)
+
+    def test_next_workday_from_sunday(self):
+        cal = WorkdayCalendar()
+        assert cal.next_workday(date(2025, 1, 12)) == date(2025, 1, 13)
+
+    def test_next_workday_with_holiday_monday(self):
+        holiday = date(2025, 1, 13)  # Monday
+        cal = WorkdayCalendar(holidays=frozenset({holiday}))
+        # Sunday + Monday holiday → Tuesday
+        assert cal.next_workday(date(2025, 1, 12)) == date(2025, 1, 14)
+
+    def test_prev_workday_from_monday(self):
+        cal = WorkdayCalendar()
+        assert cal.prev_workday(date(2025, 1, 13)) == date(2025, 1, 13)
+
+    def test_prev_workday_from_sunday(self):
+        cal = WorkdayCalendar()
+        assert cal.prev_workday(date(2025, 1, 12)) == date(2025, 1, 10)
+
+    def test_add_workdays_positive(self):
+        cal = WorkdayCalendar()
+        # Friday + 1 workday = Monday
+        assert cal.add_workdays(date(2025, 1, 10), 1) == date(2025, 1, 13)
+        # Monday + 5 workdays = next Monday
+        assert cal.add_workdays(date(2025, 1, 13), 5) == date(2025, 1, 20)
+
+    def test_add_workdays_zero(self):
+        cal = WorkdayCalendar()
+        assert cal.add_workdays(date(2025, 1, 13), 0) == date(2025, 1, 13)
+
+    def test_add_workdays_negative(self):
+        cal = WorkdayCalendar()
+        # Monday - 1 workday = previous Friday
+        assert cal.add_workdays(date(2025, 1, 13), -1) == date(2025, 1, 10)
+
+    def test_workdays_between_single_week(self):
+        cal = WorkdayCalendar()
+        # Monday to next Monday (exclusive) = 5 workdays
+        assert cal.workdays_between(date(2025, 1, 13), date(2025, 1, 20)) == 5
+
+    def test_workdays_between_same_day(self):
+        cal = WorkdayCalendar()
+        assert cal.workdays_between(date(2025, 1, 13), date(2025, 1, 13)) == 0
+
+    def test_workdays_between_end_before_start(self):
+        cal = WorkdayCalendar()
+        assert cal.workdays_between(date(2025, 1, 20), date(2025, 1, 13)) == 0
+
+    def test_workdays_between_with_holiday(self):
+        holiday = date(2025, 1, 15)  # Wednesday
+        cal = WorkdayCalendar(holidays=frozenset({holiday}))
+        assert cal.workdays_between(date(2025, 1, 13), date(2025, 1, 20)) == 4
+
+    def test_default_calendar_singleton(self):
+        assert DEFAULT_CALENDAR is not None
+        assert DEFAULT_CALENDAR.is_workday(date(2025, 1, 13))
+
+
+class TestDeadlineFromDueDate:
+    def test_deadline_on_workday(self):
+        due = date(2025, 1, 13)  # Monday
+        dl = deadline_from_due_date(due)
+        assert dl == datetime(2025, 1, 13, 17, 0, 0, tzinfo=UTC)
+
+    def test_deadline_on_weekend_rolls_forward(self):
+        due = date(2025, 1, 11)  # Saturday
+        dl = deadline_from_due_date(due)
+        assert dl == datetime(2025, 1, 13, 17, 0, 0, tzinfo=UTC)
+
+    def test_deadline_with_custom_hour(self):
+        due = date(2025, 1, 13)
+        dl = deadline_from_due_date(due, end_of_day_hour=12)
+        assert dl.hour == 12
+
+    def test_deadline_with_custom_tz(self):
+        due = date(2025, 1, 13)
+        tz = timezone(timedelta(hours=-8))
+        dl = deadline_from_due_date(due, tz=tz)
+        assert dl.tzinfo == tz
+        assert dl.astimezone(UTC) == datetime(2025, 1, 14, 1, 0, 0, tzinfo=UTC)
+
+
+class TestComputeOverdue:
+    def test_not_overdue_yet(self):
+        due = datetime(2025, 1, 13, 17, 0, 0, tzinfo=UTC)
+        now = datetime(2025, 1, 13, 10, 0, 0, tzinfo=UTC)
+        assert compute_overdue(due, now) == timedelta(0)
+
+    def test_overdue_by_2_hours(self):
+        due = datetime(2025, 1, 13, 17, 0, 0, tzinfo=UTC)
+        now = datetime(2025, 1, 13, 19, 0, 0, tzinfo=UTC)
+        assert compute_overdue(due, now) == timedelta(hours=2)
+
+    def test_exactly_at_deadline_is_not_overdue(self):
+        due = datetime(2025, 1, 13, 17, 0, 0, tzinfo=UTC)
+        assert compute_overdue(due, due) == timedelta(0)
+
+    def test_overdue_includes_weekends(self):
+        due = datetime(2025, 1, 10, 17, 0, 0, tzinfo=UTC)  # Friday 5pm
+        now = datetime(2025, 1, 13, 9, 0, 0, tzinfo=UTC)  # Monday 9am
+        delta = compute_overdue(due, now)
+        # ~64 hours overdue (includes the whole weekend)
+        assert delta > timedelta(days=2)
