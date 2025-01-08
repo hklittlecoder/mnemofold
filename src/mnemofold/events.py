@@ -3,15 +3,20 @@
 Events are the atomic unit of memory. Each event has a deterministic
 content-addressed ID derived from its payload, and a schema-versioned
 envelope so older events can still be read by newer code.
+
+Also provides :class:`EventStore`, a simple append-only JSONL writer/reader
+that deduplicates by ``event_id`` and validates every record on load.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
@@ -327,3 +332,84 @@ class Event:
             "tags": tags or [],
         }
         return cls(EventType.FOCUS_BLOCK, timestamp, content)
+
+
+class EventStore:
+    """Append-only JSONL event store.
+
+    Events are written one-per-line to the file in the order they are
+    appended.  Duplicate event IDs are silently skipped on append (the
+    store is idempotent).  On load, every line is validated — a corrupt
+    line raises and the store refuses to open.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+        self._seen: set[str] = set()
+        self._events: list[Event] = []
+        if self._path.exists():
+            self._load_existing()
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def __len__(self) -> int:
+        return len(self._events)
+
+    def __iter__(self) -> Iterator[Event]:
+        return iter(self._events)
+
+    def __contains__(self, event_id: str) -> bool:
+        return event_id in self._seen
+
+    def get(self, event_id: str) -> Event | None:
+        """Return the event with the given id, or None if not present."""
+        # Linear scan is fine for the sizes we work with here; events
+        # are typically traversed by time range rather than id lookup.
+        for evt in self._events:
+            if evt.event_id == event_id:
+                return evt
+        return None
+
+    def append(self, event: Event) -> bool:
+        """Append an event to the store.
+
+        Returns True if the event was new and was written, False if it
+        was already present (idempotent).
+        """
+        if event.event_id in self._seen:
+            return False
+        # Ensure parent directory exists
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        line = event.to_json()
+        with self._path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        self._seen.add(event.event_id)
+        self._events.append(event)
+        return True
+
+    def extend(self, events: Iterable[Event]) -> int:
+        """Append multiple events. Returns the number of newly written."""
+        count = 0
+        for evt in events:
+            if self.append(evt):
+                count += 1
+        return count
+
+    def _load_existing(self) -> None:
+        """Load all events from disk, validating each one."""
+        with self._path.open("r", encoding="utf-8") as f:
+            for lineno, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = Event.from_json(line)
+                except (ValueError, json.JSONDecodeError) as e:
+                    raise ValueError(f"Corrupt event at {self._path}:{lineno}: {e}") from e
+                if evt.event_id in self._seen:
+                    # Duplicate line — skip but don't error.
+                    continue
+                self._seen.add(evt.event_id)
+                self._events.append(evt)

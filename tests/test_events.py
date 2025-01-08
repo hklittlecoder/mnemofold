@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from mnemofold.events import SCHEMA_VERSION, Event, EventType, _content_checksum
+from mnemofold.events import SCHEMA_VERSION, Event, EventStore, EventType, _content_checksum
 
 SAMPLE_TS = datetime(2025, 3, 14, 12, 0, 0, tzinfo=UTC)
 
@@ -276,3 +276,95 @@ class TestConvenienceConstructors:
         restored = Event.from_json(original.to_json())
         assert restored.event_id == original.event_id
         assert restored.content["text"] == "hello"
+
+
+class TestEventStore:
+    def test_empty_store(self, tmp_path):
+        store = EventStore(tmp_path / "events.jsonl")
+        assert len(store) == 0
+        assert list(store) == []
+
+    def test_append_single_event(self, tmp_path):
+        store = EventStore(tmp_path / "events.jsonl")
+        evt = Event.note(SAMPLE_TS, text="hello")
+        assert store.append(evt) is True
+        assert len(store) == 1
+        assert evt.event_id in store
+
+    def test_append_duplicate_is_idempotent(self, tmp_path):
+        store = EventStore(tmp_path / "events.jsonl")
+        evt = Event.note(SAMPLE_TS, text="hello")
+        assert store.append(evt) is True
+        assert store.append(evt) is False
+        assert len(store) == 1
+
+    def test_extend_returns_new_count(self, tmp_path):
+        store = EventStore(tmp_path / "events.jsonl")
+        evts = [
+            Event.note(SAMPLE_TS, text="one"),
+            Event.note(SAMPLE_TS, text="two"),
+            Event.note(SAMPLE_TS, text="one"),  # duplicate
+        ]
+        assert store.extend(evts) == 2
+        assert len(store) == 2
+
+    def test_reload_preserves_events(self, tmp_path):
+        path = tmp_path / "events.jsonl"
+        store = EventStore(path)
+        evts = [
+            Event.mail_received(SAMPLE_TS, sender="a", subject="s1"),
+            Event.chat_message(SAMPLE_TS, sender="b", body="hi"),
+            Event.focus_block(SAMPLE_TS, duration_minutes=25),
+        ]
+        store.extend(evts)
+
+        store2 = EventStore(path)
+        assert len(store2) == len(evts)
+        for a, b in zip(store, store2, strict=True):
+            assert a.event_id == b.event_id
+            assert a.event_type == b.event_type
+
+    def test_get_by_id(self, tmp_path):
+        store = EventStore(tmp_path / "events.jsonl")
+        evt = Event.note(SAMPLE_TS, text="found me")
+        store.append(evt)
+        assert store.get(evt.event_id) is not None
+        assert store.get("evt_nonexistent") is None
+
+    def test_corrupt_line_raises(self, tmp_path):
+        path = tmp_path / "events.jsonl"
+        path.write_text("not valid json at all\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="Corrupt event"):
+            EventStore(path)
+
+    def test_tampered_line_raises(self, tmp_path):
+        path = tmp_path / "events.jsonl"
+        store = EventStore(path)
+        store.append(Event.note(SAMPLE_TS, text="original"))
+
+        # Manually mangle the last line's content
+        lines = path.read_text(encoding="utf-8").splitlines()
+        import json
+
+        envelope = json.loads(lines[0])
+        envelope["content"] = {"text": "tampered"}
+        lines[0] = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Corrupt event"):
+            EventStore(path)
+
+    def test_iteration_preserves_order(self, tmp_path):
+        store = EventStore(tmp_path / "events.jsonl")
+        e1 = Event.note(SAMPLE_TS, text="first")
+        e2 = Event.note(SAMPLE_TS, text="second")
+        e3 = Event.note(SAMPLE_TS, text="third")
+        store.extend([e1, e2, e3])
+        ids = [e.event_id for e in store]
+        assert ids == [e1.event_id, e2.event_id, e3.event_id]
+
+    def test_creates_parent_directory(self, tmp_path):
+        path = tmp_path / "nested" / "deep" / "events.jsonl"
+        store = EventStore(path)
+        store.append(Event.note(SAMPLE_TS, text="auto create"))
+        assert path.exists()
