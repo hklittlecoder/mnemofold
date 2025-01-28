@@ -14,7 +14,7 @@ format-check:
 
 format:
 	$(PYTHON) -m ruff format src tests examples scripts
-	$(PYTHON) -m ruff check --fix src tests examples scripts
+	$(PYTHON) -m ruff check --fix --unsafe-fixes src tests examples scripts
 
 lint:
 	$(PYTHON) -m ruff check src tests examples scripts
