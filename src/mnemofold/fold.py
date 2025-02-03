@@ -132,11 +132,13 @@ class Folder:
         # Step 1: promote high-salience episodic items to semantic
         promoted = self._promote_to_semantic(store, episodic, report)
 
-        # Step 2: merge near-duplicates in semantic tier
-        self._merge_near_duplicates(store, semantic + promoted, report)
+        # Step 2: recurrence mining (run before merge so we count all instances)
+        # Include both episodic and semantic items for pattern detection
+        all_items = episodic + store.items_by_tier(MemoryTier.SEMANTIC)
+        self._mine_recurrence(all_items, report)
 
-        # Step 3: recurrence mining
-        self._mine_recurrence(store, report)
+        # Step 3: merge near-duplicates in semantic tier
+        self._merge_near_duplicates(store, semantic + promoted, report)
 
         report.items_after = store.total_count()
         return report
@@ -147,9 +149,16 @@ class Folder:
         episodic_items: list[MemoryItem],
         report: FoldReport,
     ) -> list[MemoryItem]:
-        """Promote episodic items with high access/salience to semantic."""
+        """Promote episodic items with high access/salience to semantic.
+
+        Skips items that already have a semantic version (ensures
+        idempotence when folding is run multiple times).
+        """
         promoted: list[MemoryItem] = []
         for item in episodic_items:
+            sem_id = item.item_id + "_sem"
+            if store.get(sem_id) is not None:
+                continue
             if item.access_count >= 3 or item.salience >= 0.6:
                 # Create a semantic version
                 sem_item = MemoryItem(
@@ -233,11 +242,16 @@ class Folder:
                     )
                 )
 
-    def _mine_recurrence(self, store: MemoryStore, report: FoldReport) -> None:
-        """Mine for recurrent patterns that could become playbooks."""
-        # Group semantic items by tag
+    def _mine_recurrence(self, items: list[MemoryItem], report: FoldReport) -> None:
+        """Mine for recurrent patterns that could become playbooks.
+
+        Operates on a list of items (across all tiers) so that recurrence
+        is detected from the full set of instances, not just the merged
+        semantic set.
+        """
+        # Group items by tag
         tag_groups: dict[str, list[MemoryItem]] = {}
-        for item in store.items_by_tier(MemoryTier.SEMANTIC):
+        for item in items:
             for tag in item.tags:
                 tag_groups.setdefault(tag, []).append(item)
 
