@@ -1,0 +1,155 @@
+"""Tests for retrieval module."""
+
+from __future__ import annotations
+
+from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
+from mnemofold.retrieval import (
+    BM25Index,
+    RetrievalEngine,
+    mmr_rerank,
+    tokenize,
+)
+
+
+class TestTokenizer:
+    def test_basic(self):
+        assert "hello" in tokenize("Hello, World!")
+        assert "world" in tokenize("Hello, World!")
+
+    def test_lowercase(self):
+        tokens = tokenize("Foo BAR")
+        assert tokens == ["foo", "bar"]
+
+    def test_empty(self):
+        assert tokenize("") == []
+
+
+class TestBM25Index:
+    def test_add_and_search(self):
+        idx = BM25Index()
+        idx.add("d1", "the quick brown fox jumps over the lazy dog")
+        idx.add("d2", "a quick brown cat")
+        idx.add("d3", "the lazy dog sleeps")
+        results = idx.search("quick brown", top_k=10)
+        assert len(results) >= 2
+        # d1 and d2 both have quick+brown
+        ids = [r[0] for r in results]
+        assert "d1" in ids
+        assert "d2" in ids
+
+    def test_search_no_match(self):
+        idx = BM25Index()
+        idx.add("d1", "hello world")
+        results = idx.search("xyzzy")
+        assert results == []
+
+    def test_remove(self):
+        idx = BM25Index()
+        idx.add("d1", "hello world")
+        idx.remove("d1")
+        assert idx.doc_count() == 0
+        results = idx.search("hello")
+        assert results == []
+
+    def test_empty_query(self):
+        idx = BM25Index()
+        idx.add("d1", "test")
+        assert idx.search("") == []
+
+    def test_doc_count(self):
+        idx = BM25Index()
+        assert idx.doc_count() == 0
+        idx.add("d1", "a")
+        assert idx.doc_count() == 1
+        idx.add("d2", "b")
+        assert idx.doc_count() == 2
+
+    def test_results_ranked_by_score(self):
+        idx = BM25Index()
+        idx.add("d1", "apple apple apple banana")
+        idx.add("d2", "banana cherry")
+        results = idx.search("apple")
+        assert len(results) == 1
+        assert results[0][0] == "d1"
+
+
+class TestMMRRerank:
+    def test_mmr_promotes_diversity(self):
+        results = [
+            ("a", 1.0),
+            ("b", 0.9),
+            ("c", 0.8),
+        ]
+        texts = {
+            "a": "machine learning neural network deep",
+            "b": "machine learning neural network deep",  # very similar to a
+            "c": "cooking recipe food kitchen",  # very different
+        }
+        # With lambda=0.5, MMR should pick a (highest score), then c (diverse), then b
+        ranked = mmr_rerank(results, texts, lambda_param=0.5, top_k=3)
+        assert ranked[0] == "a"
+        assert len(ranked) == 3
+
+    def test_mmr_high_lambda_more_relevance(self):
+        results = [("a", 1.0), ("b", 0.9), ("c", 0.8)]
+        texts = {"a": "x y z", "b": "a b c", "c": "p q r"}
+        # All dissimilar, high lambda → relevance order
+        ranked = mmr_rerank(results, texts, lambda_param=0.9, top_k=3)
+        assert ranked == ["a", "b", "c"]
+
+    def test_mmr_empty(self):
+        assert mmr_rerank([], {}, top_k=10) == []
+
+    def test_mmr_top_k(self):
+        results = [("a", 1.0), ("b", 0.9), ("c", 0.8)]
+        texts = {"a": "x", "b": "y", "c": "z"}
+        ranked = mmr_rerank(results, texts, top_k=2)
+        assert len(ranked) == 2
+
+
+class TestRetrievalEngine:
+    def test_basic_search(self):
+        store = MemoryStore()
+        for i in range(5):
+            item = MemoryItem(
+                f"item_{i}",
+                MemoryTier.SEMANTIC,
+                f"This is document number {i} about topic {i % 3}",
+                title=f"Doc {i}",
+            )
+            store.add(item)
+        engine = RetrievalEngine(store)
+        engine.build_index()
+        results = engine.search("document", top_k=3)
+        assert len(results) == 3
+        assert all(r.item_id for r in results)
+
+    def test_citations_resolve(self):
+        store = MemoryStore()
+        for i in range(5):
+            item = MemoryItem(f"i{i}", MemoryTier.SEMANTIC, f"content {i}", title=f"t{i}")
+            store.add(item)
+        engine = RetrievalEngine(store)
+        engine.build_index()
+        assert engine.property_citations_resolve("content")
+
+    def test_search_with_tag_filter(self):
+        store = MemoryStore()
+        a = MemoryItem("a", MemoryTier.SEMANTIC, "about python code", title="A", tags={"dev"})
+        b = MemoryItem("b", MemoryTier.SEMANTIC, "about cooking", title="B", tags={"food"})
+        store.add(a)
+        store.add(b)
+        engine = RetrievalEngine(store)
+        engine.build_index()
+        results = engine.search("about", tags={"dev"})
+        assert len(results) == 1
+        assert results[0].item_id == "a"
+
+    def test_empty_results_for_nonexistent_terms(self):
+        store = MemoryStore()
+        item = MemoryItem("a", MemoryTier.SEMANTIC, "hello world", title="Hi")
+        store.add(item)
+        engine = RetrievalEngine(store)
+        engine.build_index()
+        results = engine.search("xyzzynonexistent")
+        assert len(results) == 0
