@@ -1,0 +1,205 @@
+"""Inbox triage: priority scoring for incoming items.
+
+Priority scoring from deadline proximity, sender importance, thread
+staleness, explicit asks, and commitment language. Provides per-item
+reasons, batch and quiet-hour rules, and precision@k against planted labels.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any
+
+
+class TriagePriority(StrEnum):
+    """Priority levels for triaged items."""
+
+    URGENT = "urgent"
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+
+
+@dataclass(slots=True)
+class TriageItem:
+    """An item to be triaged (email, message, task, etc.)."""
+
+    item_id: str
+    title: str
+    sender: str
+    received_at: str
+    content: str = ""
+    has_deadline: bool = False
+    deadline: str = ""
+    has_explicit_ask: bool = False
+    mentions_commitment: bool = False
+    thread_length: int = 1
+    thread_staleness_hours: float = 0.0
+    sender_importance: float = 0.5  # 0.0 to 1.0
+    tags: set[str] = field(default_factory=set)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class TriageResult:
+    """Result of triaging an item."""
+
+    item_id: str
+    score: float  # 0.0 to 1.0
+    priority: TriagePriority
+    reasons: list[str] = field(default_factory=list)
+
+
+def _parse_dt(s: str) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+@dataclass
+class TriageScorer:
+    """Scores items for inbox triage priority."""
+
+    deadline_weight: float = 0.30
+    sender_weight: float = 0.20
+    ask_weight: float = 0.20
+    commitment_weight: float = 0.15
+    staleness_weight: float = 0.10
+    thread_weight: float = 0.05
+
+    urgency_threshold: float = 0.8
+    high_threshold: float = 0.6
+    low_threshold: float = 0.25
+
+    def score(self, item: TriageItem, now: str) -> TriageResult:
+        """Score a single triage item."""
+        reasons: list[str] = []
+        score = 0.0
+        total_weight = 0.0
+
+        # Deadline proximity
+        dl_score = self._deadline_score(item, now)
+        if dl_score > 0:
+            reasons.append(f"deadline_proximity={dl_score:.2f}")
+        score += dl_score * self.deadline_weight
+        total_weight += self.deadline_weight
+
+        # Sender importance
+        si_score = item.sender_importance
+        if si_score > 0.5:
+            reasons.append(f"sender_importance={si_score:.2f}")
+        score += si_score * self.sender_weight
+        total_weight += self.sender_weight
+
+        # Explicit ask
+        ask_score = 1.0 if item.has_explicit_ask else 0.0
+        if ask_score > 0:
+            reasons.append("explicit_ask")
+        score += ask_score * self.ask_weight
+        total_weight += self.ask_weight
+
+        # Commitment mention
+        comm_score = 1.0 if item.mentions_commitment else 0.0
+        if comm_score > 0:
+            reasons.append("mentions_commitment")
+        score += comm_score * self.commitment_weight
+        total_weight += self.commitment_weight
+
+        # Thread staleness (lower staleness = higher priority for fresh threads)
+        staleness_score = max(0.0, 1.0 - min(1.0, item.thread_staleness_hours / 48.0))
+        score += staleness_score * self.staleness_weight
+        total_weight += self.staleness_weight
+
+        # Thread length (longer threads get slight boost)
+        thread_score = min(1.0, item.thread_length / 10.0)
+        score += thread_score * self.thread_weight
+        total_weight += self.thread_weight
+
+        # Normalize
+        if total_weight > 0:
+            score = score / total_weight
+        score = max(0.0, min(1.0, score))
+
+        # Determine priority level
+        if score >= self.urgency_threshold:
+            priority = TriagePriority.URGENT
+        elif score >= self.high_threshold:
+            priority = TriagePriority.HIGH
+        elif score <= self.low_threshold:
+            priority = TriagePriority.LOW
+        else:
+            priority = TriagePriority.NORMAL
+
+        return TriageResult(item_id=item.item_id, score=score, priority=priority, reasons=reasons)
+
+    def _deadline_score(self, item: TriageItem, now: str) -> float:
+        if not item.has_deadline or not item.deadline:
+            return 0.0
+        t_deadline = _parse_dt(item.deadline)
+        t_now = _parse_dt(now)
+        if t_deadline is None or t_now is None:
+            return 0.0
+        hours_left = (t_deadline - t_now).total_seconds() / 3600.0
+        if hours_left <= 0:
+            return 1.0  # overdue = max priority
+        # Exponential: 1.0 at 0h, ~0.5 at 24h, ~0.1 at 72h
+        import math
+
+        return float(math.exp(-hours_left / 24.0))
+
+    def batch_score(self, items: list[TriageItem], now: str) -> list[TriageResult]:
+        """Score a batch of items, sorted by score descending."""
+        results = [self.score(item, now) for item in items]
+        results.sort(key=lambda r: r.score, reverse=True)
+        return results
+
+    def apply_quiet_hours(
+        self,
+        results: list[TriageResult],
+        quiet_start_hour: int = 20,
+        quiet_end_hour: int = 7,
+        now: str = "",
+    ) -> list[TriageResult]:
+        """Reduce priority for non-urgent items during quiet hours."""
+        if not now:
+            return results
+        dt = _parse_dt(now)
+        if dt is None:
+            return results
+        hour = dt.hour
+        in_quiet = (hour >= quiet_start_hour) or (hour < quiet_end_hour)
+        if not in_quiet:
+            return results
+        modified: list[TriageResult] = []
+        for r in results:
+            if r.priority == TriagePriority.URGENT:
+                modified.append(r)
+                continue
+            new_r = TriageResult(
+                item_id=r.item_id,
+                score=max(0.0, r.score - 0.3),
+                priority=TriagePriority.LOW if r.score - 0.3 < self.low_threshold else r.priority,
+                reasons=r.reasons + ["quiet_hours_reduced"],
+            )
+            modified.append(new_r)
+        modified.sort(key=lambda r: r.score, reverse=True)
+        return modified
+
+
+def precision_at_k(results: list[TriageResult], labels: dict[str, bool], k: int) -> float:
+    """Compute precision@k against planted labels.
+
+    labels maps item_id -> True (should be high priority) or False.
+    Returns the fraction of top-k items that are true positives.
+    """
+    if k <= 0 or not results:
+        return 0.0
+    top_k = results[:k]
+    relevant = sum(1 for r in top_k if labels.get(r.item_id, False))
+    return relevant / len(top_k)
