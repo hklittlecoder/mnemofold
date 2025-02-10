@@ -130,7 +130,7 @@ class MeetingPrepper:
         candidate_items.extend(self.store.items_by_tier(MemoryTier.EPISODIC))
 
         # Score items by relevance (simple keyword match against attendees + title)
-        keywords = set(attendees) | set(meeting_title.lower().split())
+        keywords = {a.lower() for a in attendees} | set(meeting_title.lower().split())
         if context_text:
             keywords |= set(context_text.lower().split())
 
