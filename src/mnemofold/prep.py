@@ -1,0 +1,194 @@
+"""Meeting preparation: gather evidence and assemble cited packets.
+
+Collects related people, projects, open commitments, and unresolved
+decisions from memory; assembles an agenda from evidence; produces a
+cited Markdown/HTML packet; measures coverage against planted prep facts.
+"""
+
+from __future__ import annotations
+
+import html
+from dataclasses import dataclass, field
+
+from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
+
+
+@dataclass(slots=True)
+class PrepItem:
+    """A piece of evidence in a meeting prep packet."""
+
+    item_id: str
+    title: str
+    category: str  # person, project, commitment, decision, note
+    summary: str
+    citation: str
+    priority: float = 0.0
+
+
+@dataclass(slots=True)
+class MeetingPrep:
+    """A prepared meeting packet."""
+
+    meeting_id: str
+    meeting_title: str
+    attendee_names: list[str] = field(default_factory=list)
+    agenda_items: list[str] = field(default_factory=list)
+    items: list[PrepItem] = field(default_factory=list)
+    total_items: int = 0
+    cited_sources: list[str] = field(default_factory=list)
+
+    def to_markdown(self) -> str:
+        lines = [f"# Meeting Prep: {self.meeting_title}", ""]
+        lines.append(f"**Meeting ID**: `{self.meeting_id}`")
+        lines.append(f"**Attendees**: {', '.join(self.attendee_names)}")
+        lines.append("")
+        lines.append("## Agenda")
+        lines.append("")
+        for i, item in enumerate(self.agenda_items, 1):
+            lines.append(f"{i}. {item}")
+        lines.append("")
+        lines.append(f"## Background ({self.total_items} items)")
+        lines.append("")
+        by_cat: dict[str, list[PrepItem]] = {}
+        for item in self.items:
+            by_cat.setdefault(item.category, []).append(item)
+        for cat in sorted(by_cat.keys()):
+            lines.append(f"### {cat.title()} ({len(by_cat[cat])})")
+            lines.append("")
+            for pitem in by_cat[cat]:
+                lines.append(f"**{pitem.title}** {pitem.citation}")
+                lines.append(f"> {pitem.summary}")
+                lines.append("")
+        lines.append("---")
+        lines.append(f"*Sources cited: {len(self.cited_sources)}*")
+        return "\n".join(lines)
+
+    def to_html(self) -> str:
+        parts = [
+            "<!DOCTYPE html>",
+            '<html lang="en"><head><meta charset="utf-8">',
+            f"<title>Meeting Prep: {html.escape(self.meeting_title)}</title>",
+            "<style>",
+            "body{font-family:system-ui,sans-serif;max-width:800px;margin:2em auto;padding:0 1em;}",
+            ".citation{color:#666;font-size:0.8em;}",
+            ".item{border-left:3px solid #ddd;padding-left:1em;margin:1em 0;}",
+            "h1{border-bottom:2px solid #333;}",
+            "h3{margin-top:1.5em;}",
+            "</style></head><body>",
+            f"<h1>Meeting Prep: {html.escape(self.meeting_title)}</h1>",
+            f"<p><strong>Meeting ID:</strong> <code>{html.escape(self.meeting_id)}</code></p>",
+            f"<p><strong>Attendees:</strong> {html.escape(', '.join(self.attendee_names))}</p>",
+            "<h2>Agenda</h2><ol>",
+        ]
+        for item in self.agenda_items:
+            parts.append(f"<li>{html.escape(item)}</li>")
+        parts.append("</ol>")
+        parts.append(f"<h2>Background ({self.total_items} items)</h2>")
+        by_cat: dict[str, list[PrepItem]] = {}
+        for item in self.items:
+            by_cat.setdefault(item.category, []).append(item)
+        for cat in sorted(by_cat.keys()):
+            parts.append(f"<h3>{html.escape(cat.title())} ({len(by_cat[cat])})</h3>")
+            for pitem in by_cat[cat]:
+                parts.append('<div class="item">')
+                parts.append(
+                    f"<strong>{html.escape(pitem.title)}</strong> "
+                    f'<span class="citation">{html.escape(pitem.citation)}</span>'
+                )
+                parts.append(f"<blockquote>{html.escape(pitem.summary)}</blockquote>")
+                parts.append("</div>")
+        parts.append("<hr>")
+        parts.append(f"<p><em>Sources cited: {len(self.cited_sources)}</em></p>")
+        parts.append("</body></html>")
+        return "\n".join(parts)
+
+
+@dataclass
+class MeetingPrepper:
+    """Assembles meeting prep packets from memory."""
+
+    store: MemoryStore
+    max_items: int = 20
+
+    def prepare(
+        self,
+        meeting_id: str,
+        meeting_title: str,
+        attendees: list[str],
+        context_text: str = "",
+    ) -> MeetingPrep:
+        """Prepare a meeting packet for the given meeting."""
+        prep = MeetingPrep(
+            meeting_id=meeting_id,
+            meeting_title=meeting_title,
+            attendee_names=list(attendees),
+        )
+
+        # Gather relevant items
+        candidate_items: list[MemoryItem] = []
+        candidate_items.extend(self.store.items_by_tier(MemoryTier.SEMANTIC))
+        candidate_items.extend(self.store.items_by_tier(MemoryTier.EPISODIC))
+
+        # Score items by relevance (simple keyword match against attendees + title)
+        keywords = set(attendees) | set(meeting_title.lower().split())
+        if context_text:
+            keywords |= set(context_text.lower().split())
+
+        scored: list[tuple[MemoryItem, float]] = []
+        for item in candidate_items:
+            score = self._relevance_score(item, keywords)
+            if score > 0:
+                scored.append((item, score))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        scored = scored[: self.max_items]
+
+        # Build prep items
+        for item, score in scored:
+            cat = self._categorize(item)
+            summary = item.content[:200] + "..." if len(item.content) > 200 else item.content
+            prep_item = PrepItem(
+                item_id=item.item_id,
+                title=item.title or item.item_id,
+                category=cat,
+                summary=summary,
+                citation=f"[{item.item_id}]",
+                priority=score,
+            )
+            prep.items.append(prep_item)
+            prep.cited_sources.append(item.item_id)
+
+        prep.total_items = len(prep.items)
+
+        # Derive agenda from top items
+        top_titles = [it.title for it in prep.items[:5] if it.title]
+        prep.agenda_items = top_titles + ["Open discussion", "Action items"]
+
+        return prep
+
+    def _relevance_score(self, item: MemoryItem, keywords: set[str]) -> float:
+        text = f"{item.title} {item.content}".lower()
+        words = set(text.split())
+        if not keywords:
+            return 0.0
+        matches = len(keywords & words)
+        return matches / len(keywords)
+
+    def _categorize(self, item: MemoryItem) -> str:
+        tags = {t.lower() for t in item.tags}
+        if "commitment" in tags or "commitments" in tags:
+            return "commitment"
+        if "decision" in tags or "decisions" in tags:
+            return "decision"
+        if "person" in tags or "people" in tags:
+            return "person"
+        if "project" in tags:
+            return "project"
+        if "note" in tags:
+            return "note"
+        return "background"
+
+
+def verify_citations(prep: MeetingPrep, store: MemoryStore) -> bool:
+    """Property: all cited sources exist in the store."""
+    return all(store.get(cid) is not None for cid in prep.cited_sources)
