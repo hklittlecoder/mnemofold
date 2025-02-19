@@ -1,0 +1,167 @@
+"""Approval queue with personas and escalation chains.
+
+The approval queue holds items that need human (or scripted-persona)
+sign-off before execution.  Approver personas (auto-approve, ask, deny)
+drive tests offline.  Escalation chains forward items when the primary
+approver times out, and audit metrics track decisions in simulated time.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import StrEnum
+
+
+class ApprovalStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    DENIED = "denied"
+    ESCALATED = "escalated"
+    EXPIRED = "expired"
+
+
+class ApproverPersona(StrEnum):
+    """Scripted approver behavior for tests and simulations."""
+
+    AUTO_APPROVE = "auto_approve"
+    AUTO_DENY = "auto_deny"
+    ASK = "ask"
+    RANDOM = "random"
+
+
+@dataclass(slots=True)
+class ApprovalRequest:
+    """A single pending approval."""
+
+    request_id: str
+    item_id: str
+    item_kind: str
+    summary: str
+    requester: str
+    approver: str
+    status: ApprovalStatus = ApprovalStatus.PENDING
+    created_at: datetime | None = None
+    decided_at: datetime | None = None
+    decision_note: str = ""
+    escalated_from: str | None = None
+    escalation_chain: list[str] = field(default_factory=list)
+    expires_after: timedelta | None = None
+
+    def is_open(self) -> bool:
+        return self.status == ApprovalStatus.PENDING
+
+
+@dataclass
+class Approver:
+    """An approver identity with a persona and escalation target."""
+
+    name: str
+    persona: ApproverPersona = ApproverPersona.ASK
+    escalation_to: str | None = None
+    decision_latency: timedelta = timedelta(hours=2)
+
+
+@dataclass
+class ApprovalQueue:
+    """Queue of pending approvals with persona-driven resolution."""
+
+    approvers: dict[str, Approver] = field(default_factory=dict)
+    requests: list[ApprovalRequest] = field(default_factory=list)
+
+    def add_approver(self, approver: Approver) -> None:
+        self.approvers[approver.name] = approver
+
+    def submit(self, request: ApprovalRequest) -> None:
+        self.requests.append(request)
+
+    def pending(self) -> list[ApprovalRequest]:
+        return [r for r in self.requests if r.is_open()]
+
+    def decide(
+        self,
+        request_id: str,
+        approved: bool,
+        now: datetime,
+        note: str = "",
+    ) -> ApprovalRequest | None:
+        for r in self.requests:
+            if r.request_id == request_id and r.is_open():
+                r.status = ApprovalStatus.APPROVED if approved else ApprovalStatus.DENIED
+                r.decided_at = now
+                r.decision_note = note
+                return r
+        return None
+
+    def tick_expirations(self, now: datetime) -> list[ApprovalRequest]:
+        """Expire requests past their deadline; return expired list."""
+        expired: list[ApprovalRequest] = []
+        for r in self.requests:
+            if not r.is_open() or r.expires_after is None or r.created_at is None:
+                continue
+            if now >= r.created_at + r.expires_after:
+                r.status = ApprovalStatus.EXPIRED
+                r.decided_at = now
+                expired.append(r)
+        return expired
+
+    def escalate(self, request_id: str, now: datetime) -> ApprovalRequest | None:
+        """Move a pending request to the next approver in its chain."""
+        for r in self.requests:
+            if r.request_id != request_id or not r.is_open():
+                continue
+            chain = r.escalation_chain
+            if not chain:
+                return None
+            idx = chain.index(r.approver) if r.approver in chain else -1
+            if idx < 0 or idx + 1 >= len(chain):
+                return None
+            r.escalated_from = r.approver
+            r.approver = chain[idx + 1]
+            r.status = ApprovalStatus.ESCALATED
+            # Reset to pending under new approver (keep ESCALATED status brief)
+            r.status = ApprovalStatus.PENDING
+            r.created_at = now
+            return r
+        return None
+
+    def auto_resolve(
+        self,
+        now: datetime,
+        rng_seed: int | None = None,
+    ) -> list[ApprovalRequest]:
+        """Let scripted personas resolve pending requests that are due.
+
+        AUTO_APPROVE always approves; AUTO_DENY always denies; ASK never
+        auto-resolves; RANDOM flips a coin using an RNG seeded from
+        ``rng_seed`` combined with the request id.
+        """
+        import random
+
+        resolved: list[ApprovalRequest] = []
+        for r in list(self.pending()):
+            approver = self.approvers.get(r.approver)
+            if approver is None:
+                continue
+            if r.created_at and now < r.created_at + approver.decision_latency:
+                continue
+            persona = approver.persona
+            if persona == ApproverPersona.AUTO_APPROVE:
+                self.decide(r.request_id, True, now, note="auto-approved")
+            elif persona == ApproverPersona.AUTO_DENY:
+                self.decide(r.request_id, False, now, note="auto-denied")
+            elif persona == ApproverPersona.RANDOM:
+                seed = (rng_seed or 0) + hash(r.request_id)
+                rng = random.Random(seed)
+                self.decide(r.request_id, rng.random() < 0.5, now, note="random")
+            else:
+                continue
+            resolved.append(r)
+        return resolved
+
+    def audit_metrics(self) -> dict[str, int]:
+        """Count of requests by status, for dashboards."""
+        counts: dict[str, int] = {}
+        for r in self.requests:
+            counts[r.status.value] = counts.get(r.status.value, 0) + 1
+        return counts
