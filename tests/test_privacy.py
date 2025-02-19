@@ -1,0 +1,226 @@
+from datetime import UTC, datetime
+
+from mnemofold.privacy import (
+    AccessLog,
+    AccessLogEntry,
+    PiiKind,
+    PolicyEffect,
+    PolicyEngine,
+    PolicyRule,
+    PrivacyTier,
+    RedactionMode,
+    can_read,
+    detect_pii,
+    redact,
+)
+
+
+def test_detect_email():
+    text = "Contact me at alice@example.com please."
+    matches = detect_pii(text)
+    assert any(m.kind == PiiKind.EMAIL and m.value == "alice@example.com" for m in matches)
+
+
+def test_detect_phone():
+    text = "Call (415) 555-0123 for details."
+    matches = detect_pii(text)
+    phones = [m for m in matches if m.kind == PiiKind.PHONE]
+    assert len(phones) >= 1
+
+
+def test_detect_credit_card_valid_luhn():
+    # 4532015112830366 is a valid Luhn test number
+    text = "Card: 4532015112830366."
+    matches = detect_pii(text)
+    cards = [m for m in matches if m.kind == PiiKind.CREDIT_CARD]
+    assert len(cards) >= 1
+
+
+def test_detect_credit_card_invalid_luhn_rejected():
+    text = "Card: 1234567890123456."
+    matches = detect_pii(text)
+    cards = [m for m in matches if m.kind == PiiKind.CREDIT_CARD]
+    assert len(cards) == 0
+
+
+def test_detect_address():
+    text = "Ship to 123 Main Street, Springfield, IL."
+    matches = detect_pii(text)
+    addresses = [m for m in matches if m.kind == PiiKind.ADDRESS]
+    assert len(addresses) >= 1
+
+
+def test_detect_pii_sorted_by_position():
+    text = "Email a@b.co and call 415-555-0199 please."
+    matches = detect_pii(text)
+    starts = [m.start for m in matches]
+    assert starts == sorted(starts)
+
+
+def test_detect_pii_empty_text():
+    assert detect_pii("") == []
+    assert detect_pii("nothing sensitive here") == []
+
+
+def test_redact_mask():
+    text = "Email alice@example.com please."
+    matches = detect_pii(text)
+    result = redact(text, matches, mode=RedactionMode.MASK)
+    assert "alice@example.com" not in result
+    assert "[email]" in result
+
+
+def test_redact_hash_stable():
+    text = "user1@example.com and user1@example.com"
+    matches = detect_pii(text)
+    r1 = redact(text, matches, mode=RedactionMode.HASH, hash_salt="s1")
+    r2 = redact(text, matches, mode=RedactionMode.HASH, hash_salt="s1")
+    assert r1 == r2
+    assert "user1@example.com" not in r1
+
+
+def test_redact_hash_different_salt():
+    text = "alice@example.com"
+    matches = detect_pii(text)
+    r1 = redact(text, matches, mode=RedactionMode.HASH, hash_salt="a")
+    r2 = redact(text, matches, mode=RedactionMode.HASH, hash_salt="b")
+    assert r1 != r2
+
+
+def test_redact_remove():
+    text = "X alice@example.com Y"
+    matches = detect_pii(text)
+    result = redact(text, matches, mode=RedactionMode.REMOVE)
+    assert "alice@example.com" not in result
+    assert "X  Y" in result or "X Y" in result
+
+
+def test_redact_no_matches_is_identity():
+    assert redact("hello world", []) == "hello world"
+
+
+def test_redact_multiple_spans_preserve_order():
+    text = "a@b.co then c@d.io end"
+    matches = detect_pii(text)
+    result = redact(text, matches, mode=RedactionMode.MASK)
+    assert result.count("[email]") == 2
+    assert result.startswith("[email]")
+    assert "then" in result
+
+
+def test_can_read_same_tier():
+    assert can_read(PrivacyTier.PUBLIC, PrivacyTier.PUBLIC)
+    assert can_read(PrivacyTier.INTERNAL, PrivacyTier.INTERNAL)
+
+
+def test_can_read_higher_can_read_lower():
+    assert can_read(PrivacyTier.RESTRICTED, PrivacyTier.CONFIDENTIAL)
+    assert can_read(PrivacyTier.CONFIDENTIAL, PrivacyTier.INTERNAL)
+    assert can_read(PrivacyTier.INTERNAL, PrivacyTier.PUBLIC)
+
+
+def test_can_read_lower_cannot_read_higher():
+    assert not can_read(PrivacyTier.PUBLIC, PrivacyTier.INTERNAL)
+    assert not can_read(PrivacyTier.INTERNAL, PrivacyTier.RESTRICTED)
+    assert not can_read(PrivacyTier.CONFIDENTIAL, PrivacyTier.RESTRICTED)
+
+
+def test_policy_engine_implicit_deny():
+    engine = PolicyEngine()
+    decision = engine.evaluate("read", "alice", PrivacyTier.INTERNAL)
+    assert decision.effect == PolicyEffect.DENY
+    assert "implicit-deny" in decision.matched_rules
+
+
+def test_policy_engine_allow_rule():
+    engine = PolicyEngine(
+        [
+            PolicyRule(rule_id="r1", effect=PolicyEffect.ALLOW, action="read", precedence=10),
+        ]
+    )
+    decision = engine.evaluate("read", "anyone", PrivacyTier.PUBLIC)
+    assert decision.effect == PolicyEffect.ALLOW
+    assert decision.matched_rules == ["r1"]
+
+
+def test_policy_engine_deny_overrides_lower_precedence():
+    engine = PolicyEngine(
+        [
+            PolicyRule(
+                rule_id="deny_restricted",
+                effect=PolicyEffect.DENY,
+                action="read",
+                resource_tier=PrivacyTier.RESTRICTED,
+                precedence=5,
+            ),
+            PolicyRule(
+                rule_id="allow_all_read", effect=PolicyEffect.ALLOW, action="read", precedence=50
+            ),
+        ]
+    )
+    decision = engine.evaluate("read", "bob", PrivacyTier.RESTRICTED)
+    assert decision.effect == PolicyEffect.DENY
+
+
+def test_policy_engine_principal_filter():
+    engine = PolicyEngine(
+        [
+            PolicyRule(
+                rule_id="admin_all",
+                effect=PolicyEffect.ALLOW,
+                action="*",
+                principal="admin",
+                precedence=1,
+            ),
+        ]
+    )
+    assert engine.evaluate("read", "admin", PrivacyTier.PUBLIC).effect == PolicyEffect.ALLOW
+    assert engine.evaluate("read", "user", PrivacyTier.PUBLIC).effect == PolicyEffect.DENY
+
+
+def test_policy_engine_conflict_at_same_precedence():
+    engine = PolicyEngine(
+        [
+            PolicyRule(rule_id="allow", effect=PolicyEffect.ALLOW, action="read", precedence=10),
+            PolicyRule(rule_id="deny", effect=PolicyEffect.DENY, action="read", precedence=10),
+        ]
+    )
+    decision = engine.evaluate("read", "alice", PrivacyTier.PUBLIC)
+    assert decision.effect == PolicyEffect.ASK
+    assert len(decision.conflicts) >= 1
+
+
+def test_policy_engine_wildcard_action():
+    engine = PolicyEngine(
+        [
+            PolicyRule(rule_id="any", effect=PolicyEffect.ALLOW, action="*", precedence=1),
+        ]
+    )
+    assert engine.evaluate("read", "x", PrivacyTier.PUBLIC).effect == PolicyEffect.ALLOW
+    assert engine.evaluate("write", "x", PrivacyTier.PUBLIC).effect == PolicyEffect.ALLOW
+
+
+def test_access_log_append_only():
+    log = AccessLog()
+    entry = AccessLogEntry(
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        principal="alice",
+        action="read",
+        resource_id="mem-1",
+        granted=True,
+        reason="policy-allow",
+    )
+    log.record(entry)
+    assert len(log.entries()) == 1
+    assert log.entries()[0].principal == "alice"
+
+
+def test_access_log_count_by_principal():
+    log = AccessLog()
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    log.record(AccessLogEntry(now, "alice", "read", "r1", True, ""))
+    log.record(AccessLogEntry(now, "bob", "read", "r1", True, ""))
+    log.record(AccessLogEntry(now, "alice", "write", "r2", False, ""))
+    counts = log.count_by_principal()
+    assert counts["alice"] == 2
+    assert counts["bob"] == 1
