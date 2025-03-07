@@ -75,6 +75,46 @@ def build_parser() -> argparse.ArgumentParser:
     p_fold.add_argument("--json", action="store_true", help="output JSON fold report")
     p_fold.set_defaults(func=_cmd_fold)
 
+    # asof
+    p_asof = sub.add_parser("asof", help="query state as of a specific date")
+    p_asof.add_argument("--seed", type=int, default=42, help="seed for demo data")
+    p_asof.add_argument("--days", type=int, default=30, help="total days of history")
+    p_asof.add_argument("--date", help="query date (YYYY-MM-DD), default: halfway")
+    p_asof.set_defaults(func=_cmd_asof)
+
+    # context
+    p_context = sub.add_parser("context", help="build a budgeted context pack")
+    p_context.add_argument("--seed", type=int, default=42, help="seed for demo data")
+    p_context.add_argument("--days", type=int, default=30, help="days of history")
+    p_context.add_argument("--budget", type=int, default=2000, help="token budget")
+    p_context.add_argument("--profile", default="meeting_prep", help="packing profile")
+    p_context.set_defaults(func=_cmd_context)
+
+    # prep
+    p_prep = sub.add_parser("prep", help="generate meeting prep packet")
+    p_prep.add_argument("--seed", type=int, default=42, help="seed for demo data")
+    p_prep.add_argument("--days", type=int, default=14, help="days of history to include")
+    p_prep.add_argument("--meeting", default="sync", help="meeting identifier")
+    p_prep.add_argument("--json", action="store_true", help="output JSON")
+    p_prep.set_defaults(func=_cmd_prep)
+
+    # privacy
+    p_privacy = sub.add_parser("privacy", help="scan text for PII and redact")
+    p_privacy.add_argument("text", nargs="?", help="text to scan (or use --demo)")
+    p_privacy.add_argument("--demo", action="store_true", help="run on demo text")
+    p_privacy.add_argument(
+        "--mode", default="mask", choices=["mask", "hash", "remove"], help="redaction mode"
+    )
+    p_privacy.add_argument("--salt", default="", help="salt for hash mode")
+    p_privacy.set_defaults(func=_cmd_privacy)
+
+    # triggers
+    p_triggers = sub.add_parser("triggers", help="list active proactive triggers")
+    p_triggers.add_argument("--seed", type=int, default=42, help="seed for demo data")
+    p_triggers.add_argument("--days", type=int, default=30, help="days of history")
+    p_triggers.add_argument("--json", action="store_true", help="output JSON")
+    p_triggers.set_defaults(func=_cmd_triggers)
+
     return parser
 
 
@@ -397,6 +437,233 @@ def _cmd_fold(args: argparse.Namespace) -> int:
         print(f"Rejected:      {len(report.rejected)}")
         print(f"New semantic:  {len(report.new_semantic)}")
         print(f"Playbook props:{len(report.recurrence_proposals)}")
+
+    return 0
+
+
+def _cmd_asof(args: argparse.Namespace) -> int:
+    from .factory import WorkHistoryFactory
+    from .temporal import IntervalFact, TemporalStore
+
+    factory = WorkHistoryFactory(seed=args.seed, days=args.days)
+    events, _manifest = factory.generate()
+
+    store = TemporalStore()
+    for i, ev in enumerate(events):
+        fid = f"fact-{i:05d}"
+        value = ev.payload.get("subject", ev.payload.get("title", ""))
+        store.add(IntervalFact(fact_key=fid, value=value, valid_from=ev.timestamp))
+
+    if args.date:
+        query_date = args.date
+    else:
+        mid = len(events) // 2
+        query_date = events[mid].timestamp[:10]
+
+    all_keys = store.keys()
+    # Gather facts valid as of query date
+    valid_facts: dict[str, str] = {}
+    for key in all_keys:
+        fact = store.as_of(key, query_date)
+        if fact is not None:
+            valid_facts[key] = str(fact.value)
+
+    print(f"=== As-of query: {query_date} ===")
+    print(f"Total facts: {len(all_keys)}")
+    print(f"Valid on this date: {len(valid_facts)}")
+    for fid, val in list(valid_facts.items())[:10]:
+        print(f"  {fid}: {val[:55]}")
+    if len(valid_facts) > 10:
+        print(f"  ... and {len(valid_facts) - 10} more")
+    return 0
+
+
+def _cmd_context(args: argparse.Namespace) -> int:
+    from .context import ContextItem, ContextPacker, PackingProfile
+    from .factory import WorkHistoryFactory
+
+    factory = WorkHistoryFactory(seed=args.seed, days=args.days)
+    events, _manifest = factory.generate()
+
+    items = []
+    for i, ev in enumerate(events[:100]):
+        content = ev.payload.get("subject", ev.payload.get("title", str(i)))
+        token_estimate = max(5, int(len(content.split()) * 1.3))
+        items.append(
+            ContextItem(
+                item_id=ev.event_id,
+                content=content,
+                token_estimate=token_estimate,
+                priority=round(1.0 / (i + 1), 4),
+            )
+        )
+
+    profile_map = {
+        "meeting_prep": PackingProfile.MEETING_PREP,
+        "triage": PackingProfile.TRIAGE,
+        "weekly_review": PackingProfile.WEEKLY_REVIEW,
+    }
+    profile = profile_map.get(args.profile, PackingProfile.MEETING_PREP)
+
+    packer = ContextPacker(budget=args.budget, profile=profile)
+    pack = packer.pack(items)
+
+    within = pack.total_tokens <= pack.budget
+    print(f"=== Context Pack (budget={args.budget}, profile={profile.value}) ===")
+    print(f"Items packed: {len(pack.items)}")
+    print(f"Tokens used:  {pack.total_tokens}")
+    print(f"Within budget: {within}")
+    if pack.items:
+        print("\nTop items:")
+        for item in pack.items[:5]:
+            print(f"  [{item.token_estimate:4d} tok] {item.content[:60]}")
+    return 0
+
+
+def _cmd_prep(args: argparse.Namespace) -> int:
+    from .factory import WorkHistoryFactory
+    from .memory import MemoryItem, MemoryStore, MemoryTier
+    from .prep import MeetingPrepper
+
+    factory = WorkHistoryFactory(seed=args.seed, days=args.days)
+    events, _manifest = factory.generate()
+
+    store = MemoryStore()
+    for ev in events:
+        store.add(
+            MemoryItem(
+                item_id=ev.event_id,
+                tier=MemoryTier.EPISODIC,
+                content=ev.payload.get("body", ""),
+                title=ev.payload.get("subject", ev.payload.get("title", "")),
+                created_at=ev.timestamp,
+            )
+        )
+
+    prepper = MeetingPrepper(store, max_items=15)
+    attendees = ["alice", "bob", "carol"]
+    packet = prepper.prepare(
+        meeting_id=args.meeting,
+        meeting_title=f"{args.meeting} prep",
+        attendees=attendees,
+        context_text=args.meeting,
+    )
+
+    if args.json:
+        print(packet.to_json() if hasattr(packet, "to_json") else str(packet))
+    else:
+        print(f"=== Meeting Prep: {args.meeting} ===")
+        print(f"Meeting ID: {packet.meeting_id}")
+        print(f"Title: {packet.meeting_title}")
+        print(f"Attendees: {', '.join(packet.attendee_names)}")
+        print(f"Total items: {packet.total_items}")
+        print(f"Cited sources: {len(packet.cited_sources)}")
+        print(f"Agenda items: {len(packet.agenda_items)}")
+        if packet.agenda_items:
+            print("\nAgenda:")
+            for i, item in enumerate(packet.agenda_items[:5], 1):
+                print(f"  {i}. {item[:60]}")
+    return 0
+
+
+def _cmd_privacy(args: argparse.Namespace) -> int:
+    from .privacy import RedactionMode, detect_pii, redact
+
+    if args.demo:
+        text = (
+            "Contact alice@example.com or call 415-555-0123. "
+            "Card 4532015112830366 was used at 123 Main Street, Springfield."
+        )
+    else:
+        text = args.text or ""
+
+    if not text and not args.demo:
+        print("ERROR: provide text or use --demo", file=sys.stderr)
+        return 1
+
+    matches = detect_pii(text)
+    mode_map = {
+        "mask": RedactionMode.MASK,
+        "hash": RedactionMode.HASH,
+        "remove": RedactionMode.REMOVE,
+    }
+    mode = mode_map[args.mode]
+    redacted = redact(text, matches, mode=mode, hash_salt=args.salt)
+
+    print("=== Privacy Scan ===")
+    print(f"Found {len(matches)} PII matches:")
+    kind_counts: dict[str, int] = {}
+    for m in matches:
+        kind_counts[m.kind.value] = kind_counts.get(m.kind.value, 0) + 1
+    for kind, count in sorted(kind_counts.items()):
+        print(f"  {kind}: {count}")
+    print()
+    print(f"Redacted ({mode.value} mode):")
+    print(redacted)
+    return 0
+
+
+def _cmd_triggers(args: argparse.Namespace) -> int:
+    from .factory import WorkHistoryFactory
+    from .triggers import (
+        TriggerEngine,
+        TriggerKind,
+        TriggerRule,
+        TriggerSeverity,
+    )
+
+    factory = WorkHistoryFactory(seed=args.seed, days=args.days)
+    events, _manifest = factory.generate()
+
+    if not events:
+        print("No events generated.")
+        return 0
+
+    engine = TriggerEngine()
+    now = events[-1].timestamp
+    # Create sample triggers for planted commitments
+    planted = [p for p in factory.planted_items() if p.kind == "commitment"]
+    for i, item in enumerate(planted):
+        engine.add_rule(
+            TriggerRule(
+                rule_id=f"deadline-{i}",
+                kind=TriggerKind.DEADLINE_REMINDER,
+                target_id=item.item_id,
+                fire_at=item.data["due_date"],
+                severity=TriggerSeverity.WARNING,
+                message=f"Deadline approaching: {item.data['description'][:40]}",
+            )
+        )
+
+    fired = engine.tick(now)
+    active = [f for f in fired if not f.suppressed]
+
+    if args.json:
+        import json
+
+        data = [
+            {
+                "rule_id": f.rule_id,
+                "kind": f.kind.value,
+                "target_id": f.target_id,
+                "severity": f.severity.value,
+                "message": f.message,
+                "suppressed": f.suppressed,
+                "suppress_reason": f.suppress_reason,
+            }
+            for f in fired
+        ]
+        print(json.dumps(data, indent=2, sort_keys=True))
+    else:
+        print("=== Proactive Triggers ===")
+        print(f"Total fired: {len(fired)}")
+        print(f"Active: {len(active)}")
+        print(f"Suppressed: {len(fired) - len(active)}")
+        print()
+        for f in active[:10]:
+            print(f"  [{f.severity.value:4s}] {f.kind.value}: {f.message[:55]}")
+        if len(active) > 10:
+            print(f"  ... and {len(active) - 10} more")
 
     return 0
 

@@ -197,3 +197,101 @@ def test_cmd_fold_json(capsys):
     assert "items_before" in data
     assert "items_after" in data
     assert "merges" in data
+
+
+def test_parser_has_asof_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["asof", "--seed", "1", "--days", "5"])
+    assert args.command == "asof"
+
+
+def test_cmd_asof_runs(capsys):
+    rc = main(["asof", "--seed", "42", "--days", "7"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "As-of query" in out
+    assert "Valid on this date" in out
+
+
+def test_cmd_asof_with_date(capsys):
+    rc = main(["asof", "--seed", "42", "--days", "10", "--date", "2025-01-05"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "2025-01-05" in out
+
+
+def test_parser_has_context_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["context", "--budget", "1000"])
+    assert args.command == "context"
+    assert args.budget == 1000
+
+
+def test_cmd_context_runs(capsys):
+    rc = main(["context", "--seed", "42", "--days", "3", "--budget", "500"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Context Pack" in out
+    assert "Items packed" in out
+    assert "Tokens used" in out
+
+
+def test_cmd_context_within_budget(capsys):
+    main(["context", "--seed", "42", "--days", "3", "--budget", "100"])
+    out = capsys.readouterr().out
+    assert "Within budget" in out
+
+
+def test_parser_has_prep_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["prep", "--meeting", "alpha-sync"])
+    assert args.command == "prep"
+    assert args.meeting == "alpha-sync"
+
+
+def test_cmd_prep_runs(capsys):
+    rc = main(["prep", "--seed", "42", "--days", "7", "--meeting", "sync"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Meeting Prep" in out
+    assert "Attendees" in out
+    assert "Agenda" in out
+
+
+def test_parser_has_privacy_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["privacy", "--demo"])
+    assert args.command == "privacy"
+    assert args.demo is True
+
+
+def test_cmd_privacy_demo(capsys):
+    rc = main(["privacy", "--demo"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Privacy Scan" in out
+    assert "PII matches" in out
+    assert "email" in out.lower()
+    assert "Redacted" in out
+
+
+def test_cmd_privacy_hash_mode(capsys):
+    rc = main(["privacy", "--demo", "--mode", "hash", "--salt", "test123"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "pii:" in out or "email" in out.lower()
+
+
+def test_parser_has_triggers_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["triggers", "--seed", "1"])
+    assert args.command == "triggers"
+
+
+def test_cmd_triggers_runs(capsys):
+    rc = main(["triggers", "--seed", "42", "--days", "7"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Proactive Triggers" in out
+    assert "Total fired" in out
+    assert "Active" in out
