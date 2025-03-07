@@ -53,6 +53,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_diff.add_argument("trace_b", help="second trace file")
     p_diff.set_defaults(func=_cmd_diff)
 
+    # ledger
+    p_ledger = sub.add_parser("ledger", help="list commitments and status")
+    p_ledger.add_argument("--seed", type=int, default=42, help="seed for demo data")
+    p_ledger.add_argument("--days", type=int, default=30, help="days of history")
+    p_ledger.add_argument("--status", help="filter by status (open/done/overdue)")
+    p_ledger.add_argument("--json", action="store_true", help="output JSON")
+    p_ledger.set_defaults(func=_cmd_ledger)
+
+    # triage
+    p_triage = sub.add_parser("triage", help="score and rank inbox items")
+    p_triage.add_argument("--seed", type=int, default=42, help="seed for demo data")
+    p_triage.add_argument("--days", type=int, default=14, help="days of history")
+    p_triage.add_argument("--top", type=int, default=10, help="show top N items")
+    p_triage.set_defaults(func=_cmd_triage)
+
+    # fold
+    p_fold = sub.add_parser("fold", help="run nightly consolidation fold")
+    p_fold.add_argument("--seed", type=int, default=42, help="seed for demo data")
+    p_fold.add_argument("--days", type=int, default=30, help="days of history to fold")
+    p_fold.add_argument("--json", action="store_true", help="output JSON fold report")
+    p_fold.set_defaults(func=_cmd_fold)
+
     return parser
 
 
@@ -243,6 +265,140 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     if result["first_mismatch"] is not None:
         print(f"First mismatch at index: {result['first_mismatch']}")
     return 0 if result["equal"] else 1
+
+
+def _cmd_ledger(args: argparse.Namespace) -> int:
+    from .factory import WorkHistoryFactory
+    from .ledger import Commitment, CommitmentLedger, CommitmentStatus
+
+    factory = WorkHistoryFactory(seed=args.seed, days=args.days)
+    _events, _manifest = factory.generate()
+
+    ledger = CommitmentLedger()
+    for item in factory.planted_items():
+        if item.kind == "commitment":
+            c = Commitment(
+                commitment_id=item.item_id,
+                description=item.data["description"],
+                owed_by=item.data["owed_by"],
+                owed_to=item.data["owed_to"],
+                due_date=item.data["due_date"],
+            )
+            ledger.add(c)
+
+    if args.status:
+        status_map = {
+            "open": CommitmentStatus.OPEN,
+            "done": CommitmentStatus.DONE,
+            "cancelled": CommitmentStatus.CANCELLED,
+            "in_progress": CommitmentStatus.IN_PROGRESS,
+        }
+        target = status_map.get(args.status)
+        if target is not None:
+            ledger.by_status(target)
+        else:
+            ledger.by_status(CommitmentStatus.OPEN)
+    else:
+        ledger.by_status(CommitmentStatus.OPEN)
+
+    if args.json:
+        print(ledger.to_json())
+    else:
+        print(ledger.to_markdown())
+        print()
+        print(f"Total: {ledger.total_count()}")
+
+    return 0
+
+
+def _cmd_triage(args: argparse.Namespace) -> int:
+    from .factory import WorkHistoryFactory
+    from .triage import TriageItem, TriageScorer
+
+    factory = WorkHistoryFactory(seed=args.seed, days=args.days)
+    events, _manifest = factory.generate()
+
+    scorer = TriageScorer()
+    now = events[-1].timestamp if events else "2026-01-01T00:00:00+00:00"
+    results = []
+    for ev in events:
+        if ev.event_type not in ("mail_received", "mail_sent"):
+            continue
+        item = TriageItem(
+            item_id=ev.event_id,
+            title=ev.payload.get("subject", "(no subject)"),
+            sender=ev.payload.get("from", "unknown"),
+            received_at=ev.timestamp,
+            content=ev.payload.get("body", ""),
+            has_explicit_ask="?" in ev.payload.get("body", ""),
+            thread_length=1,
+            sender_importance=0.6,
+        )
+        result = scorer.score(item, now=now)
+        results.append((result.score, item, result.reasons))
+
+    results.sort(key=lambda x: -x[0])
+    top_n = results[: args.top]
+
+    print(f"=== Inbox Triage (top {args.top} of {len(results)}) ===")
+    for rank, (score, item, reasons) in enumerate(top_n, 1):
+        reason_str = ", ".join(reasons[:3]) if reasons else "no reasons"
+        print(f"{rank:2d}. [{score:.3f}] {item.title[:55]}")
+        print(f"     from: {item.sender}  ({reason_str})")
+    print()
+    print(f"Scored {len(results)} items.")
+    return 0
+
+
+def _cmd_fold(args: argparse.Namespace) -> int:
+    from .factory import WorkHistoryFactory
+    from .fold import Folder
+    from .memory import MemoryItem, MemoryStore, MemoryTier
+
+    factory = WorkHistoryFactory(seed=args.seed, days=args.days)
+    events, _manifest = factory.generate()
+
+    store = MemoryStore()
+    for i, ev in enumerate(events):
+        store.add(
+            MemoryItem(
+                item_id=f"mem-{i:05d}",
+                tier=MemoryTier.EPISODIC,
+                content=ev.payload.get("subject", ev.payload.get("title", "")),
+                title=ev.payload.get("subject", ev.payload.get("title", "")),
+                created_at=ev.timestamp,
+            )
+        )
+
+    folder = Folder()
+    last_ts = events[-1].timestamp if events else "2026-01-01T00:00:00+00:00"
+    report = folder.fold(store, timestamp=last_ts)
+
+    if args.json:
+        import json
+
+        data = {
+            "fold_id": report.fold_id,
+            "timestamp": report.timestamp,
+            "items_before": report.items_before,
+            "items_after": report.items_after,
+            "merges": len(report.merges),
+            "rejected": len(report.rejected),
+            "new_semantic": len(report.new_semantic),
+            "recurrence_proposals": len(report.recurrence_proposals),
+        }
+        print(json.dumps(data, indent=2, sort_keys=True))
+    else:
+        print(f"=== Fold Report: {report.fold_id} ===")
+        print(f"Timestamp:     {report.timestamp}")
+        print(f"Items before:  {report.items_before}")
+        print(f"Items after:   {report.items_after}")
+        print(f"Merges:        {len(report.merges)}")
+        print(f"Rejected:      {len(report.rejected)}")
+        print(f"New semantic:  {len(report.new_semantic)}")
+        print(f"Playbook props:{len(report.recurrence_proposals)}")
+
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

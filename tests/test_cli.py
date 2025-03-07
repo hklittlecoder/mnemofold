@@ -128,3 +128,72 @@ def test_unknown_command_errors():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["nonexistent_command"])
+
+
+def test_parser_has_ledger_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["ledger", "--seed", "1", "--days", "5"])
+    assert args.command == "ledger"
+    assert args.seed == 1
+
+
+def test_cmd_ledger_runs(capsys):
+    rc = main(["ledger", "--seed", "42", "--days", "10"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Commitment Ledger" in out or "commitment" in out.lower()
+    assert "Total" in out
+
+
+def test_cmd_ledger_json(capsys):
+    main(["ledger", "--seed", "1", "--days", "5", "--json"])
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert "commitments" in data
+    assert len(data["commitments"]) >= 1
+
+
+def test_cmd_ledger_status_filter(capsys):
+    rc = main(["ledger", "--seed", "7", "--days", "10", "--status", "open"])
+    assert rc == 0
+    # Should not crash with status filter
+
+
+def test_parser_has_triage_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["triage", "--seed", "5", "--top", "3"])
+    assert args.command == "triage"
+    assert args.top == 3
+
+
+def test_cmd_triage_runs(capsys):
+    rc = main(["triage", "--seed", "42", "--days", "7", "--top", "5"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Inbox Triage" in out
+    assert "Scored" in out
+
+
+def test_parser_has_fold_subcommand():
+    parser = build_parser()
+    args = parser.parse_args(["fold", "--seed", "3", "--days", "10"])
+    assert args.command == "fold"
+    assert args.days == 10
+
+
+def test_cmd_fold_runs(capsys):
+    rc = main(["fold", "--seed", "42", "--days", "7"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Fold Report" in out
+    assert "Items before" in out
+    assert "Items after" in out
+
+
+def test_cmd_fold_json(capsys):
+    main(["fold", "--seed", "1", "--days", "5", "--json"])
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert "items_before" in data
+    assert "items_after" in data
+    assert "merges" in data
