@@ -8,10 +8,10 @@ references.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from mnemofold.events import Event, EventType, event_id
+from mnemofold.events import Event, EventType
 
 
 @dataclass(slots=True)
@@ -24,8 +24,8 @@ class Episode:
 
     episode_id: str
     title: str
-    start_time: str
-    end_time: str
+    start_time: datetime
+    end_time: datetime
     events: list[Event] = field(default_factory=list)
     tags: set[str] = field(default_factory=set)
     participants: set[str] = field(default_factory=set)
@@ -41,7 +41,7 @@ class Episode:
         self._extract_participants(event)
 
     def _extract_participants(self, event: Event) -> None:
-        d = event.data
+        d = event.content
         if "sender" in d:
             self.participants.add(d["sender"])
         for r in d.get("recipients", []):
@@ -158,7 +158,8 @@ class EpisodeSegmenter:
         sorted_events = sorted(events, key=lambda e: e.timestamp)
         episodes: list[Episode] = []
         current_episode: Episode | None = None
-        last_time: str | None = None
+        current_group: str | None = None
+        last_time: datetime | None = None
 
         for event in sorted_events:
             group_key = self._group_key(event)
@@ -166,34 +167,25 @@ class EpisodeSegmenter:
             if current_episode is None:
                 current_episode = self._start_episode(event)
                 episodes.append(current_episode)
-            elif group_key is not None and group_key != current_episode.tags.get("__group_key__"):
-                # Different thread/meeting -> new episode
-                current_episode = self._start_episode(event)
-                episodes.append(current_episode)
-            elif self._gap_exceeds(last_time, event.timestamp):
-                # Gap too large -> new episode
+            elif (group_key is not None and group_key != current_group) or self._gap_exceeds(
+                last_time, event.timestamp
+            ):
+                # Different thread/meeting or gap too large -> new episode
                 current_episode = self._start_episode(event)
                 episodes.append(current_episode)
             else:
                 current_episode.add_event(event)
 
             if group_key is not None:
-                current_episode.tags.add("__group_key__:" + group_key)
-                if "__group_key__" not in current_episode.tags:
-                    current_episode.tags.add("__group_key__")
-                    current_episode.tags.discard("__group_key__")
-                    current_episode.tags.add(group_key)
+                current_group = group_key
+                current_episode.tags.add(group_key)
 
             last_time = event.timestamp
-
-        # Clean up internal tags
-        for ep in episodes:
-            ep.tags = {t for t in ep.tags if not t.startswith("__")}
 
         return episodes
 
     def _group_key(self, event: Event) -> str | None:
-        d = event.data
+        d = event.content
         if self.group_by_thread and "thread_id" in d:
             return "thread:" + d["thread_id"]
         if self.group_by_meeting and "meeting_id" in d:
@@ -201,7 +193,7 @@ class EpisodeSegmenter:
         return None
 
     def _start_episode(self, event: Event) -> Episode:
-        eid = "ep_" + event_id(event)[:12]
+        eid = "ep_" + event.event_id[:12]
         title = self._derive_title(event)
         ep = Episode(
             episode_id=eid,
@@ -213,7 +205,7 @@ class EpisodeSegmenter:
         return ep
 
     def _derive_title(self, event: Event) -> str:
-        d = event.data
+        d = event.content
         if "subject" in d:
             return d["subject"]
         if "title" in d:
@@ -222,20 +214,9 @@ class EpisodeSegmenter:
             return f"Focus: {d.get('activity', 'work')}"
         return str(event.event_type)
 
-    def _gap_exceeds(self, t1: str | None, t2: str) -> bool:
+    def _gap_exceeds(self, t1: datetime | None, t2: datetime) -> bool:
         if t1 is None:
             return False
-        # Simple string comparison works for ISO-8601 timestamps with same TZ
-        from datetime import datetime, timedelta
-
-        try:
-            dt1 = datetime.fromisoformat(t1)
-            dt2 = datetime.fromisoformat(t2)
-            if dt1.tzinfo is None:
-                dt1 = dt1.replace(tzinfo=UTC)
-            if dt2.tzinfo is None:
-                dt2 = dt2.replace(tzinfo=UTC)
-            delta = dt2 - dt1
-            return delta > timedelta(minutes=self.gap_minutes)
-        except (ValueError, TypeError):
-            return True
+        dt1 = t1 if t1.tzinfo is not None else t1.replace(tzinfo=UTC)
+        dt2 = t2 if t2.tzinfo is not None else t2.replace(tzinfo=UTC)
+        return (dt2 - dt1) > timedelta(minutes=self.gap_minutes)
