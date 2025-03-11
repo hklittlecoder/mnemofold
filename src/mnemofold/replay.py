@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -120,7 +121,7 @@ class TraceRecorder:
     def __enter__(self) -> TraceRecorder:
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()
 
 
@@ -206,11 +207,11 @@ class Replayer:
 
     def replay(
         self,
-        on_event,
-        on_decision=None,
-        on_recall=None,
-        on_receipt=None,
-        on_checkpoint=None,
+        on_event: Callable[[dict[str, Any]], None] | None,
+        on_decision: Callable[[dict[str, Any]], None] | None = None,
+        on_recall: Callable[[dict[str, Any]], None] | None = None,
+        on_receipt: Callable[[dict[str, Any]], None] | None = None,
+        on_checkpoint: Callable[[dict[str, Any]], None] | None = None,
     ) -> int:
         """Replay all entries, invoking the appropriate callback.
 

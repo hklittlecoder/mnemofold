@@ -112,7 +112,7 @@ def render_standup_html(data: StandupData) -> str:
     return "\n".join(parts)
 
 
-def render_work_strip_svg(counts, width=600, height=40):
+def render_work_strip_svg(counts: list[int], width: int = 600, height: int = 40) -> str:
     if not counts:
         return f'<svg width="{width}" height="{height}"></svg>'
     max_val = max(counts) or 1

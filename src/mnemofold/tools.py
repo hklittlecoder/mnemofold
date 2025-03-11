@@ -30,7 +30,7 @@ class ToolSpec:
     max_retries: int = 0
     idempotent: bool = False
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if isinstance(self.side_effect, str):
             self.side_effect = SideEffectClass(self.side_effect)
 
@@ -60,7 +60,7 @@ _TYPE_MAP = {
 }
 
 
-def _check_type(value, type_name):
+def _check_type(value: Any, type_name: str) -> bool:
     expected = _TYPE_MAP.get(type_name)
     if expected is None:
         return True
@@ -69,7 +69,7 @@ def _check_type(value, type_name):
     return isinstance(value, expected)
 
 
-def _retry_delay(attempt, base=0.01, cap=1.0):
+def _retry_delay(attempt: int, base: float = 0.01, cap: float = 1.0) -> float:
     exp = min(base * (2 ** (attempt - 1)), cap)
     return exp + random.uniform(0, exp * 0.5)
 
@@ -77,20 +77,20 @@ def _retry_delay(attempt, base=0.01, cap=1.0):
 @dataclass
 class ToolRegistry:
     _specs: dict[str, ToolSpec] = field(default_factory=dict)
-    _impls: dict[str, Callable] = field(default_factory=dict)
+    _impls: dict[str, Callable[..., Any]] = field(default_factory=dict)
 
-    def register(self, spec, impl):
+    def register(self, spec: ToolSpec, impl: Callable[..., Any]) -> None:
         self._specs[spec.name] = spec
         self._impls[spec.name] = impl
 
-    def get_spec(self, name):
+    def get_spec(self, name: str) -> ToolSpec | None:
         return self._specs.get(name)
 
-    def validate_args(self, name, args):
+    def validate_args(self, name: str, args: dict[str, Any]) -> list[str]:
         spec = self._specs.get(name)
         if spec is None:
             return [f"unknown tool: {name}"]
-        errors = []
+        errors: list[str] = []
         for param in spec.required:
             if param not in args:
                 errors.append(f"missing required parameter: {param}")
@@ -103,7 +103,7 @@ class ToolRegistry:
                     )
         return errors
 
-    def invoke(self, name, args):
+    def invoke(self, name: str, args: dict[str, Any]) -> ToolResult:
         spec = self._specs.get(name)
         if spec is None:
             return ToolResult(tool_name=name, success=False, error=f"unknown tool: {name}")
@@ -140,24 +140,24 @@ class ToolRegistry:
                 retries += 1
                 time.sleep(_retry_delay(retries))
 
-    def _idem_key(self, name, args):
+    def _idem_key(self, name: str, args: dict[str, Any]) -> str:
         payload = {"tool": name, "args": dict(sorted(args.items()))}
         h = hashlib.sha256(str(payload).encode()).hexdigest()
         return f"idem_{h[:16]}"
 
-    def list_tools(self):
+    def list_tools(self) -> list[ToolSpec]:
         return sorted(self._specs.values(), key=lambda s: s.name)
 
 
-def _echo_impl(message=""):
+def _echo_impl(message: str = "") -> str:
     return message
 
 
-def _noop_impl():
+def _noop_impl() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def build_default_registry():
+def build_default_registry() -> ToolRegistry:
     reg = ToolRegistry()
     reg.register(
         ToolSpec(
