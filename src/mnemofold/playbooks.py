@@ -42,16 +42,16 @@ class Playbook:
     derived_from: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if isinstance(self.status, str):
             self.status = PlaybookStatus(self.status)
         if isinstance(self.tags, list):
             self.tags = set(self.tags)
 
-    def total_steps(self):
+    def total_steps(self) -> int:
         return len(self.steps)
 
-    def can_run(self):
+    def can_run(self) -> bool:
         return self.status in {PlaybookStatus.APPROVED, PlaybookStatus.ACTIVE}
 
 
@@ -59,14 +59,14 @@ class Playbook:
 class PlaybookLibrary:
     _playbooks: dict[str, Playbook] = field(default_factory=dict)
 
-    def add(self, pb):
+    def add(self, pb: Playbook) -> None:
         self._playbooks[pb.playbook_id] = pb
 
-    def get(self, pid):
+    def get(self, pid: str) -> Playbook | None:
         return self._playbooks.get(pid)
 
-    def suggest(self, context_tags, top_k=5):
-        scored = []
+    def suggest(self, context_tags: set[str], top_k: int = 5) -> list[Playbook]:
+        scored: list[tuple[Playbook, float]] = []
         for pb in self._playbooks.values():
             if pb.status in {PlaybookStatus.DEPRECATED, PlaybookStatus.REVOKED}:
                 continue
@@ -77,7 +77,7 @@ class PlaybookLibrary:
         scored.sort(key=lambda x: x[1], reverse=True)
         return [pb for pb, _ in scored[:top_k]]
 
-    def approve(self, pid, approver, timestamp):
+    def approve(self, pid: str, approver: str, timestamp: str) -> bool:
         pb = self._playbooks.get(pid)
         if pb is None or pb.status not in {PlaybookStatus.PROPOSED, PlaybookStatus.DRAFT}:
             return False
@@ -86,7 +86,7 @@ class PlaybookLibrary:
         pb.metadata["approved_at"] = timestamp
         return True
 
-    def deprecate(self, pid, reason):
+    def deprecate(self, pid: str, reason: str) -> bool:
         pb = self._playbooks.get(pid)
         if pb is None or pb.status in {PlaybookStatus.DEPRECATED, PlaybookStatus.REVOKED}:
             return False
@@ -94,7 +94,7 @@ class PlaybookLibrary:
         pb.metadata["deprecation_reason"] = reason
         return True
 
-    def create_revision(self, pid, new_steps):
+    def create_revision(self, pid: str, new_steps: list[PlaybookStep]) -> Playbook | None:
         old = self._playbooks.get(pid)
         if old is None:
             return None
@@ -114,10 +114,10 @@ class PlaybookLibrary:
         self.add(new_pb)
         return new_pb
 
-    def by_status(self, status):
+    def by_status(self, status: PlaybookStatus | str) -> list[Playbook]:
         if isinstance(status, str):
             status = PlaybookStatus(status)
         return [pb for pb in self._playbooks.values() if pb.status == status]
 
-    def total_count(self):
+    def total_count(self) -> int:
         return len(self._playbooks)

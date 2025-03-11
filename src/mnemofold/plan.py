@@ -47,11 +47,11 @@ class Plan:
     token_used: int = 0
     step_budget: int = 100
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if isinstance(self.status, str):
             self.status = PlanStatus(self.status)
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
         return {
             "plan_id": self.plan_id,
             "name": self.name,
@@ -77,7 +77,7 @@ class Plan:
         }
 
     @classmethod
-    def from_dict(cls, d):
+    def from_dict(cls, d: dict[str, Any]) -> Plan:
         plan = cls(
             plan_id=d["plan_id"],
             name=d["name"],
@@ -135,7 +135,7 @@ def validate_plan(plan: Plan) -> PlanValidationResult:
         visited: set[str] = set()
         stack: set[str] = set()
 
-        def dfs(sid):
+        def dfs(sid: str) -> bool:
             visited.add(sid)
             stack.add(sid)
             step = next(s for s in plan.steps if s.step_id == sid)
