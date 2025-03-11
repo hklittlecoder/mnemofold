@@ -50,8 +50,8 @@ class MeetingPrep:
         lines.append(f"## Background ({self.total_items} items)")
         lines.append("")
         by_cat: dict[str, list[PrepItem]] = {}
-        for item in self.items:
-            by_cat.setdefault(item.category, []).append(item)
+        for entry in self.items:
+            by_cat.setdefault(entry.category, []).append(entry)
         for cat in sorted(by_cat.keys()):
             lines.append(f"### {cat.title()} ({len(by_cat[cat])})")
             lines.append("")
@@ -85,8 +85,8 @@ class MeetingPrep:
         parts.append("</ol>")
         parts.append(f"<h2>Background ({self.total_items} items)</h2>")
         by_cat: dict[str, list[PrepItem]] = {}
-        for item in self.items:
-            by_cat.setdefault(item.category, []).append(item)
+        for entry in self.items:
+            by_cat.setdefault(entry.category, []).append(entry)
         for cat in sorted(by_cat.keys()):
             parts.append(f"<h3>{html.escape(cat.title())} ({len(by_cat[cat])})</h3>")
             for pitem in by_cat[cat]:
