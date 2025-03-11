@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from . import __version__
 
@@ -448,7 +449,7 @@ def _cmd_asof(args: argparse.Namespace) -> int:
     factory = WorkHistoryFactory(seed=args.seed, days=args.days)
     events, _manifest = factory.generate()
 
-    store = TemporalStore()
+    store: TemporalStore[str] = TemporalStore()
     for i, ev in enumerate(events):
         fid = f"fact-{i:05d}"
         value = ev.payload.get("subject", ev.payload.get("title", ""))
@@ -620,7 +621,7 @@ def _cmd_triggers(args: argparse.Namespace) -> int:
         return 0
 
     engine = TriggerEngine()
-    now = events[-1].timestamp
+    now = _parse_ts(events[-1].timestamp)
     # Create sample triggers for planted commitments
     planted = [p for p in factory.planted_items() if p.kind == "commitment"]
     for i, item in enumerate(planted):
@@ -629,7 +630,7 @@ def _cmd_triggers(args: argparse.Namespace) -> int:
                 rule_id=f"deadline-{i}",
                 kind=TriggerKind.DEADLINE_REMINDER,
                 target_id=item.item_id,
-                fire_at=item.data["due_date"],
+                fire_at=_parse_ts(item.data["due_date"]),
                 severity=TriggerSeverity.WARNING,
                 message=f"Deadline approaching: {item.data['description'][:40]}",
             )
@@ -666,6 +667,12 @@ def _cmd_triggers(args: argparse.Namespace) -> int:
             print(f"  ... and {len(active) - 10} more")
 
     return 0
+
+
+def _parse_ts(raw: str) -> datetime:
+    """Parse an ISO timestamp, assuming UTC when naive (e.g. bare dates)."""
+    dt = datetime.fromisoformat(raw)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -188,11 +188,12 @@ class RetrievalEngine:
         bm25_results = [(i, s) for i, s in bm25_results if s >= min_score]
 
         if tags:
-            bm25_results = [
-                (i, s)
-                for i, s in bm25_results
-                if self.store.get(i) and tags & self.store.get(i).tags
-            ]
+            tag_filtered: list[tuple[str, float]] = []
+            for i, s in bm25_results:
+                item = self.store.get(i)
+                if item is not None and tags & item.tags:
+                    tag_filtered.append((i, s))
+            bm25_results = tag_filtered
 
         # Collect texts for MMR
         texts = {}
