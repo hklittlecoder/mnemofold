@@ -85,7 +85,7 @@ class WorkHistoryFactory:
         self.start_date = datetime(2025, 1, 1, tzinfo=UTC)
         self.personas: list[Persona] = []
         self.projects: list[str] = []
-        self._rng: random.Random | None = None
+        self._rng: random.Random = random.Random(seed)
         self._events: list[SyntheticEvent] = []
         self._planted: list[PlantedItem] = []
 
