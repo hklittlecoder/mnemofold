@@ -1,3 +1,5 @@
 """mnemofold - offline long-term memory framework for personal agents and work assistants."""
 
-__version__ = "0.1.0"
+from ._version import __version__
+
+__all__ = ["__version__"]

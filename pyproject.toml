@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mnemofold"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Offline long-term memory framework for personal agents and work assistants"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -38,6 +38,9 @@ dev = [
 
 [project.scripts]
 mnemofold = "mnemofold.cli:main"
+
+[tool.hatch.version]
+path = "src/mnemofold/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mnemofold"]
