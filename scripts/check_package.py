@@ -34,6 +34,12 @@ def main() -> int:
             return 1
         version = result.stdout.strip()
         print(f"Installed mnemofold {version}")
+        cli = str(venv / "bin" / "mnemofold")
+        cli_result = subprocess.run([cli, "--version"], capture_output=True, text=True)
+        if cli_result.returncode != 0:
+            print("CLI entry point failed:", cli_result.stderr)
+            return 1
+        print(f"CLI entry point OK: {cli_result.stdout.strip()}")
         return 0
 
 
