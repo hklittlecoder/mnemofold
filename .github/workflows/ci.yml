@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Create venv and install dependencies
+        run: |
+          uv venv .venv --python "${{ matrix.python-version }}"
+          uv pip install --python .venv/bin/python -e ".[dev,torch]" \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            --index-strategy unsafe-best-match
+
+      - name: Build wheel
+        run: make build
+
+      - name: Run full test suite
+        run: make test-all
+
+      - name: Check formatting
+        run: make format-check
+
+      - name: Lint and typecheck
+        run: make lint
+
+      - name: Smoke-test built wheel
+        run: .venv/bin/python scripts/check_package.py "$(ls dist/*.whl | head -1)"
