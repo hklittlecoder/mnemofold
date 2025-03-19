@@ -1,5 +1,8 @@
 from datetime import datetime
 
+import pytest
+
+from mnemofold.events import EventType
 from mnemofold.factory import (
     Persona,
     PersonaRole,
@@ -165,3 +168,40 @@ def test_planted_item_dataclass():
     item = PlantedItem("i1", "commitment", {"desc": "x"})
     assert item.item_id == "i1"
     assert item.kind == "commitment"
+
+
+def test_synthetic_event_to_event_conversion():
+    synth = SyntheticEvent(
+        "evt-000001",
+        "mail_sent",
+        "2026-01-02T03:04:05+00:00",
+        {"subject": "hello", "body": "world"},
+    )
+    ev = synth.to_event()
+    assert ev.event_type is EventType.MAIL_SENT
+    assert ev.timestamp == datetime.fromisoformat(synth.timestamp)
+    assert ev.content == {"subject": "hello", "body": "world"}
+
+
+def test_synthetic_event_to_event_id_is_content_addressed():
+    synth = SyntheticEvent("evt-000009", "note", "2026-01-02T00:00:00+00:00", {"text": "x"})
+    ev = synth.to_event()
+    assert ev.event_id != synth.event_id
+    assert ev.event_id == synth.to_event().event_id
+    assert ev.event_id.startswith("evt_")
+
+
+def test_factory_events_convert_to_typed_events():
+    f = WorkHistoryFactory(seed=5, days=14)
+    events, _ = f.generate()
+    typed = [e.to_event() for e in events]
+    assert len(typed) == len(events)
+    for synth, ev in zip(events, typed, strict=True):
+        assert ev.content == synth.payload
+        assert ev.event_id.startswith("evt_")
+
+
+def test_synthetic_event_to_event_rejects_unknown_type():
+    synth = SyntheticEvent("e", "not_a_type", "2026-01-02T00:00:00+00:00", {})
+    with pytest.raises(ValueError):
+        synth.to_event()

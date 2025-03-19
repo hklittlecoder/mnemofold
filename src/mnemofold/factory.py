@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
+from mnemofold.events import Event, EventType
+
 
 class PersonaRole(StrEnum):
     PM = "product_manager"
@@ -48,6 +50,19 @@ class SyntheticEvent:
     event_type: str
     timestamp: str
     payload: dict
+
+    def to_event(self) -> Event:
+        """Convert to a typed, content-addressed Event.
+
+        The content-addressed ``event_id`` is recomputed from the payload,
+        so it differs from the factory-assigned sequential id; callers that
+        need the mapping should keep both.
+        """
+        return Event(
+            EventType(self.event_type),
+            datetime.fromisoformat(self.timestamp),
+            dict(self.payload),
+        )
 
 
 @dataclass
