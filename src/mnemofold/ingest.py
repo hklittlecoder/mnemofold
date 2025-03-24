@@ -7,6 +7,8 @@ references.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -220,3 +222,216 @@ class EpisodeSegmenter:
         dt1 = t1 if t1.tzinfo is not None else t1.replace(tzinfo=UTC)
         dt2 = t2 if t2.tzinfo is not None else t2.replace(tzinfo=UTC)
         return (dt2 - dt1) > timedelta(minutes=self.gap_minutes)
+
+
+# --- Commitment extraction -------------------------------------------------
+
+_ISO_DATE = r"\d{4}-\d{2}-\d{2}"
+
+# (pattern, confidence, direction). Direction decides who owes whom:
+#   self    -> the event actor owes ("I will ...")
+#   request -> the counterparty owes ("please ... by")
+#   task    -> the assignee (or actor) owes ("action item: ...")
+_COMMITMENT_PATTERNS: tuple[tuple[re.Pattern[str], float, str], ...] = (
+    (
+        re.compile(
+            rf"[Ii] owe (?:you|(?P<creditor>[\w.-]+)):?\s*(?P<what>.+?)\s+by\s+(?P<due>{_ISO_DATE})"
+        ),
+        0.95,
+        "self",
+    ),
+    (
+        re.compile(rf"[Ii] will\s+(?P<what>.+?)\s+by\s+(?P<due>{_ISO_DATE})"),
+        0.85,
+        "self",
+    ),
+    (
+        re.compile(rf"[Ii]'ll\s+(?P<what>.+?)\s+by\s+(?P<due>{_ISO_DATE})"),
+        0.8,
+        "self",
+    ),
+    (
+        re.compile(rf"[Pp]lease\s+(?P<what>.+?)\s+by\s+(?P<due>{_ISO_DATE})"),
+        0.7,
+        "request",
+    ),
+    (
+        re.compile(
+            rf"[Aa]ction item:?\s*(?P<what>.+?)(?:\s+by\s+(?P<due>{_ISO_DATE}))?\s*$",
+            re.MULTILINE,
+        ),
+        0.6,
+        "task",
+    ),
+)
+
+_TEXT_FIELDS = ("body", "notes", "content", "text", "subject")
+
+
+@dataclass(slots=True)
+class EvidenceSpan:
+    """Exact location of extracted evidence inside a source event."""
+
+    event_id: str
+    field: str
+    start: int
+    end: int
+    quote: str
+
+    def resolves_in(self, event: Event) -> bool:
+        """Check the span still points at its quoted text (both directions)."""
+        text = event.content.get(self.field)
+        return isinstance(text, str) and text[self.start : self.end] == self.quote
+
+
+@dataclass(slots=True)
+class CommitmentMention:
+    """A commitment signal found in one event: who owes whom what by when."""
+
+    debtor: str
+    creditor: str
+    description: str
+    due: str | None
+    confidence: float
+    evidence: EvidenceSpan
+
+
+def _event_actor(event: Event) -> str:
+    """Best-effort actor of an event (the person who produced it)."""
+    c = event.content
+    for key in ("persona_id", "sender", "author", "assignee", "from"):
+        value = c.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _event_counterparty(event: Event) -> str:
+    """Best-effort counterparty (first recipient/addressee/attendee)."""
+    c = event.content
+    for key in ("recipients", "to", "attendees"):
+        value = c.get(key)
+        if isinstance(value, list) and value:
+            return str(value[0])
+    return ""
+
+
+@dataclass
+class CommitmentExtractor:
+    """Rule-based commitment extraction with auditable evidence spans.
+
+    Two extraction paths, both deterministic:
+
+    * structured: events carrying an explicit ``commitment_ref`` together
+      with a commitment signal (a ``Commitment:`` subject or a
+      ``commitment_ack`` event) yield confidence 1.0 mentions;
+    * textual: transparent regex patterns over text payload fields, each
+      with a fixed confidence reflecting phrase strength.
+
+    Every mention records the exact source span it was derived from, so
+    extraction can be reconstructed against the original event text.
+    """
+
+    min_confidence: float = 0.0
+
+    def extract(self, event: Event) -> list[CommitmentMention]:
+        found: list[CommitmentMention] = []
+        structured = self._from_structured(event)
+        if structured is not None:
+            found.append(structured)
+        actor = _event_actor(event)
+        counter = _event_counterparty(event)
+        for field_name in _TEXT_FIELDS:
+            text = event.content.get(field_name)
+            if not isinstance(text, str):
+                continue
+            for pattern, confidence, direction in _COMMITMENT_PATTERNS:
+                for m in pattern.finditer(text):
+                    found.append(
+                        self._build(m, event, field_name, confidence, direction, actor, counter)
+                    )
+        return self._dedupe(found)
+
+    def extract_all(self, events: Iterable[Event]) -> list[CommitmentMention]:
+        mentions: list[CommitmentMention] = []
+        for event in events:
+            mentions.extend(self.extract(event))
+        return mentions
+
+    def _build(
+        self,
+        m: re.Match[str],
+        event: Event,
+        field_name: str,
+        confidence: float,
+        direction: str,
+        actor: str,
+        counter: str,
+    ) -> CommitmentMention:
+        groups = m.groupdict()
+        what = (groups.get("what") or "").strip().rstrip(".").strip()
+        due = groups.get("due")
+        creditor_named = groups.get("creditor") or ""
+        if direction == "self":
+            debtor, creditor = actor, creditor_named or counter
+        elif direction == "request":
+            debtor, creditor = counter, actor
+        else:
+            debtor = str(event.content.get("assignee") or actor)
+            creditor = counter
+        return CommitmentMention(
+            debtor=debtor,
+            creditor=creditor,
+            description=what,
+            due=due,
+            confidence=confidence,
+            evidence=EvidenceSpan(
+                event_id=event.event_id,
+                field=field_name,
+                start=m.start(),
+                end=m.end(),
+                quote=m.group(0),
+            ),
+        )
+
+    def _from_structured(self, event: Event) -> CommitmentMention | None:
+        ref = event.content.get("commitment_ref")
+        if not isinstance(ref, str) or not ref:
+            return None
+        subject = str(event.content.get("subject", ""))
+        is_ack = event.event_type == EventType.COMMITMENT_ACK
+        if not (is_ack or subject.startswith("Commitment:")):
+            return None
+        description = subject.removeprefix("Commitment:").strip()
+        if not description:
+            description = str(event.content.get("description", "")) or ref
+        due: str | None = None
+        body = str(event.content.get("body", ""))
+        due_match = re.search(rf"\b(?:by|deadline:)\s*({_ISO_DATE})", body, re.IGNORECASE)
+        if due_match:
+            due = due_match.group(1)
+        return CommitmentMention(
+            debtor=_event_actor(event),
+            creditor=_event_counterparty(event),
+            description=description,
+            due=due,
+            confidence=1.0,
+            evidence=EvidenceSpan(
+                event_id=event.event_id,
+                field="commitment_ref",
+                start=0,
+                end=len(ref),
+                quote=ref,
+            ),
+        )
+
+    def _dedupe(self, found: list[CommitmentMention]) -> list[CommitmentMention]:
+        best: dict[tuple[str, str, str, str | None], CommitmentMention] = {}
+        for mention in found:
+            key = (mention.debtor, mention.creditor, mention.description, mention.due)
+            current = best.get(key)
+            if current is None or mention.confidence > current.confidence:
+                best[key] = mention
+        result = [m for m in best.values() if m.confidence >= self.min_confidence]
+        result.sort(key=lambda m: (m.evidence.field, m.evidence.start, m.description))
+        return result
