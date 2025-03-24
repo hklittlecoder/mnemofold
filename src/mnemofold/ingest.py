@@ -42,6 +42,37 @@ class Episode:
         # Extract participants
         self._extract_participants(event)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize deterministically; events become verified envelopes.
+
+        Tags and participants are sorted so equivalent episodes produce
+        byte-identical JSON regardless of insertion order.
+        """
+        return {
+            "episode_id": self.episode_id,
+            "title": self.title,
+            "start_time": self.start_time.isoformat(),
+            "end_time": self.end_time.isoformat(),
+            "events": [event.to_envelope() for event in self.events],
+            "tags": sorted(self.tags),
+            "participants": sorted(self.participants),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Episode:
+        """Rebuild an episode, re-verifying every embedded event envelope."""
+        episode = cls(
+            episode_id=data["episode_id"],
+            title=data["title"],
+            start_time=datetime.fromisoformat(data["start_time"]),
+            end_time=datetime.fromisoformat(data["end_time"]),
+            tags=set(data.get("tags", ())),
+            participants=set(data.get("participants", ())),
+        )
+        for envelope in data.get("events", ()):
+            episode.events.append(Event.from_envelope(envelope))
+        return episode
+
     def _extract_participants(self, event: Event) -> None:
         d = event.content
         if "sender" in d:

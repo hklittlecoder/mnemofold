@@ -1,6 +1,9 @@
 """Tests for ingestion: episode segmentation and entity resolution."""
 
+import json
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from mnemofold.events import Event, EventType
 from mnemofold.factory import WorkHistoryFactory
@@ -9,6 +12,7 @@ from mnemofold.ingest import (
     CommitmentExtractor,
     DecisionExtractor,
     Entity,
+    Episode,
     EpisodeSegmenter,
 )
 
@@ -391,3 +395,39 @@ class TestDecisionExtractor:
         event = Event(EventType.NOTE, T0, {"text": "Decision: pick a vendor later"})
         assert DecisionExtractor(min_confidence=0.8).extract(event) == []
         assert len(DecisionExtractor(min_confidence=0.7).extract(event)) == 1
+
+
+class TestEpisodeSerialization:
+    def _episode(self) -> Episode:
+        events = [
+            _mail(T0, "t1", subject="kickoff"),
+            Event.note(T0 + timedelta(minutes=5), text="write design doc", author="alice"),
+        ]
+        episodes = EpisodeSegmenter().segment(events)
+        assert len(episodes) == 1
+        return episodes[0]
+
+    def test_roundtrip_restores_equal_episode(self):
+        episode = self._episode()
+        assert Episode.from_dict(episode.to_dict()) == episode
+
+    def test_serialization_is_canonical(self):
+        episode = self._episode()
+        first = json.dumps(episode.to_dict(), sort_keys=True)
+        second = json.dumps(episode.to_dict(), sort_keys=True)
+        assert first == second
+        payload = episode.to_dict()
+        assert payload["tags"] == sorted(payload["tags"])
+        assert payload["participants"] == sorted(payload["participants"])
+
+    def test_tampered_event_payload_is_rejected(self):
+        payload = self._episode().to_dict()
+        payload["events"][0]["content"]["subject"] = "tampered"
+        with pytest.raises(ValueError, match="mismatch"):
+            Episode.from_dict(payload)
+
+    def test_missing_required_field_raises(self):
+        payload = self._episode().to_dict()
+        del payload["episode_id"]
+        with pytest.raises(KeyError):
+            Episode.from_dict(payload)
