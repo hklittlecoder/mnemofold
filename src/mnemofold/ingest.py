@@ -435,3 +435,121 @@ class CommitmentExtractor:
         result = [m for m in best.values() if m.confidence >= self.min_confidence]
         result.sort(key=lambda m: (m.evidence.field, m.evidence.start, m.description))
         return result
+
+
+# --- Decision extraction ----------------------------------------------------
+
+_DECISION_PATTERNS: tuple[tuple[re.Pattern[str], float], ...] = (
+    (
+        re.compile(
+            r"[Ww]e decided to\s+(?P<what>.+?)(?:\s+because\s+(?P<why>.+?))?\s*$",
+            re.MULTILINE,
+        ),
+        0.85,
+    ),
+    (
+        re.compile(
+            r"[Ww]e chose\s+(?P<what>.+?)(?:\s+because\s+(?P<why>.+?))?\s*$",
+            re.MULTILINE,
+        ),
+        0.8,
+    ),
+    (
+        re.compile(r"[Dd]ecision:\s*(?P<what>.+?)$", re.MULTILINE),
+        0.75,
+    ),
+)
+
+
+@dataclass(slots=True)
+class DecisionMention:
+    """A decision signal found in one event."""
+
+    title: str
+    project: str
+    rationale: str
+    confidence: float
+    evidence: EvidenceSpan
+
+
+@dataclass
+class DecisionExtractor:
+    """Rule-based decision extraction mirroring the commitment extractor.
+
+    Structured path: events carrying a ``decision_ref`` with a
+    ``Decision record:`` title yield confidence 1.0 mentions.  Textual
+    path: transparent patterns over text payload fields.
+    """
+
+    min_confidence: float = 0.0
+
+    def extract(self, event: Event) -> list[DecisionMention]:
+        found: list[DecisionMention] = []
+        structured = self._from_structured(event)
+        if structured is not None:
+            found.append(structured)
+        project = str(event.content.get("project", ""))
+        for field_name in _TEXT_FIELDS:
+            text = event.content.get(field_name)
+            if not isinstance(text, str):
+                continue
+            for pattern, confidence in _DECISION_PATTERNS:
+                for m in pattern.finditer(text):
+                    groups = m.groupdict()
+                    found.append(
+                        DecisionMention(
+                            title=(groups.get("what") or "").strip().rstrip(".").strip(),
+                            project=project,
+                            rationale=(groups.get("why") or "").strip(),
+                            confidence=confidence,
+                            evidence=EvidenceSpan(
+                                event_id=event.event_id,
+                                field=field_name,
+                                start=m.start(),
+                                end=m.end(),
+                                quote=m.group(0),
+                            ),
+                        )
+                    )
+        return self._dedupe(found)
+
+    def extract_all(self, events: Iterable[Event]) -> list[DecisionMention]:
+        mentions: list[DecisionMention] = []
+        for event in events:
+            mentions.extend(self.extract(event))
+        return mentions
+
+    def _from_structured(self, event: Event) -> DecisionMention | None:
+        ref = event.content.get("decision_ref")
+        if not isinstance(ref, str) or not ref:
+            return None
+        title = str(event.content.get("title", ""))
+        if not title.startswith("Decision record:"):
+            return None
+        project = str(event.content.get("project", ""))
+        if not project:
+            project = title.removeprefix("Decision record:").strip()
+        return DecisionMention(
+            title=title,
+            project=project,
+            rationale=str(event.content.get("content", "")),
+            confidence=1.0,
+            evidence=EvidenceSpan(
+                event_id=event.event_id,
+                field="decision_ref",
+                start=0,
+                end=len(ref),
+                quote=ref,
+            ),
+        )
+
+    def _dedupe(self, found: list[DecisionMention]) -> list[DecisionMention]:
+        best: dict[tuple[str, str], DecisionMention] = {}
+        for mention in found:
+            key = (mention.title, mention.project)
+            current = best.get(key)
+            if current is None or mention.confidence > current.confidence:
+                best[key] = mention
+        result = [m for m in best.values() if m.confidence >= self.min_confidence]
+        result.sort(key=lambda m: (m.evidence.field, m.evidence.start, m.title))
+        return result

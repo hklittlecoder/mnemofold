@@ -7,6 +7,7 @@ from mnemofold.factory import WorkHistoryFactory
 from mnemofold.ingest import (
     AliasTable,
     CommitmentExtractor,
+    DecisionExtractor,
     Entity,
     EpisodeSegmenter,
 )
@@ -293,3 +294,100 @@ class TestCommitmentExtractorOnFactory:
         key = lambda m: (m.debtor, m.creditor, m.description, m.due, m.confidence)  # noqa: E731
         assert [key(m) for m in first] == [key(m) for m in second]
         assert len(first) >= 2
+
+
+class TestDecisionExtractor:
+    def test_structured_decision_record(self):
+        event = Event(
+            EventType.NOTE,
+            T0,
+            {
+                "title": "Decision record: alpha",
+                "content": "Decision made about alpha.",
+                "decision_ref": "planted-decision-0",
+                "project": "alpha",
+            },
+        )
+        mentions = DecisionExtractor().extract(event)
+        assert len(mentions) == 1
+        m = mentions[0]
+        assert m.confidence == 1.0
+        assert m.project == "alpha"
+        assert m.evidence.field == "decision_ref"
+        assert m.evidence.resolves_in(event)
+
+    def test_structured_requires_decision_title(self):
+        event = Event(
+            EventType.NOTE,
+            T0,
+            {"title": "Random note", "text": "hello", "decision_ref": "d1"},
+        )
+        assert DecisionExtractor().extract(event) == []
+
+    def test_we_decided_to_pattern_with_rationale(self):
+        event = Event(
+            EventType.MAIL_SENT,
+            T0,
+            {
+                "subject": "recap",
+                "body": "We decided to postpone the launch because of budget cuts",
+                "project": "beta",
+            },
+        )
+        mentions = DecisionExtractor().extract(event)
+        assert len(mentions) == 1
+        assert mentions[0].title == "postpone the launch"
+        assert mentions[0].rationale == "of budget cuts"
+        assert mentions[0].project == "beta"
+        assert mentions[0].confidence == 0.85
+
+    def test_decision_colon_pattern(self):
+        event = Event(EventType.NOTE, T0, {"text": "Decision: use postgres for the ledger"})
+        mentions = DecisionExtractor().extract(event)
+        assert len(mentions) == 1
+        assert mentions[0].title == "use postgres for the ledger"
+        assert mentions[0].confidence == 0.75
+
+    def test_plain_text_yields_no_decisions(self):
+        event = Event(EventType.NOTE, T0, {"text": "standup notes about weather"})
+        assert DecisionExtractor().extract(event) == []
+
+    def test_evidence_span_resolves_in_source(self):
+        event = Event(
+            EventType.CHAT_MESSAGE,
+            T0,
+            {"text": "btw we chose option B", "channel": "eng"},
+        )
+        mentions = DecisionExtractor().extract(event)
+        assert len(mentions) == 1
+        assert mentions[0].evidence.resolves_in(event)
+        assert (
+            event.content["text"][mentions[0].evidence.start : mentions[0].evidence.end]
+            == mentions[0].evidence.quote
+        )
+
+    def test_recovers_all_planted_decisions_from_factory(self):
+        factory = WorkHistoryFactory(seed=42, days=90)
+        events, manifest = factory.generate()
+        assert manifest.planted_decisions >= 2
+        typed = [ev.to_event() for ev in events]
+        by_ref: dict[str, Event] = {}
+        for ev in typed:
+            ref = ev.content.get("decision_ref")
+            if isinstance(ref, str):
+                by_ref[ref] = ev
+        extractor = DecisionExtractor()
+        planted = [p for p in factory.planted_items() if p.kind == "decision"]
+        for p in planted:
+            ev = by_ref[p.item_id]
+            matches = [
+                m
+                for m in extractor.extract(ev)
+                if m.project == p.data["project"] and m.confidence == 1.0
+            ]
+            assert matches, f"planted {p.item_id} not recovered"
+
+    def test_min_confidence_filters_textual_mentions(self):
+        event = Event(EventType.NOTE, T0, {"text": "Decision: pick a vendor later"})
+        assert DecisionExtractor(min_confidence=0.8).extract(event) == []
+        assert len(DecisionExtractor(min_confidence=0.7).extract(event)) == 1
