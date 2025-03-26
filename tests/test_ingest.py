@@ -14,6 +14,7 @@ from mnemofold.ingest import (
     Entity,
     Episode,
     EpisodeSegmenter,
+    MergeRecord,
     SegmentConfig,
 )
 
@@ -468,3 +469,58 @@ class TestSegmentConfig:
         events = [_mail(T0 + timedelta(minutes=i), "t1") for i in range(8)]
         segmenter = EpisodeSegmenter.from_config(SegmentConfig(max_episode_events=0))
         assert len(segmenter.segment(events)) == 1
+
+
+class TestAliasMerge:
+    def _table(self) -> AliasTable:
+        table = AliasTable()
+        table.add_entity(
+            Entity(entity_id="p1", entity_type="person", name="Alice Zhang", aliases=["alice"])
+        )
+        table.add_entity(
+            Entity(entity_id="p1b", entity_type="person", name="A. Zhang", aliases=["azhang"])
+        )
+        return table
+
+    def test_merge_repoints_aliases_to_target(self):
+        table = self._table()
+        record: MergeRecord = table.merge("p1b", "p1", reason="same person")
+        assert table.resolve("azhang") == "p1"
+        assert table.resolve("a. zhang") == "p1"
+        assert table.get("p1b") is None
+        assert record.reason == "same person"
+        assert "azhang" in record.aliases_moved
+
+    def test_merge_history_and_redirect(self):
+        table = self._table()
+        table.merge("p1b", "p1")
+        assert table.merged_into("p1b") == "p1"
+        assert table.merged_into("p1") is None
+        history = table.merge_history()
+        assert len(history) == 1
+        assert history[0].source_id == "p1b"
+        assert history[0].target_id == "p1"
+
+    def test_merge_chains_resolve_to_final_target(self):
+        table = self._table()
+        table.add_entity(Entity(entity_id="p1c", entity_type="person", name="Al Zhang"))
+        table.merge("p1c", "p1b")
+        table.merge("p1b", "p1")
+        assert table.merged_into("p1c") == "p1"
+        assert table.resolve("al zhang") == "p1"
+
+    def test_merge_unknown_or_self_raises(self):
+        table = self._table()
+        with pytest.raises(ValueError, match="unknown source"):
+            table.merge("nope", "p1")
+        with pytest.raises(ValueError, match="unknown target"):
+            table.merge("p1", "nope")
+        with pytest.raises(ValueError, match="itself"):
+            table.merge("p1", "p1")
+
+    def test_target_aliases_untouched_by_merge(self):
+        table = self._table()
+        table.merge("p1b", "p1")
+        assert table.resolve("alice") == "p1"
+        assert table.resolve("Alice Zhang") == "p1"
+        assert len(table.all_entities()) == 1

@@ -98,6 +98,16 @@ class Entity:
     properties: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class MergeRecord:
+    """Provenance for one entity merge: what moved and why."""
+
+    source_id: str
+    target_id: str
+    reason: str
+    aliases_moved: tuple[str, ...]
+
+
 @dataclass(slots=True)
 class AliasTable:
     """Maps aliases to canonical entity IDs.
@@ -107,6 +117,8 @@ class AliasTable:
 
     _aliases: dict[str, str] = field(default_factory=dict)  # alias -> entity_id
     _entities: dict[str, Entity] = field(default_factory=dict)
+    _merged: dict[str, str] = field(default_factory=dict)  # source_id -> target_id
+    _history: list[MergeRecord] = field(default_factory=list)
 
     def add_entity(self, entity: Entity) -> None:
         """Register an entity with its name and aliases."""
@@ -143,6 +155,62 @@ class AliasTable:
                 if sim >= threshold:
                     candidates.append((id1, id2, sim))
         return candidates
+
+    def merged_into(self, entity_id: str) -> str | None:
+        """Final target of a retired entity id, following merge chains.
+
+        Returns None when the id was never merged away.
+        """
+        seen: set[str] = set()
+        current = entity_id
+        while current in self._merged and current not in seen:
+            seen.add(current)
+            current = self._merged[current]
+        return current if current != entity_id else None
+
+    def merge(self, source_id: str, target_id: str, reason: str = "") -> MergeRecord:
+        """Fold the source entity into the target and record the merge.
+
+        Every alias of the source (including its canonical name) starts
+        resolving to the target; the source entity itself retires, but its
+        id keeps redirecting through ``merged_into`` so resolution stays
+        auditable in both directions.
+        """
+        if source_id == target_id:
+            raise ValueError("cannot merge an entity into itself")
+        source = self._entities.get(source_id)
+        if source is None:
+            raise ValueError(f"unknown source entity: {source_id}")
+        if self._entities.get(target_id) is None:
+            raise ValueError(f"unknown target entity: {target_id}")
+        moved: set[str] = set()
+        for alias, owner in list(self._aliases.items()):
+            if owner == source_id:
+                self._aliases[alias] = target_id
+                moved.add(alias)
+        for alias in source.aliases:
+            key = alias.lower()
+            if key not in self._aliases:
+                self._aliases[key] = target_id
+                moved.add(key)
+        name_key = source.name.lower()
+        if name_key not in self._aliases:
+            self._aliases[name_key] = target_id
+            moved.add(name_key)
+        del self._entities[source_id]
+        self._merged[source_id] = target_id
+        record = MergeRecord(
+            source_id=source_id,
+            target_id=target_id,
+            reason=reason,
+            aliases_moved=tuple(sorted(moved)),
+        )
+        self._history.append(record)
+        return record
+
+    def merge_history(self) -> list[MergeRecord]:
+        """All merges applied so far, in application order."""
+        return list(self._history)
 
 
 def _name_similarity(a: str, b: str) -> float:
