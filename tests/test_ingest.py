@@ -11,6 +11,7 @@ from mnemofold.ingest import (
     AliasTable,
     CommitmentExtractor,
     DecisionExtractor,
+    DocumentReferenceExtractor,
     Entity,
     Episode,
     EpisodeSegmenter,
@@ -524,3 +525,72 @@ class TestAliasMerge:
         assert table.resolve("alice") == "p1"
         assert table.resolve("Alice Zhang") == "p1"
         assert len(table.all_entities()) == 1
+
+
+class TestDocumentReferenceExtractor:
+    def test_structured_doc_id_from_document_change(self):
+        event = Event.document_change(
+            T0, doc_id="doc-alpha-7", title="plan", change_type="edit", author="bob"
+        )
+        refs = DocumentReferenceExtractor().extract(event)
+        assert len(refs) == 1
+        assert refs[0].doc_id == "doc-alpha-7"
+        assert refs[0].kind == "structured"
+        assert refs[0].evidence.resolves_in(event)
+
+    def test_uri_reference_in_body(self):
+        event = Event.mail_received(
+            T0,
+            sender="a",
+            subject="spec",
+            body="see doc://notes.q3 for context",
+            recipients=["b"],
+        )
+        refs = DocumentReferenceExtractor().extract(event)
+        assert [r.doc_id for r in refs] == ["notes.q3"]
+        assert refs[0].kind == "uri"
+        assert refs[0].evidence.resolves_in(event)
+
+    def test_bare_text_reference(self):
+        event = Event.note(T0, text="updated doc-alpha-7 yesterday", author="a")
+        refs = DocumentReferenceExtractor().extract(event)
+        assert [r.doc_id for r in refs] == ["doc-alpha-7"]
+        assert refs[0].kind == "text"
+
+    def test_structured_wins_over_text_mention(self):
+        event = Event(
+            EventType.DOCUMENT_CHANGE,
+            T0,
+            {"doc_id": "doc-alpha-7", "body": "again about doc-alpha-7"},
+        )
+        refs = DocumentReferenceExtractor().extract(event)
+        assert len(refs) == 1
+        assert refs[0].kind == "structured"
+
+    def test_uri_span_shadows_inner_text_match(self):
+        event = Event.note(T0, text="open doc://doc-beta-3 now", author="a")
+        refs = DocumentReferenceExtractor().extract(event)
+        assert len(refs) == 1
+        assert refs[0].doc_id == "doc-beta-3"
+        assert refs[0].kind == "uri"
+
+    def test_multiple_docs_sorted_by_id(self):
+        event = Event.note(T0, text="doc-zeta-1 and doc-alpha-2 matter", author="a")
+        refs = DocumentReferenceExtractor().extract(event)
+        assert [r.doc_id for r in refs] == ["doc-alpha-2", "doc-zeta-1"]
+
+    def test_events_without_references_yield_nothing(self):
+        event = Event.note(T0, text="no links here", author="a")
+        assert DocumentReferenceExtractor().extract(event) == []
+
+    def test_factory_document_events_all_resolve(self):
+        factory = WorkHistoryFactory(seed=5, days=30)
+        events, _ = factory.generate()
+        typed = [ev.to_event() for ev in events]
+        doc_events = [e for e in typed if e.event_type == EventType.DOCUMENT_CHANGE]
+        assert doc_events, "factory should emit document changes"
+        extractor = DocumentReferenceExtractor()
+        for event in doc_events:
+            refs = extractor.extract(event)
+            assert refs and refs[0].kind == "structured"
+            assert refs[0].evidence.resolves_in(event)

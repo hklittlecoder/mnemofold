@@ -721,3 +721,103 @@ class DecisionExtractor:
             sort_key=lambda m: (m.evidence.field, m.evidence.start, m.title),
             min_confidence=self.min_confidence,
         )
+
+
+# --- Document reference extraction ------------------------------------------
+
+_DOC_TEXT_REF = re.compile(r"\bdoc-[A-Za-z0-9]+-\d+\b")
+_DOC_URI_REF = re.compile(r"\bdoc://([A-Za-z0-9_.-]+)")
+
+# Lower number wins when the same doc id is seen through several paths.
+_DOC_KIND_PRIORITY = {"structured": 0, "uri": 1, "text": 2}
+
+
+@dataclass(slots=True)
+class DocumentReference:
+    """A link from one event to one document node."""
+
+    doc_id: str
+    kind: str  # structured | uri | text
+    evidence: EvidenceSpan
+
+
+@dataclass
+class DocumentReferenceExtractor:
+    """Collects document links so ingestion can wire events to doc nodes.
+
+    Three deterministic paths, in decreasing precedence:
+
+    * structured: the event's own ``doc_id`` field (document changes);
+    * uri: ``doc://<id>`` references inside text fields;
+    * text: bare ``doc-<project>-<n>`` identifiers inside text fields.
+
+    One reference per (event, doc id) survives; its evidence span always
+    resolves inside the source event.
+    """
+
+    def extract(self, event: Event) -> list[DocumentReference]:
+        best: dict[str, DocumentReference] = {}
+
+        def offer(ref: DocumentReference) -> None:
+            current = best.get(ref.doc_id)
+            if current is None or _DOC_KIND_PRIORITY[ref.kind] < _DOC_KIND_PRIORITY[current.kind]:
+                best[ref.doc_id] = ref
+
+        doc_id = event.content.get("doc_id")
+        if isinstance(doc_id, str) and doc_id:
+            offer(
+                DocumentReference(
+                    doc_id=doc_id,
+                    kind="structured",
+                    evidence=EvidenceSpan(
+                        event_id=event.event_id,
+                        field="doc_id",
+                        start=0,
+                        end=len(doc_id),
+                        quote=doc_id,
+                    ),
+                )
+            )
+        for field_name in _TEXT_FIELDS:
+            text = event.content.get(field_name)
+            if not isinstance(text, str):
+                continue
+            covered: list[range] = []
+            for m in _DOC_URI_REF.finditer(text):
+                covered.append(range(m.start(), m.end()))
+                offer(
+                    DocumentReference(
+                        doc_id=m.group(1),
+                        kind="uri",
+                        evidence=EvidenceSpan(
+                            event_id=event.event_id,
+                            field=field_name,
+                            start=m.start(),
+                            end=m.end(),
+                            quote=m.group(0),
+                        ),
+                    )
+                )
+            for m in _DOC_TEXT_REF.finditer(text):
+                if any(m.start() in span for span in covered):
+                    continue  # already captured as part of a doc:// uri
+                offer(
+                    DocumentReference(
+                        doc_id=m.group(0),
+                        kind="text",
+                        evidence=EvidenceSpan(
+                            event_id=event.event_id,
+                            field=field_name,
+                            start=m.start(),
+                            end=m.end(),
+                            quote=m.group(0),
+                        ),
+                    )
+                )
+        return [best[doc] for doc in sorted(best)]
+
+    def extract_all(self, events: Iterable[Event]) -> list[DocumentReference]:
+        refs: list[DocumentReference] = []
+        for event in events:
+            refs.extend(self.extract(event))
+        return refs
