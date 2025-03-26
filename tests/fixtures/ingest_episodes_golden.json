@@ -1,0 +1,175 @@
+[
+  {
+    "end_time": "2025-03-10T09:40:00+00:00",
+    "episode_id": "ep_evt_98b9c7c6",
+    "events": [
+      {
+        "content": {
+          "body": "",
+          "message_id": "",
+          "recipients": [
+            "bob"
+          ],
+          "sender": "alice",
+          "subject": "kickoff",
+          "thread_id": "t1"
+        },
+        "content_checksum": "98b9c7c696d2ac05bb709b095ed5cfc4b90d399646c11e5c365082e96f71fe1f",
+        "event_id": "evt_98b9c7c696d2ac05",
+        "event_type": "mail_received",
+        "schema_version": 1,
+        "timestamp": "2025-03-10T09:00:00+00:00"
+      },
+      {
+        "content": {
+          "body": "sounds good",
+          "message_id": "",
+          "recipients": [
+            "alice"
+          ],
+          "sender": "bob",
+          "subject": "kickoff",
+          "thread_id": "t1"
+        },
+        "content_checksum": "47b95bd93cce4f3137a3b4ae38e266d2f2c1f3973b6b8ef082b0ac70cd25a516",
+        "event_id": "evt_47b95bd93cce4f31",
+        "event_type": "mail_received",
+        "schema_version": 1,
+        "timestamp": "2025-03-10T09:20:00+00:00"
+      },
+      {
+        "content": {
+          "author": "alice",
+          "note_id": "",
+          "text": "write design doc"
+        },
+        "content_checksum": "9e5644849b64369232540e3e96c86006aa6807fef451829ab651ab29a6bd9cb3",
+        "event_id": "evt_9e5644849b643692",
+        "event_type": "note",
+        "schema_version": 1,
+        "timestamp": "2025-03-10T09:40:00+00:00"
+      }
+    ],
+    "participants": [
+      "alice",
+      "bob"
+    ],
+    "start_time": "2025-03-10T09:00:00+00:00",
+    "tags": [
+      "thread:t1"
+    ],
+    "title": "kickoff"
+  },
+  {
+    "end_time": "2025-03-10T13:00:00+00:00",
+    "episode_id": "ep_evt_c2af442f",
+    "events": [
+      {
+        "content": {
+          "body": "",
+          "message_id": "",
+          "recipients": [
+            "alice"
+          ],
+          "sender": "carol",
+          "subject": "budget",
+          "thread_id": "t2"
+        },
+        "content_checksum": "c2af442f3661244591187eb7a995972814e7fc825dc3606dbf6b84332d11d5e8",
+        "event_id": "evt_c2af442f36612445",
+        "event_type": "mail_received",
+        "schema_version": 1,
+        "timestamp": "2025-03-10T12:00:00+00:00"
+      },
+      {
+        "content": {
+          "author": "bob",
+          "change_type": "edit",
+          "diff_summary": "",
+          "doc_id": "doc-alpha-7",
+          "title": "plan"
+        },
+        "content_checksum": "f8e0cdf99728afdf15f767c555d7be0e3c5d78b00192d993486b23a2d18a459f",
+        "event_id": "evt_f8e0cdf99728afdf",
+        "event_type": "document_change",
+        "schema_version": 1,
+        "timestamp": "2025-03-10T12:10:00+00:00"
+      },
+      {
+        "content": {
+          "due_date": "",
+          "owner": "alice",
+          "previous_status": "",
+          "status": "in_progress",
+          "task_id": "tk-1",
+          "title": "draft spec"
+        },
+        "content_checksum": "f9d0889442481cd118b22f012e313502b8c40d1c43db65dfe3dd847663d77a70",
+        "event_id": "evt_f9d0889442481cd1",
+        "event_type": "task_update",
+        "schema_version": 1,
+        "timestamp": "2025-03-10T13:00:00+00:00"
+      }
+    ],
+    "participants": [
+      "alice",
+      "bob",
+      "carol"
+    ],
+    "start_time": "2025-03-10T12:00:00+00:00",
+    "tags": [
+      "thread:t2"
+    ],
+    "title": "budget"
+  },
+  {
+    "end_time": "2025-03-11T09:00:00+00:00",
+    "episode_id": "ep_evt_3e4f7d35",
+    "events": [
+      {
+        "content": {
+          "duration_minutes": 90,
+          "tags": [],
+          "topic": "deep work"
+        },
+        "content_checksum": "3e4f7d35e8101486df5b680f96b3115f560ba17a9c23b8bc695912ec00f69fb9",
+        "event_id": "evt_3e4f7d35e8101486",
+        "event_type": "focus_block",
+        "schema_version": 1,
+        "timestamp": "2025-03-11T09:00:00+00:00"
+      }
+    ],
+    "participants": [],
+    "start_time": "2025-03-11T09:00:00+00:00",
+    "tags": [],
+    "title": "Focus: work"
+  },
+  {
+    "end_time": "2025-03-11T10:35:00+00:00",
+    "episode_id": "ep_evt_cd165509",
+    "events": [
+      {
+        "content": {
+          "body": "lgtm",
+          "channel": "eng",
+          "message_id": "",
+          "sender": "bob",
+          "thread_id": "chat1"
+        },
+        "content_checksum": "cd165509d30c803cb10e355ea86d8784f81df19a5b626f9b57ff665f771fdea8",
+        "event_id": "evt_cd165509d30c803c",
+        "event_type": "chat_message",
+        "schema_version": 1,
+        "timestamp": "2025-03-11T10:35:00+00:00"
+      }
+    ],
+    "participants": [
+      "bob"
+    ],
+    "start_time": "2025-03-11T10:35:00+00:00",
+    "tags": [
+      "thread:chat1"
+    ],
+    "title": "chat_message"
+  }
+]
