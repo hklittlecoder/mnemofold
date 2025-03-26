@@ -167,6 +167,37 @@ def _name_similarity(a: str, b: str) -> float:
     return intersection / union if union else 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class SegmentConfig:
+    """Declarative, serializable rules for episode segmentation.
+
+    ``max_episode_events`` bounds episode size (0 means unbounded);
+    oversized episodes are split even when the gap rule would keep them
+    together, so downstream context packing sees predictable granularity.
+    """
+
+    gap_minutes: int = 60
+    max_episode_events: int = 0
+    group_by_thread: bool = True
+    group_by_meeting: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "gap_minutes": self.gap_minutes,
+            "max_episode_events": self.max_episode_events,
+            "group_by_thread": self.group_by_thread,
+            "group_by_meeting": self.group_by_meeting,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SegmentConfig:
+        known = set(cls.__dataclass_fields__)
+        unknown = sorted(set(data) - known)
+        if unknown:
+            raise ValueError(f"unknown segment config keys: {unknown}")
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+
 @dataclass
 class EpisodeSegmenter:
     """Segments events into episodes using configurable gap rules.
@@ -179,6 +210,17 @@ class EpisodeSegmenter:
     gap_minutes: int = 60
     group_by_thread: bool = True
     group_by_meeting: bool = True
+    max_episode_events: int = 0
+
+    @classmethod
+    def from_config(cls, config: SegmentConfig) -> EpisodeSegmenter:
+        """Build a segmenter from a declarative config."""
+        return cls(
+            gap_minutes=config.gap_minutes,
+            group_by_thread=config.group_by_thread,
+            group_by_meeting=config.group_by_meeting,
+            max_episode_events=config.max_episode_events,
+        )
 
     def segment(self, events: list[Event]) -> list[Episode]:
         """Segment a list of events into episodes.
@@ -200,10 +242,12 @@ class EpisodeSegmenter:
             if current_episode is None:
                 current_episode = self._start_episode(event)
                 episodes.append(current_episode)
-            elif (group_key is not None and group_key != current_group) or self._gap_exceeds(
-                last_time, event.timestamp
+            elif (
+                (group_key is not None and group_key != current_group)
+                or self._gap_exceeds(last_time, event.timestamp)
+                or self._is_full(current_episode)
             ):
-                # Different thread/meeting or gap too large -> new episode
+                # Different thread/meeting, gap too large, or size cap -> new episode
                 current_episode = self._start_episode(event)
                 episodes.append(current_episode)
             else:
@@ -224,6 +268,9 @@ class EpisodeSegmenter:
         if self.group_by_meeting and "meeting_id" in d:
             return "meeting:" + d["meeting_id"]
         return None
+
+    def _is_full(self, episode: Episode) -> bool:
+        return self.max_episode_events > 0 and len(episode.events) >= self.max_episode_events
 
     def _start_episode(self, event: Event) -> Episode:
         eid = "ep_" + event.event_id[:12]

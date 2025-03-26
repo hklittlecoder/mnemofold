@@ -14,6 +14,7 @@ from mnemofold.ingest import (
     Entity,
     Episode,
     EpisodeSegmenter,
+    SegmentConfig,
 )
 
 T0 = datetime(2025, 3, 10, 9, 0, tzinfo=UTC)
@@ -431,3 +432,39 @@ class TestEpisodeSerialization:
         del payload["episode_id"]
         with pytest.raises(KeyError):
             Episode.from_dict(payload)
+
+
+class TestSegmentConfig:
+    def test_from_config_matches_direct_construction(self):
+        config = SegmentConfig(gap_minutes=30, max_episode_events=4, group_by_meeting=False)
+        built = EpisodeSegmenter.from_config(config)
+        assert built.gap_minutes == 30
+        assert built.max_episode_events == 4
+        assert built.group_by_thread is True
+        assert built.group_by_meeting is False
+
+    def test_config_dict_roundtrip(self):
+        config = SegmentConfig(gap_minutes=45, max_episode_events=10)
+        assert SegmentConfig.from_dict(config.to_dict()) == config
+
+    def test_unknown_config_key_is_rejected(self):
+        with pytest.raises(ValueError, match="unknown segment config"):
+            SegmentConfig.from_dict({"gap_minutes": 30, "typo": 1})
+
+    def test_max_events_splits_long_thread(self):
+        events = [_mail(T0 + timedelta(minutes=5 * i), "t1") for i in range(5)]
+        segmenter = EpisodeSegmenter.from_config(SegmentConfig(max_episode_events=2))
+        episodes = segmenter.segment(events)
+        assert [len(e.events) for e in episodes] == [2, 2, 1]
+
+    def test_exact_cap_keeps_single_episode(self):
+        events = [_mail(T0 + timedelta(minutes=i), "t1") for i in range(2)]
+        segmenter = EpisodeSegmenter.from_config(SegmentConfig(max_episode_events=2))
+        episodes = segmenter.segment(events)
+        assert len(episodes) == 1
+        assert len(episodes[0].events) == 2
+
+    def test_max_events_zero_means_unbounded(self):
+        events = [_mail(T0 + timedelta(minutes=i), "t1") for i in range(8)]
+        segmenter = EpisodeSegmenter.from_config(SegmentConfig(max_episode_events=0))
+        assert len(segmenter.segment(events)) == 1
