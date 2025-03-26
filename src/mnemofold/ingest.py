@@ -8,10 +8,10 @@ references.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, TypeVar
 
 from mnemofold.events import Event, EventType
 
@@ -370,6 +370,32 @@ class EpisodeSegmenter:
         return (dt2 - dt1) > timedelta(minutes=self.gap_minutes)
 
 
+_MentionT = TypeVar("_MentionT")
+
+
+def _dedupe_mentions(
+    found: list[_MentionT],
+    key: Callable[[_MentionT], tuple[Any, ...]],
+    confidence_of: Callable[[_MentionT], float],
+    sort_key: Callable[[_MentionT], tuple[Any, ...]],
+    min_confidence: float,
+) -> list[_MentionT]:
+    """Keep the highest-confidence mention per key, then filter and sort.
+
+    Shared by the commitment and decision extractors so both dedupe with
+    identical, deterministic semantics.
+    """
+    best: dict[tuple[Any, ...], _MentionT] = {}
+    for mention in found:
+        mention_key = key(mention)
+        current = best.get(mention_key)
+        if current is None or confidence_of(mention) > confidence_of(current):
+            best[mention_key] = mention
+    kept = [m for m in best.values() if confidence_of(m) >= min_confidence]
+    kept.sort(key=sort_key)
+    return kept
+
+
 # --- Commitment extraction -------------------------------------------------
 
 _ISO_DATE = r"\d{4}-\d{2}-\d{2}"
@@ -572,15 +598,13 @@ class CommitmentExtractor:
         )
 
     def _dedupe(self, found: list[CommitmentMention]) -> list[CommitmentMention]:
-        best: dict[tuple[str, str, str, str | None], CommitmentMention] = {}
-        for mention in found:
-            key = (mention.debtor, mention.creditor, mention.description, mention.due)
-            current = best.get(key)
-            if current is None or mention.confidence > current.confidence:
-                best[key] = mention
-        result = [m for m in best.values() if m.confidence >= self.min_confidence]
-        result.sort(key=lambda m: (m.evidence.field, m.evidence.start, m.description))
-        return result
+        return _dedupe_mentions(
+            found,
+            key=lambda m: (m.debtor, m.creditor, m.description, m.due),
+            confidence_of=lambda m: m.confidence,
+            sort_key=lambda m: (m.evidence.field, m.evidence.start, m.description),
+            min_confidence=self.min_confidence,
+        )
 
 
 # --- Decision extraction ----------------------------------------------------
@@ -690,12 +714,10 @@ class DecisionExtractor:
         )
 
     def _dedupe(self, found: list[DecisionMention]) -> list[DecisionMention]:
-        best: dict[tuple[str, str], DecisionMention] = {}
-        for mention in found:
-            key = (mention.title, mention.project)
-            current = best.get(key)
-            if current is None or mention.confidence > current.confidence:
-                best[key] = mention
-        result = [m for m in best.values() if m.confidence >= self.min_confidence]
-        result.sort(key=lambda m: (m.evidence.field, m.evidence.start, m.title))
-        return result
+        return _dedupe_mentions(
+            found,
+            key=lambda m: (m.title, m.project),
+            confidence_of=lambda m: m.confidence,
+            sort_key=lambda m: (m.evidence.field, m.evidence.start, m.title),
+            min_confidence=self.min_confidence,
+        )
