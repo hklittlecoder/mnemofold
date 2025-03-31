@@ -877,3 +877,64 @@ class DocumentReferenceExtractor:
         for event in events:
             refs.extend(self.extract(event))
         return refs
+
+
+# --- Cited reconstruction ----------------------------------------------------
+
+_TRANSCRIPT_CITATION = re.compile(r"^\((?P<event_id>evt_[0-9a-f]+)#(?P<field>\w+)\)")
+
+
+@dataclass(slots=True)
+class ReconstructedSpan:
+    """One cited piece of an episode's source text."""
+
+    event_id: str
+    field: str
+    quote: str
+
+
+@dataclass
+class EpisodeReconstructor:
+    """Rebuilds readable, fully cited transcripts from episodes.
+
+    The transcript is the inverse of segmentation: every non-empty text
+    field of every event becomes one cited span, and each transcript line
+    carries the event id it came from, so a reader (or an audit) can walk
+    from the reconstruction back to the exact source payload.
+    """
+
+    max_quote_chars: int = 240
+    fields: tuple[str, ...] = _TEXT_FIELDS
+
+    def spans(self, episode: Episode) -> list[ReconstructedSpan]:
+        spans: list[ReconstructedSpan] = []
+        for event in episode.events:
+            for field_name in self.fields:
+                text = event.content.get(field_name)
+                if isinstance(text, str) and text.strip():
+                    spans.append(
+                        ReconstructedSpan(
+                            event_id=event.event_id,
+                            field=field_name,
+                            quote=text[: self.max_quote_chars],
+                        )
+                    )
+        return spans
+
+    def transcript(self, episode: Episode) -> str:
+        """Markdown transcript; every content line cites (event_id#field)."""
+        lines = [f"# {episode.title}", ""]
+        for span in self.spans(episode):
+            quote = " ".join(span.quote.split())
+            lines.append(f"- ({span.event_id}#{span.field}) {quote}")
+        return "\n".join(lines) + "\n"
+
+    def cited_event_ids(self, transcript: str) -> list[str]:
+        """Event ids cited by a transcript, in order of first citation."""
+        seen: dict[str, None] = {}
+        for line in transcript.splitlines():
+            body = line.removeprefix("- ")
+            m = _TRANSCRIPT_CITATION.match(body)
+            if m:
+                seen.setdefault(m.group("event_id"), None)
+        return list(seen)

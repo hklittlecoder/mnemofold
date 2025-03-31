@@ -8,12 +8,14 @@ import pytest
 from mnemofold.events import Event, EventType
 from mnemofold.factory import WorkHistoryFactory
 from mnemofold.ingest import (
+    _TEXT_FIELDS,
     AliasTable,
     CommitmentExtractor,
     DecisionExtractor,
     DocumentReferenceExtractor,
     Entity,
     Episode,
+    EpisodeReconstructor,
     EpisodeSegmenter,
     MergeRecord,
     SegmentConfig,
@@ -754,3 +756,74 @@ class TestDocumentReferenceEdgeCases:
         assert len(refs) == 3
         for ref in refs:
             assert ref.evidence.resolves_in(event)
+
+
+class TestEpisodeReconstructor:
+    def _episode(self) -> Episode:
+        events = [
+            Event.mail_received(
+                T0,
+                sender="alice",
+                subject="kickoff",
+                body="we need the parser",
+                recipients=["bob"],
+                thread_id="t1",
+            ),
+            Event.note(T0 + timedelta(minutes=5), text="   ", author="bob"),
+            Event.note(T0 + timedelta(minutes=6), text="ok, on it", author="bob"),
+        ]
+        episodes = EpisodeSegmenter().segment(events)
+        assert len(episodes) == 1
+        return episodes[0]
+
+    def test_spans_quote_source_prefix(self):
+        episode = self._episode()
+        by_id = {event.event_id: event for event in episode.events}
+        spans = EpisodeReconstructor().spans(episode)
+        assert spans
+        for span in spans:
+            source = by_id[span.event_id].content[span.field]
+            assert source.startswith(span.quote)
+
+    def test_blank_text_fields_are_skipped(self):
+        spans = EpisodeReconstructor().spans(self._episode())
+        assert all(span.quote.strip() for span in spans)
+        # subject + body of the mail, text of the non-blank note
+        assert len(spans) == 3
+
+    def test_quotes_truncated_to_limit(self):
+        long_note = Event.note(T0, text="x" * 500, author="a")
+        episode = EpisodeSegmenter().segment([long_note])[0]
+        spans = EpisodeReconstructor(max_quote_chars=100).spans(episode)
+        assert len(spans[0].quote) == 100
+
+    def test_transcript_round_trips_event_ids(self):
+        episode = self._episode()
+        reconstructor = EpisodeReconstructor()
+        transcript = reconstructor.transcript(episode)
+        expected: dict[str, None] = {}
+        for event in episode.events:
+            if any(
+                isinstance(event.content.get(f), str) and event.content[f].strip()
+                for f in _TEXT_FIELDS
+            ):
+                expected.setdefault(event.event_id, None)
+        assert reconstructor.cited_event_ids(transcript) == list(expected)
+
+    def test_every_span_gets_a_cited_line(self):
+        episode = self._episode()
+        reconstructor = EpisodeReconstructor()
+        transcript = reconstructor.transcript(episode)
+        content_lines = [ln for ln in transcript.splitlines() if ln.startswith("- (")]
+        assert len(content_lines) == len(reconstructor.spans(episode))
+
+    def test_transcript_starts_with_episode_title(self):
+        episode = self._episode()
+        transcript = EpisodeReconstructor().transcript(episode)
+        assert transcript.startswith(f"# {episode.title}\n")
+
+    def test_reconstruction_is_deterministic(self):
+        episode = self._episode()
+        first = EpisodeReconstructor().transcript(episode)
+        second = EpisodeReconstructor().transcript(episode)
+        assert first == second
