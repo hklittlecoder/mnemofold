@@ -1,7 +1,7 @@
 """Tests for ingestion: episode segmentation and entity resolution."""
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -17,6 +17,7 @@ from mnemofold.ingest import (
     EpisodeSegmenter,
     MergeRecord,
     SegmentConfig,
+    resolve_relative_due,
 )
 
 T0 = datetime(2025, 3, 10, 9, 0, tzinfo=UTC)
@@ -594,3 +595,81 @@ class TestDocumentReferenceExtractor:
             refs = extractor.extract(event)
             assert refs and refs[0].kind == "structured"
             assert refs[0].evidence.resolves_in(event)
+
+
+class TestRelativeDueResolution:
+    # 2025-03-10 is a Monday.
+    MONDAY = datetime(2025, 3, 10, 9, 0, tzinfo=UTC)
+
+    def _mail(self, body: str, ts: datetime | None = None) -> Event:
+        return Event.mail_received(
+            ts or self.MONDAY,
+            sender="alice",
+            subject="s",
+            body=body,
+            recipients=["bob"],
+            thread_id="t",
+        )
+
+    def _due(self, body: str, ts: datetime | None = None) -> str | None:
+        mentions = CommitmentExtractor().extract(self._mail(body, ts))
+        assert len(mentions) == 1
+        return mentions[0].due
+
+    def test_by_friday_resolves_to_next_friday(self):
+        assert self._due("I will send the report by friday") == "2025-03-14"
+
+    def test_weekday_matching_today_rolls_to_next_week(self):
+        assert self._due("I will ship it by monday") == "2025-03-17"
+
+    def test_tomorrow_and_eod(self):
+        assert self._due("I will push the fix by tomorrow") == "2025-03-11"
+        assert self._due("I will push the fix by eod") == "2025-03-10"
+
+    def test_phrase_is_case_insensitive(self):
+        assert self._due("I will send it by Tomorrow") == "2025-03-11"
+
+    def test_counted_days_without_by(self):
+        assert self._due("I will send the draft in 3 days") == "2025-03-13"
+
+    def test_counted_weeks(self):
+        assert self._due("I will finish the audit in 2 weeks") == "2025-03-24"
+
+    def test_next_week_is_following_monday(self):
+        assert self._due("I will reopen the topic by next week") == "2025-03-17"
+
+    def test_end_of_week_is_next_friday(self):
+        mentions = CommitmentExtractor().extract(
+            self._mail("Please review the spec by end of week")
+        )
+        assert len(mentions) == 1
+        assert mentions[0].due == "2025-03-14"
+        assert mentions[0].debtor == "bob"
+
+    def test_action_item_relative_due(self):
+        event = Event(
+            EventType.MEETING_HELD,
+            self.MONDAY,
+            {
+                "notes": "Action item: update risk log by friday",
+                "author": "carol",
+                "attendees": ["carol", "dave"],
+            },
+        )
+        mentions = CommitmentExtractor().extract(event)
+        assert len(mentions) == 1
+        assert mentions[0].due == "2025-03-14"
+
+    def test_iso_due_path_unchanged(self):
+        assert self._due("I will send the report by 2025-04-01") == "2025-04-01"
+
+    def test_event_local_day_is_used_not_utc(self):
+        tokyo = timezone(timedelta(hours=9))
+        ts = datetime(2025, 3, 10, 0, 30, tzinfo=tokyo)  # 2025-03-09 15:30 UTC
+        assert self._due("I will send it by tomorrow", ts) == "2025-03-11"
+
+    def test_resolver_rejects_unknown_phrase(self):
+        assert resolve_relative_due("noon sharp", self.MONDAY) is None
+
+    def test_resolver_normalizes_whitespace(self):
+        assert resolve_relative_due("  End   Of   Week ", self.MONDAY) == "2025-03-14"

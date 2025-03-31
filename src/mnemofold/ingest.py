@@ -400,36 +400,90 @@ def _dedupe_mentions(
 
 _ISO_DATE = r"\d{4}-\d{2}-\d{2}"
 
+# Relative due phrases, resolved against the event timestamp's local day.
+_RELATIVE_DUE = (
+    r"tomorrow|eod|monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+    r"|next\s+week|end\s+of\s+week"
+)
+_DUE = rf"(?P<due>{_ISO_DATE}|(?i:{_RELATIVE_DUE}))"
+_COUNTED_DUE = r"(?P<due>in\s+\d{1,3}\s+(?:days?|weeks?))"
+
+_WEEKDAY_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+
+def resolve_relative_due(phrase: str, now: datetime) -> str | None:
+    """Resolve a relative due phrase to an ISO date, or None if unknown.
+
+    Deterministic rules (documented for auditability):
+
+    * ``tomorrow`` -> the day after the event's local day;
+    * ``eod`` -> the event's local day;
+    * a weekday name -> the next occurrence strictly after the event day;
+    * ``next week`` -> Monday of the following week;
+    * ``end of week`` -> the next Friday strictly after the event day;
+    * ``in N day(s)/week(s)`` -> the event day plus N days/weeks.
+    """
+    normalized = " ".join(phrase.lower().split())
+    day = now.date()
+    if normalized == "tomorrow":
+        return (day + timedelta(days=1)).isoformat()
+    if normalized == "eod":
+        return day.isoformat()
+    if normalized in _WEEKDAY_INDEX:
+        delta = (_WEEKDAY_INDEX[normalized] - day.weekday()) % 7 or 7
+        return (day + timedelta(days=delta)).isoformat()
+    if normalized == "next week":
+        return (day + timedelta(days=7 - day.weekday())).isoformat()
+    if normalized == "end of week":
+        return (day + timedelta(days=(4 - day.weekday()) % 7 or 7)).isoformat()
+    counted = re.fullmatch(r"in (\d{1,3}) (days?|weeks?)", normalized)
+    if counted:
+        units = 7 if counted.group(2).startswith("week") else 1
+        return (day + timedelta(days=int(counted.group(1)) * units)).isoformat()
+    return None
+
+
 # (pattern, confidence, direction). Direction decides who owes whom:
 #   self    -> the event actor owes ("I will ...")
 #   request -> the counterparty owes ("please ... by")
 #   task    -> the assignee (or actor) owes ("action item: ...")
 _COMMITMENT_PATTERNS: tuple[tuple[re.Pattern[str], float, str], ...] = (
     (
-        re.compile(
-            rf"[Ii] owe (?:you|(?P<creditor>[\w.-]+)):?\s*(?P<what>.+?)\s+by\s+(?P<due>{_ISO_DATE})"
-        ),
+        re.compile(rf"[Ii] owe (?:you|(?P<creditor>[\w.-]+)):?\s*(?P<what>.+?)\s+by\s+{_DUE}"),
         0.95,
         "self",
     ),
     (
-        re.compile(rf"[Ii] will\s+(?P<what>.+?)\s+by\s+(?P<due>{_ISO_DATE})"),
+        re.compile(rf"[Ii] will\s+(?P<what>.+?)\s+by\s+{_DUE}"),
         0.85,
         "self",
     ),
     (
-        re.compile(rf"[Ii]'ll\s+(?P<what>.+?)\s+by\s+(?P<due>{_ISO_DATE})"),
+        re.compile(rf"[Ii] will\s+(?P<what>.+?)\s+{_COUNTED_DUE}\.?\s*$", re.MULTILINE),
+        0.85,
+        "self",
+    ),
+    (
+        re.compile(rf"[Ii]'ll\s+(?P<what>.+?)\s+by\s+{_DUE}"),
         0.8,
         "self",
     ),
     (
-        re.compile(rf"[Pp]lease\s+(?P<what>.+?)\s+by\s+(?P<due>{_ISO_DATE})"),
+        re.compile(rf"[Pp]lease\s+(?P<what>.+?)\s+by\s+{_DUE}"),
         0.7,
         "request",
     ),
     (
         re.compile(
-            rf"[Aa]ction item:?\s*(?P<what>.+?)(?:\s+by\s+(?P<due>{_ISO_DATE}))?\s*$",
+            rf"[Aa]ction item:?\s*(?P<what>.+?)(?:\s+by\s+{_DUE})?\s*$",
             re.MULTILINE,
         ),
         0.6,
@@ -543,6 +597,8 @@ class CommitmentExtractor:
         groups = m.groupdict()
         what = (groups.get("what") or "").strip().rstrip(".").strip()
         due = groups.get("due")
+        if due is not None and not re.fullmatch(_ISO_DATE, due):
+            due = resolve_relative_due(due, event.timestamp)
         creditor_named = groups.get("creditor") or ""
         if direction == "self":
             debtor, creditor = actor, creditor_named or counter
