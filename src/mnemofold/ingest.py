@@ -218,10 +218,10 @@ def _name_similarity(a: str, b: str) -> float:
 
     Based on the Jaccard similarity of character bigrams.
     """
-    if a == b:
-        return 1.0
     if not a or not b:
         return 0.0
+    if a == b:
+        return 1.0
 
     def bigrams(s: str) -> set[str]:
         return {s[i : i + 2] for i in range(len(s) - 1)}

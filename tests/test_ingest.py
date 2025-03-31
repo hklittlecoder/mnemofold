@@ -17,6 +17,7 @@ from mnemofold.ingest import (
     EpisodeSegmenter,
     MergeRecord,
     SegmentConfig,
+    _name_similarity,
     resolve_relative_due,
 )
 
@@ -673,3 +674,83 @@ class TestRelativeDueResolution:
 
     def test_resolver_normalizes_whitespace(self):
         assert resolve_relative_due("  End   Of   Week ", self.MONDAY) == "2025-03-14"
+
+
+class TestNameSimilarity:
+    def test_identical_names_score_one(self):
+        assert _name_similarity("alice", "alice") == 1.0
+
+    def test_empty_names_score_zero(self):
+        assert _name_similarity("", "alice") == 0.0
+        assert _name_similarity("alice", "") == 0.0
+        assert _name_similarity("", "") == 0.0
+
+    def test_single_characters_have_no_bigrams(self):
+        assert _name_similarity("a", "b") == 0.0
+
+    def test_disjoint_names_score_zero(self):
+        assert _name_similarity("abcd", "wxyz") == 0.0
+
+    def test_similar_names_score_between_bounds(self):
+        score = _name_similarity("alice zhang", "alice zhao")
+        assert 0.0 < score < 1.0
+
+    def test_similarity_is_symmetric(self):
+        assert _name_similarity("abc", "bcd") == _name_similarity("bcd", "abc")
+
+
+class TestMentionOrdering:
+    def test_mentions_sorted_by_span_position(self):
+        event = Event.mail_received(
+            T0,
+            sender="alice",
+            subject="s",
+            body="Please sign the form by 2025-02-01. I will send the draft by 2025-02-05.",
+            recipients=["bob"],
+            thread_id="t",
+        )
+        mentions = CommitmentExtractor().extract(event)
+        assert len(mentions) == 2
+        starts = [m.evidence.start for m in mentions]
+        assert starts == sorted(starts)
+        assert mentions[0].debtor == "bob"
+        assert mentions[1].debtor == "alice"
+
+    def test_stronger_pattern_wins_for_same_claim(self):
+        event = Event.mail_received(
+            T0,
+            sender="alice",
+            subject="s",
+            body=(
+                "I owe you: ship the parser by 2025-02-01 and I will ship the parser by 2025-02-01"
+            ),
+            recipients=["bob"],
+            thread_id="t",
+        )
+        mentions = CommitmentExtractor().extract(event)
+        ship = [m for m in mentions if m.description == "ship the parser"]
+        assert len(ship) == 1
+        assert ship[0].confidence == 0.95
+
+
+class TestDocumentReferenceEdgeCases:
+    def test_same_doc_in_two_fields_keeps_first_field(self):
+        event = Event(
+            EventType.MAIL_RECEIVED,
+            T0,
+            {"subject": "doc-alpha-1 recap", "body": "about doc-alpha-1", "sender": "a"},
+        )
+        refs = DocumentReferenceExtractor().extract(event)
+        assert len(refs) == 1
+        assert refs[0].evidence.field == "body"
+
+    def test_all_evidence_spans_resolve(self):
+        event = Event.note(
+            T0,
+            text="compare doc://spec.v2 with doc-alpha-3 and doc-beta-9",
+            author="a",
+        )
+        refs = DocumentReferenceExtractor().extract(event)
+        assert len(refs) == 3
+        for ref in refs:
+            assert ref.evidence.resolves_in(event)
