@@ -7,6 +7,8 @@ references.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -938,3 +940,122 @@ class EpisodeReconstructor:
             if m:
                 seen.setdefault(m.group("event_id"), None)
         return list(seen)
+
+
+# --- Ingestion pipeline facade ------------------------------------------------
+
+
+@dataclass(slots=True)
+class IngestStats:
+    """Counts summarizing one ingestion run."""
+
+    event_count: int
+    episode_count: int
+    entity_count: int
+    commitment_count: int
+    decision_count: int
+    document_reference_count: int
+
+
+@dataclass(slots=True)
+class IngestResult:
+    """Everything one ingestion run produced, with a stable digest."""
+
+    episodes: list[Episode]
+    entities: list[Entity]
+    commitments: list[CommitmentMention]
+    decisions: list[DecisionMention]
+    documents: list[DocumentReference]
+    event_count: int
+
+    def stats(self) -> IngestStats:
+        return IngestStats(
+            event_count=self.event_count,
+            episode_count=len(self.episodes),
+            entity_count=len(self.entities),
+            commitment_count=len(self.commitments),
+            decision_count=len(self.decisions),
+            document_reference_count=len(self.documents),
+        )
+
+    def digest(self) -> str:
+        """SHA-256 over the canonical summary of this result.
+
+        Equal inputs and configuration always produce the same digest;
+        confidence values are quantized so the digest stays stable across
+        platforms.
+        """
+        payload = {
+            "events": self.event_count,
+            "episodes": [e.episode_id for e in self.episodes],
+            "entities": [entity.entity_id for entity in self.entities],
+            "commitments": [
+                [m.debtor, m.creditor, m.description, m.due, round(m.confidence, 6)]
+                for m in self.commitments
+            ],
+            "decisions": [[m.title, m.project, round(m.confidence, 6)] for m in self.decisions],
+            "documents": [[r.doc_id, r.kind] for r in self.documents],
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@dataclass
+class IngestPipeline:
+    """Runs the full ingestion chain over a batch of events.
+
+    Stages: deterministic ordering -> episode segmentation -> entity
+    harvest -> commitment / decision / document extraction. The pipeline
+    is pure: the same events and configuration always yield the same
+    ``IngestResult`` digest.
+    """
+
+    segmenter: EpisodeSegmenter = field(default_factory=EpisodeSegmenter)
+    commitments: CommitmentExtractor = field(default_factory=CommitmentExtractor)
+    decisions: DecisionExtractor = field(default_factory=DecisionExtractor)
+    documents: DocumentReferenceExtractor = field(default_factory=DocumentReferenceExtractor)
+    aliases: AliasTable = field(default_factory=AliasTable)
+
+    def run(self, events: Iterable[Event]) -> IngestResult:
+        ordered = sorted(events, key=lambda e: (e.timestamp, e.event_id))
+        episodes = self.segmenter.segment(ordered)
+        entities = self._harvest_entities(ordered)
+        return IngestResult(
+            episodes=episodes,
+            entities=entities,
+            commitments=self.commitments.extract_all(ordered),
+            decisions=self.decisions.extract_all(ordered),
+            documents=self.documents.extract_all(ordered),
+            event_count=len(ordered),
+        )
+
+    def _harvest_entities(self, events: list[Event]) -> list[Entity]:
+        people: set[str] = set()
+        projects: set[str] = set()
+        for event in events:
+            content = event.content
+            for key in ("sender", "author", "assignee", "owner", "persona_id"):
+                value = content.get(key)
+                if isinstance(value, str) and value:
+                    people.add(value)
+            for key in ("recipients", "attendees"):
+                value = content.get(key)
+                if isinstance(value, list):
+                    people.update(str(item) for item in value if item)
+            project = content.get("project")
+            if isinstance(project, str) and project:
+                projects.add(project)
+        entities: list[Entity] = []
+        for name in sorted(people):
+            entities.append(self._register(f"person:{name}", "person", name))
+        for name in sorted(projects):
+            entities.append(self._register(f"project:{name}", "project", name))
+        return entities
+
+    def _register(self, entity_id: str, entity_type: str, name: str) -> Entity:
+        existing = self.aliases.get(entity_id)
+        if existing is not None:
+            return existing
+        entity = Entity(entity_id=entity_id, entity_type=entity_type, name=name)
+        self.aliases.add_entity(entity)
+        return entity

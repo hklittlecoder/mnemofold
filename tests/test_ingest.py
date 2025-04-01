@@ -17,6 +17,7 @@ from mnemofold.ingest import (
     Episode,
     EpisodeReconstructor,
     EpisodeSegmenter,
+    IngestPipeline,
     MergeRecord,
     SegmentConfig,
     _name_similarity,
@@ -827,3 +828,77 @@ class TestEpisodeReconstructor:
         first = EpisodeReconstructor().transcript(episode)
         second = EpisodeReconstructor().transcript(episode)
         assert first == second
+
+
+class TestIngestPipeline:
+    def _events(self) -> list[Event]:
+        return [
+            Event(
+                EventType.MAIL_SENT,
+                T0,
+                {
+                    "persona_id": "alice",
+                    "subject": "Commitment: send report",
+                    "body": "I owe you: send report by 2025-03-14.",
+                    "recipients": ["bob"],
+                    "thread_id": "t1",
+                    "commitment_ref": "c1",
+                    "project": "alpha",
+                },
+            ),
+            Event.note(
+                T0 + timedelta(minutes=30),
+                text="Decision: use sqlite for the journal",
+                author="bob",
+            ),
+            Event.document_change(
+                T0 + timedelta(hours=2),
+                doc_id="doc-alpha-3",
+                title="spec",
+                change_type="create",
+                author="alice",
+            ),
+        ]
+
+    def test_pipeline_counts_every_stage(self):
+        result = IngestPipeline().run(self._events())
+        stats = result.stats()
+        assert stats.event_count == 3
+        assert stats.episode_count == 2
+        assert stats.commitment_count == 1
+        assert stats.decision_count == 1
+        assert stats.document_reference_count == 1
+
+    def test_entities_harvested_and_registered(self):
+        pipeline = IngestPipeline()
+        result = pipeline.run(self._events())
+        ids = {entity.entity_id for entity in result.entities}
+        assert {"person:alice", "person:bob", "project:alpha"} <= ids
+        assert pipeline.aliases.resolve("alice") == "person:alice"
+
+    def test_double_run_produces_same_digest(self):
+        first = IngestPipeline().run(self._events())
+        second = IngestPipeline().run(self._events())
+        assert first.digest() == second.digest()
+
+    def test_digest_changes_with_input(self):
+        baseline = IngestPipeline().run(self._events())
+        altered = self._events()
+        altered.pop()
+        assert IngestPipeline().run(altered).digest() != baseline.digest()
+
+    def test_rerun_reuses_registered_entities(self):
+        pipeline = IngestPipeline()
+        first = pipeline.run(self._events())
+        second = pipeline.run(self._events())
+        assert [e.entity_id for e in first.entities] == [e.entity_id for e in second.entities]
+        assert len(pipeline.aliases.all_entities()) == len(first.entities)
+
+    def test_commitment_from_planted_reference_has_full_confidence(self):
+        result = IngestPipeline().run(self._events())
+        assert len(result.commitments) == 1
+        mention = result.commitments[0]
+        assert mention.confidence == 1.0
+        assert mention.debtor == "alice"
+        assert mention.creditor == "bob"
+        assert mention.due == "2025-03-14"
