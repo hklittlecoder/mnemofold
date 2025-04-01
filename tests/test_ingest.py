@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -936,3 +937,73 @@ class TestFactoryPartitionProperties:
         one = IngestPipeline().run(self._factory_events(seed=3, days=60))
         other = IngestPipeline().run(self._factory_events(seed=4, days=60))
         assert one.digest() != other.digest()
+
+
+class TestDaySegmentation:
+    NY = ZoneInfo("America/New_York")
+
+    def _event(self, ts: datetime, thread: str) -> Event:
+        return Event.mail_received(ts, sender="a", subject="s", recipients=["b"], thread_id=thread)
+
+    def _segmenter(self, tz: str = "America/New_York") -> EpisodeSegmenter:
+        return EpisodeSegmenter.from_config(SegmentConfig(mode="day", day_tz=tz))
+
+    def test_same_local_day_groups_across_large_gaps(self):
+        events = [
+            self._event(datetime(2025, 3, 10, 8, 0, tzinfo=self.NY), "t1"),
+            self._event(datetime(2025, 3, 10, 18, 0, tzinfo=self.NY), "t1"),
+        ]
+        episodes = self._segmenter().segment(events)
+        assert len(episodes) == 1
+        assert "day:2025-03-10" in episodes[0].tags
+
+    def test_midnight_crossing_splits_days(self):
+        events = [
+            self._event(datetime(2025, 3, 10, 23, 30, tzinfo=self.NY), "t1"),
+            self._event(datetime(2025, 3, 11, 0, 30, tzinfo=self.NY), "t1"),
+        ]
+        assert len(self._segmenter().segment(events)) == 2
+
+    def test_dst_transition_day_stays_one_bucket(self):
+        # 2025-03-09 is the spring-forward day in America/New_York:
+        # the local day runs 23 hours, both events still belong to it.
+        events = [
+            self._event(datetime(2025, 3, 9, 1, 30, tzinfo=self.NY), "t1"),
+            self._event(datetime(2025, 3, 9, 23, 0, tzinfo=self.NY), "t1"),
+        ]
+        assert len(self._segmenter().segment(events)) == 1
+
+    def test_local_day_differs_from_utc_day(self):
+        # 23:00 in New York on 03-09 is already 03-10 in UTC.
+        events = [self._event(datetime(2025, 3, 9, 23, 0, tzinfo=self.NY), "t1")]
+        local = self._segmenter().segment(events)
+        utc = self._segmenter(tz="UTC").segment(events)
+        assert "day:2025-03-09" in local[0].tags
+        assert "day:2025-03-10" in utc[0].tags
+
+    def test_threads_split_within_same_day(self):
+        events = [
+            self._event(datetime(2025, 3, 10, 9, 0, tzinfo=UTC), "t1"),
+            self._event(datetime(2025, 3, 10, 10, 0, tzinfo=UTC), "t2"),
+        ]
+        assert len(self._segmenter(tz="UTC").segment(events)) == 2
+
+    def test_day_mode_partitions_all_events(self):
+        events = [
+            self._event(datetime(2025, 3, 9, 23, 0, tzinfo=self.NY), "t1"),
+            self._event(datetime(2025, 3, 10, 8, 0, tzinfo=self.NY), "t1"),
+            self._event(datetime(2025, 3, 10, 9, 0, tzinfo=self.NY), "t2"),
+        ]
+        episodes = self._segmenter().segment(events)
+        total = sum(len(episode.events) for episode in episodes)
+        assert total == len(events)
+
+    def test_unknown_mode_rejected(self):
+        with pytest.raises(ValueError, match="unknown segmentation mode"):
+            EpisodeSegmenter(mode="week")
+        with pytest.raises(ValueError, match="unknown segmentation mode"):
+            SegmentConfig(mode="week")
+
+    def test_config_roundtrip_includes_day_fields(self):
+        config = SegmentConfig(mode="day", day_tz="Europe/Berlin")
+        assert SegmentConfig.from_dict(config.to_dict()) == config

@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
+from zoneinfo import ZoneInfo
 
 from mnemofold.events import Event, EventType
 
@@ -250,6 +251,12 @@ class SegmentConfig:
     max_episode_events: int = 0
     group_by_thread: bool = True
     group_by_meeting: bool = True
+    mode: str = "gap"
+    day_tz: str = "UTC"
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("gap", "day"):
+            raise ValueError(f"unknown segmentation mode: {self.mode}")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -257,6 +264,8 @@ class SegmentConfig:
             "max_episode_events": self.max_episode_events,
             "group_by_thread": self.group_by_thread,
             "group_by_meeting": self.group_by_meeting,
+            "mode": self.mode,
+            "day_tz": self.day_tz,
         }
 
     @classmethod
@@ -281,6 +290,12 @@ class EpisodeSegmenter:
     group_by_thread: bool = True
     group_by_meeting: bool = True
     max_episode_events: int = 0
+    mode: str = "gap"
+    day_tz: str = "UTC"
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("gap", "day"):
+            raise ValueError(f"unknown segmentation mode: {self.mode}")
 
     @classmethod
     def from_config(cls, config: SegmentConfig) -> EpisodeSegmenter:
@@ -290,6 +305,8 @@ class EpisodeSegmenter:
             group_by_thread=config.group_by_thread,
             group_by_meeting=config.group_by_meeting,
             max_episode_events=config.max_episode_events,
+            mode=config.mode,
+            day_tz=config.day_tz,
         )
 
     def segment(self, events: list[Event]) -> list[Episode]:
@@ -301,6 +318,8 @@ class EpisodeSegmenter:
             return []
 
         sorted_events = sorted(events, key=lambda e: e.timestamp)
+        if self.mode == "day":
+            return self._segment_by_day(sorted_events)
         episodes: list[Episode] = []
         current_episode: Episode | None = None
         current_group: str | None = None
@@ -329,6 +348,31 @@ class EpisodeSegmenter:
 
             last_time = event.timestamp
 
+        return episodes
+
+    def _segment_by_day(self, sorted_events: list[Event]) -> list[Episode]:
+        """One episode per (local calendar day, thread/meeting) bucket.
+
+        Days are bucketed in ``day_tz`` so histories spanning DST changes
+        keep events on their local day. Buckets are emitted in (day,
+        group) order, which is deterministic for any fixed input. The
+        ``max_episode_events`` cap applies to gap mode only; day buckets
+        stay whole so a day is always reconstructable as one unit.
+        """
+        tz = ZoneInfo(self.day_tz)
+        buckets: dict[tuple[str, str], list[Event]] = {}
+        for event in sorted_events:
+            day = event.timestamp.astimezone(tz).date().isoformat()
+            key = (day, self._group_key(event) or "")
+            buckets.setdefault(key, []).append(event)
+        episodes: list[Episode] = []
+        for day, _group in sorted(buckets):
+            first, *rest = buckets[(day, _group)]
+            episode = self._start_episode(first)
+            for event in rest:
+                episode.add_event(event)
+            episode.tags.add(f"day:{day}")
+            episodes.append(episode)
         return episodes
 
     def _group_key(self, event: Event) -> str | None:
