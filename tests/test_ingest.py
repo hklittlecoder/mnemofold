@@ -902,3 +902,37 @@ class TestIngestPipeline:
         assert mention.debtor == "alice"
         assert mention.creditor == "bob"
         assert mention.due == "2025-03-14"
+
+
+class TestFactoryPartitionProperties:
+    def _factory_events(self, seed: int, days: int) -> list[Event]:
+        factory = WorkHistoryFactory(seed=seed, days=days)
+        events, _ = factory.generate()
+        return [ev.to_event() for ev in events]
+
+    def test_every_event_lands_in_exactly_one_episode(self):
+        events = self._factory_events(seed=11, days=90)
+        episodes = EpisodeSegmenter().segment(events)
+        counts: dict[str, int] = {}
+        for episode in episodes:
+            for event in episode.events:
+                counts[event.event_id] = counts.get(event.event_id, 0) + 1
+        assert len(counts) == len({e.event_id for e in events})
+        assert all(count == 1 for count in counts.values())
+
+    def test_episode_events_are_chronological(self):
+        episodes = EpisodeSegmenter().segment(self._factory_events(seed=11, days=60))
+        for episode in episodes:
+            stamps = [event.timestamp for event in episode.events]
+            assert stamps == sorted(stamps)
+
+    def test_pipeline_digest_is_reproducible(self):
+        first = IngestPipeline().run(self._factory_events(seed=3, days=60))
+        second = IngestPipeline().run(self._factory_events(seed=3, days=60))
+        assert first.digest() == second.digest()
+        assert first.stats().commitment_count >= 2
+
+    def test_different_seeds_diverge(self):
+        one = IngestPipeline().run(self._factory_events(seed=3, days=60))
+        other = IngestPipeline().run(self._factory_events(seed=4, days=60))
+        assert one.digest() != other.digest()
