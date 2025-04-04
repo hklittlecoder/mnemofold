@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 
 import pytest
 
+from mnemofold import storage
 from mnemofold.events import Event
-from mnemofold.storage import Journal, _frame_chain_checksum, _genesis_chain_checksum
+from mnemofold.storage import (
+    SCHEMA_VERSION,
+    Journal,
+    _frame_chain_checksum,
+    _genesis_chain_checksum,
+)
 
 SAMPLE_TS = datetime(2025, 3, 14, 12, 0, 0, tzinfo=UTC)
 
@@ -260,4 +267,128 @@ class TestSchemaVersionGuard:
         conn.close()
 
         with pytest.raises(RuntimeError, match="newer than code version"):
+            Journal(db)
+
+
+# The v2-era schema, as it existed before tombstones were introduced.
+_V2_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS frames (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    event_type TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    envelope_json TEXT NOT NULL,
+    content_checksum TEXT NOT NULL,
+    prev_chain_checksum TEXT NOT NULL,
+    chain_checksum TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_frames_event_type ON frames(event_type);
+CREATE INDEX IF NOT EXISTS idx_frames_timestamp ON frames(timestamp);
+CREATE INDEX IF NOT EXISTS idx_frames_event_id ON frames(event_id);
+"""
+
+
+def _write_v2_journal(path, event: Event) -> None:
+    """Build a journal exactly as schema v2 would have left it on disk."""
+    conn = sqlite3.connect(str(path))
+    conn.executescript(_V2_SCHEMA_SQL)
+    conn.execute("INSERT INTO schema_meta (key, value) VALUES ('schema_version', '2')")
+    envelope = event.to_json()
+    conn.execute(
+        "INSERT INTO frames (event_id, event_type, timestamp, envelope_json,"
+        " content_checksum, prev_chain_checksum, chain_checksum, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            event.event_id,
+            event.event_type.value,
+            event.timestamp.isoformat(),
+            envelope,
+            event.content_checksum,
+            _genesis_chain_checksum(),
+            _frame_chain_checksum(_genesis_chain_checksum(), envelope),
+            "2025-01-01T00:00:00+00:00",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _schema_version(path) -> int:
+    conn = sqlite3.connect(str(path))
+    row = conn.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+    conn.close()
+    return int(row[0])
+
+
+def _has_table(path, name: str) -> bool:
+    conn = sqlite3.connect(str(path))
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+class TestSchemaMigrations:
+    def test_fresh_journal_records_current_version(self, tmp_path):
+        db = tmp_path / "fresh.db"
+        with Journal(db) as j:
+            assert len(j) == 0
+        assert _schema_version(db) == SCHEMA_VERSION
+        assert _has_table(db, "tombstones")
+
+    def test_v2_journal_is_migrated_and_frames_survive(self, tmp_path):
+        db = tmp_path / "v2.db"
+        event = Event.note(SAMPLE_TS, text="written before migration")
+        _write_v2_journal(db, event)
+        with Journal(db) as j:
+            assert j.get(event.event_id) == event
+            assert j.verify_chain() is True
+            assert len(j) == 1
+        assert _schema_version(db) == SCHEMA_VERSION
+
+    def test_migration_step_actually_runs_for_v2_only(self, tmp_path, monkeypatch):
+        calls: list[int] = []
+        original = storage.MIGRATIONS[2]
+
+        def tracked(cur):
+            calls.append(2)
+            original(cur)
+
+        monkeypatch.setitem(storage.MIGRATIONS, 2, tracked)
+
+        v2_db = tmp_path / "v2.db"
+        _write_v2_journal(v2_db, Event.note(SAMPLE_TS, text="old"))
+        with Journal(v2_db):
+            pass
+        assert calls == [2]
+
+        fresh_db = tmp_path / "fresh.db"
+        with Journal(fresh_db):
+            pass
+        assert calls == [2], "fresh journals must not replay migrations"
+
+    def test_migration_is_idempotent_across_reopens(self, tmp_path):
+        db = tmp_path / "v2.db"
+        _write_v2_journal(db, Event.note(SAMPLE_TS, text="x"))
+        for _ in range(3):
+            with Journal(db) as j:
+                assert j.verify_chain()
+        assert _schema_version(db) == SCHEMA_VERSION
+
+    def test_missing_migration_step_is_hard_error(self, tmp_path):
+        db = tmp_path / "v1.db"
+        _write_v2_journal(db, Event.note(SAMPLE_TS, text="x"))
+        conn = sqlite3.connect(str(db))
+        conn.execute("UPDATE schema_meta SET value = '1' WHERE key = 'schema_version'")
+        conn.commit()
+        conn.close()
+        with pytest.raises(RuntimeError, match="no migration path"):
             Journal(db)

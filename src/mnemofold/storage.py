@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,7 +28,7 @@ from pathlib import Path
 
 from mnemofold.events import Event
 
-SCHEMA_VERSION = 2  # Bump when migrations are added
+SCHEMA_VERSION = 3  # Bump when migrations are added
 
 _INIT_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -51,7 +51,34 @@ CREATE TABLE IF NOT EXISTS frames (
 CREATE INDEX IF NOT EXISTS idx_frames_event_type ON frames(event_type);
 CREATE INDEX IF NOT EXISTS idx_frames_timestamp ON frames(timestamp);
 CREATE INDEX IF NOT EXISTS idx_frames_event_id ON frames(event_id);
+
+CREATE TABLE IF NOT EXISTS tombstones (
+    event_id TEXT PRIMARY KEY,
+    reason TEXT NOT NULL DEFAULT '',
+    deleted_at TEXT NOT NULL
+);
 """
+
+
+def _migrate_2_to_3(cur: sqlite3.Cursor) -> None:
+    """v3 adds tombstones so deletions are recorded inside the journal."""
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tombstones (
+            event_id TEXT PRIMARY KEY,
+            reason TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+# Migration deltas keyed by the version they migrate FROM. A journal at
+# version N is stepped through N, N+1, ... until it reaches the current
+# SCHEMA_VERSION; a missing step is a hard error rather than silent drift.
+MIGRATIONS: dict[int, Callable[[sqlite3.Cursor], None]] = {
+    2: _migrate_2_to_3,
+}
 
 
 def _frame_chain_checksum(prev_chain: str, envelope_json: str) -> str:
@@ -133,8 +160,13 @@ class Journal:
                         f"Journal schema version {stored} is newer than "
                         f"code version {SCHEMA_VERSION}"
                     )
-                # Migrations would go here.  For v1→v2 there's nothing to do
-                # beyond what INIT_SCHEMA already created.
+                version = stored
+                while version < SCHEMA_VERSION:
+                    migrate = MIGRATIONS.get(version)
+                    if migrate is None:
+                        raise RuntimeError(f"no migration path from schema version {version}")
+                    migrate(cur)
+                    version += 1
                 if stored < SCHEMA_VERSION:
                     cur.execute(
                         "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
