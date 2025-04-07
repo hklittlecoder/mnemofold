@@ -108,6 +108,20 @@ class FrameInfo:
     prev_chain_checksum: str
 
 
+@dataclass
+class Tombstone:
+    """Journal record that an event id was deleted (right-to-forget).
+
+    Tombstones are markers, not removals: the frame stays in the chain so
+    the journal remains verifiable, while every consumer can check that
+    the event must no longer surface.
+    """
+
+    event_id: str
+    reason: str
+    deleted_at: datetime
+
+
 class Journal:
     """Append-only SQLite event journal.
 
@@ -327,3 +341,39 @@ class Journal:
         if row is None:
             return _genesis_chain_checksum()
         return row[0]
+
+    # ------------------------------------------------------------------
+    # Tombstones
+    # ------------------------------------------------------------------
+
+    def record_tombstone(self, event_id: str, reason: str = "") -> bool:
+        """Mark ``event_id`` as deleted. First record wins; returns whether
+        a new tombstone was written."""
+        with self._transaction() as cur:
+            cur.execute("SELECT 1 FROM tombstones WHERE event_id = ?", (event_id,))
+            if cur.fetchone() is not None:
+                return False
+            cur.execute(
+                "INSERT INTO tombstones (event_id, reason, deleted_at) VALUES (?, ?, ?)",
+                (event_id, reason, datetime.now(UTC).isoformat()),
+            )
+            return True
+
+    def tombstone(self, event_id: str) -> Tombstone | None:
+        """Return the tombstone for an event id, or None if it is not marked."""
+        cur = self._conn.execute(
+            "SELECT event_id, reason, deleted_at FROM tombstones WHERE event_id = ?",
+            (event_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return Tombstone(event_id=row[0], reason=row[1], deleted_at=datetime.fromisoformat(row[2]))
+
+    def iter_tombstones(self) -> Iterator[Tombstone]:
+        """All tombstones ordered by event id (deterministic)."""
+        cur = self._conn.execute(
+            "SELECT event_id, reason, deleted_at FROM tombstones ORDER BY event_id ASC"
+        )
+        for event_id, reason, deleted_at in cur:
+            yield Tombstone(event_id, reason, datetime.fromisoformat(deleted_at))

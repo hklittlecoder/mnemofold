@@ -392,3 +392,49 @@ class TestSchemaMigrations:
         conn.close()
         with pytest.raises(RuntimeError, match="no migration path"):
             Journal(db)
+
+
+class TestTombstones:
+    def test_record_and_fetch_roundtrip(self, empty_journal):
+        assert empty_journal.record_tombstone("evt_a", reason="user request") is True
+        stone = empty_journal.tombstone("evt_a")
+        assert stone is not None
+        assert stone.event_id == "evt_a"
+        assert stone.reason == "user request"
+        assert stone.deleted_at.tzinfo is not None
+
+    def test_unknown_event_has_no_tombstone(self, empty_journal):
+        assert empty_journal.tombstone("evt_missing") is None
+
+    def test_first_record_wins(self, empty_journal):
+        assert empty_journal.record_tombstone("evt_a", reason="first") is True
+        assert empty_journal.record_tombstone("evt_a", reason="second") is False
+        stone = empty_journal.tombstone("evt_a")
+        assert stone is not None
+        assert stone.reason == "first"
+
+    def test_iteration_is_sorted_by_event_id(self, empty_journal):
+        for event_id in ("evt_c", "evt_a", "evt_b"):
+            empty_journal.record_tombstone(event_id)
+        assert [t.event_id for t in empty_journal.iter_tombstones()] == [
+            "evt_a",
+            "evt_b",
+            "evt_c",
+        ]
+
+    def test_tombstone_does_not_remove_the_frame(self, empty_journal):
+        event = Event.note(SAMPLE_TS, text="still chained")
+        empty_journal.append(event)
+        empty_journal.record_tombstone(event.event_id, reason="forget")
+        assert event.event_id in empty_journal
+        assert empty_journal.get(event.event_id) == event
+        assert empty_journal.verify_chain() is True
+
+    def test_tombstones_survive_reopen(self, tmp_path):
+        db = tmp_path / "stones.db"
+        with Journal(db) as j:
+            j.record_tombstone("evt_x", reason="gdpr")
+        with Journal(db) as j:
+            stone = j.tombstone("evt_x")
+            assert stone is not None
+            assert stone.reason == "gdpr"
