@@ -249,15 +249,45 @@ class Journal:
             return True
 
     def extend(self, events: list[Event]) -> int:
-        """Append multiple events in a single transaction.
+        """Append multiple events in one all-or-nothing transaction.
 
-        Returns the number of newly written events.
+        Duplicates are skipped and do not break the chain. If any insert
+        fails midway the whole batch rolls back and the journal stays
+        exactly as it was. Returns the number of newly written events.
         """
-        count = 0
-        for evt in events:
-            if self.append(evt):
-                count += 1
-        return count
+        written = 0
+        with self._transaction() as cur:
+            cur.execute("SELECT chain_checksum FROM frames ORDER BY seq DESC LIMIT 1")
+            row = cur.fetchone()
+            prev_chain = row[0] if row else _genesis_chain_checksum()
+            for event in events:
+                cur.execute("SELECT 1 FROM frames WHERE event_id = ?", (event.event_id,))
+                if cur.fetchone() is not None:
+                    continue
+                envelope_json = event.to_json()
+                chain_checksum = _frame_chain_checksum(prev_chain, envelope_json)
+                cur.execute(
+                    """
+                    INSERT INTO frames
+                        (event_id, event_type, timestamp, envelope_json,
+                         content_checksum, prev_chain_checksum, chain_checksum,
+                         created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.event_id,
+                        event.event_type.value,
+                        event.timestamp.isoformat(),
+                        envelope_json,
+                        event.content_checksum,
+                        prev_chain,
+                        chain_checksum,
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+                prev_chain = chain_checksum
+                written += 1
+        return written
 
     # ------------------------------------------------------------------
     # Read operations

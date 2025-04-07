@@ -438,3 +438,55 @@ class TestTombstones:
             stone = j.tombstone("evt_x")
             assert stone is not None
             assert stone.reason == "gdpr"
+
+
+class TestAtomicExtend:
+    def test_failed_batch_rolls_back_entirely(self, empty_journal):
+        good_before = Event.note(SAMPLE_TS, text="already stored")
+        empty_journal.append(good_before)
+        head_before = empty_journal.head_checksum()
+
+        batch = [
+            Event.note(SAMPLE_TS, text="new one"),
+            "not-an-event",  # type: ignore[list-item]
+            Event.note(SAMPLE_TS, text="never written"),
+        ]
+        with pytest.raises(AttributeError):
+            empty_journal.extend(batch)
+
+        assert len(empty_journal) == 1
+        assert empty_journal.head_checksum() == head_before
+        assert empty_journal.verify_chain() is True
+
+    def test_duplicates_in_batch_keep_chain_contiguous(self, empty_journal):
+        a = Event.note(SAMPLE_TS, text="a")
+        b = Event.note(SAMPLE_TS, text="b")
+        assert empty_journal.extend([a, a, b]) == 2
+        first = empty_journal.frame_info(1)
+        second = empty_journal.frame_info(2)
+        assert first is not None and second is not None
+        assert second.prev_chain_checksum == first.chain_checksum
+        assert empty_journal.verify_chain() is True
+
+    def test_empty_batch_is_noop(self, empty_journal):
+        assert empty_journal.extend([]) == 0
+        assert empty_journal.head_checksum() == _genesis_chain_checksum()
+
+    def test_extend_matches_sequential_appends(self, tmp_path, sample_events):
+        bulk = Journal(tmp_path / "bulk.db")
+        bulk.extend(sample_events)
+        one_by_one = Journal(tmp_path / "seq.db")
+        for event in sample_events:
+            one_by_one.append(event)
+        assert bulk.head_checksum() == one_by_one.head_checksum()
+        bulk.close()
+        one_by_one.close()
+
+    def test_extend_after_append_continues_chain(self, empty_journal):
+        first = Event.note(SAMPLE_TS, text="first")
+        empty_journal.append(first)
+        empty_journal.extend([Event.note(SAMPLE_TS, text="second")])
+        info = empty_journal.frame_info(2)
+        assert info is not None
+        assert info.prev_chain_checksum == empty_journal.frame_info(1).chain_checksum
+        assert empty_journal.verify_chain() is True
