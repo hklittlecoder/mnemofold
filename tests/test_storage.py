@@ -548,3 +548,74 @@ class TestChainAudit:
         _mangle_frame(db, 1)
         with Journal(db) as j:
             assert j.verify_chain() == j.audit_chain().ok is False
+
+
+class TestInterruptedWrites:
+    """Durability behavior when writes are interrupted or abandoned.
+
+    These tests simulate crashes without killing processes: a batch that
+    raises midway stands in for a crashed writer, and dropping a journal
+    without ``close()`` stands in for an abandoned connection. WAL mode
+    must make both recoverable on the next open.
+    """
+
+    def test_abandoned_connection_is_recovered_on_reopen(self, tmp_path, sample_events):
+        db = tmp_path / "abandoned.db"
+        j = Journal(db)
+        j.extend(sample_events)
+        head = j.head_checksum()
+        del j  # no close(): the OS/process "crashed"
+
+        with Journal(db) as reopened:
+            assert len(reopened) == len(sample_events)
+            assert reopened.head_checksum() == head
+            assert reopened.verify_chain() is True
+
+    def test_failed_batch_leaves_earlier_state_usable(self, tmp_path):
+        db = tmp_path / "halfway.db"
+        with Journal(db) as j:
+            j.append(Event.note(SAMPLE_TS, text="keeper"))
+            head = j.head_checksum()
+            with pytest.raises(AttributeError):
+                j.extend([Event.note(SAMPLE_TS, text="new"), 42])  # type: ignore[list-item]
+            # the journal is still writable in the same session
+            assert j.append(Event.note(SAMPLE_TS, text="after failure")) is True
+            assert j.frame_info(2) is not None
+            assert j.frame_info(2).prev_chain_checksum == head
+            assert j.verify_chain() is True
+
+    def test_reopen_after_failed_batch_sees_only_committed_frames(self, tmp_path):
+        db = tmp_path / "reopen_after_fail.db"
+        j = Journal(db)
+        j.append(Event.note(SAMPLE_TS, text="committed"))
+        with pytest.raises(AttributeError):
+            j.extend([Event.note(SAMPLE_TS, text="rolled back"), None])  # type: ignore[list-item]
+        del j
+
+        with Journal(db) as reopened:
+            assert len(reopened) == 1
+            assert reopened.verify_chain() is True
+
+    def test_reextend_after_reopen_is_idempotent(self, tmp_path, sample_events):
+        db = tmp_path / "idempotent.db"
+        with Journal(db) as j:
+            j.extend(sample_events)
+            head = j.head_checksum()
+        with Journal(db) as j:
+            assert j.extend(sample_events) == 0
+            assert j.head_checksum() == head
+            assert len(j) == len(sample_events)
+
+    def test_append_after_abandoned_connection_continues_chain(self, tmp_path):
+        db = tmp_path / "continue.db"
+        j = Journal(db)
+        j.append(Event.note(SAMPLE_TS, text="first"))
+        head = j.head_checksum()
+        del j
+
+        with Journal(db) as reopened:
+            reopened.append(Event.note(SAMPLE_TS, text="second"))
+            info = reopened.frame_info(2)
+            assert info is not None
+            assert info.prev_chain_checksum == head
+            assert reopened.verify_chain() is True
