@@ -109,6 +109,18 @@ class FrameInfo:
 
 
 @dataclass
+class ChainAudit:
+    """Result of walking the journal hash chain frame by frame."""
+
+    checked: int
+    first_bad_seq: int | None
+
+    @property
+    def ok(self) -> bool:
+        return self.first_bad_seq is None
+
+
+@dataclass
 class Tombstone:
     """Journal record that an event id was deleted (right-to-forget).
 
@@ -347,22 +359,27 @@ class Journal:
     # ------------------------------------------------------------------
 
     def verify_chain(self) -> bool:
-        """Verify the entire hash chain from genesis to the latest frame.
+        """True when every frame's chain checksum verifies (see audit_chain)."""
+        return self.audit_chain().ok
 
-        Returns True if every frame's chain_checksum is correctly derived
-        from the previous frame and the envelope.  Returns False if the
-        chain is broken (truncation, tampering, etc.).
+    def audit_chain(self) -> ChainAudit:
+        """Walk the hash chain and report the first broken frame, if any.
+
+        Unlike :meth:`verify_chain` this tells callers *where* the chain
+        breaks and how many frames were checked, which is what repair
+        tooling and CLI audits need.
         """
         prev = _genesis_chain_checksum()
+        checked = 0
         cur = self._conn.execute(
-            "SELECT envelope_json, chain_checksum FROM frames ORDER BY seq ASC"
+            "SELECT seq, envelope_json, chain_checksum FROM frames ORDER BY seq ASC"
         )
-        for envelope_json, stored in cur:
-            expected = _frame_chain_checksum(prev, envelope_json)
-            if expected != stored:
-                return False
+        for seq, envelope_json, stored in cur:
+            checked += 1
+            if _frame_chain_checksum(prev, envelope_json) != stored:
+                return ChainAudit(checked=checked, first_bad_seq=int(seq))
             prev = stored
-        return True
+        return ChainAudit(checked=checked, first_bad_seq=None)
 
     def head_checksum(self) -> str:
         """Return the chain checksum of the last frame, or genesis if empty."""

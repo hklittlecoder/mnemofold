@@ -490,3 +490,61 @@ class TestAtomicExtend:
         assert info is not None
         assert info.prev_chain_checksum == empty_journal.frame_info(1).chain_checksum
         assert empty_journal.verify_chain() is True
+
+
+def _mangle_frame(db, seq: int, envelope: str = '{"tampered": true}') -> None:
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE frames SET envelope_json = ? WHERE seq = ?", (envelope, seq))
+    conn.commit()
+    conn.close()
+
+
+class TestChainAudit:
+    def test_healthy_chain_reports_all_frames_checked(self, tmp_path, sample_events):
+        db = tmp_path / "audit.db"
+        with Journal(db) as j:
+            j.extend(sample_events)
+            audit = j.audit_chain()
+        assert audit.ok
+        assert audit.first_bad_seq is None
+        assert audit.checked == len(sample_events)
+
+    def test_empty_journal_audit(self, empty_journal):
+        audit = empty_journal.audit_chain()
+        assert audit.ok
+        assert audit.checked == 0
+
+    def test_tampered_middle_frame_is_located(self, tmp_path, sample_events):
+        db = tmp_path / "audit.db"
+        with Journal(db) as j:
+            j.extend(sample_events)
+        _mangle_frame(db, 3)
+        with Journal(db) as j:
+            audit = j.audit_chain()
+            assert not audit.ok
+            assert audit.first_bad_seq == 3
+            assert audit.checked == 3
+            assert j.verify_chain() is False
+
+    def test_truncation_leaves_prefix_intact(self, tmp_path, sample_events):
+        db = tmp_path / "audit.db"
+        with Journal(db) as j:
+            j.extend(sample_events)
+        conn = sqlite3.connect(str(db))
+        conn.execute("DELETE FROM frames WHERE seq = (SELECT MAX(seq) FROM frames)")
+        conn.commit()
+        conn.close()
+        with Journal(db) as j:
+            audit = j.audit_chain()
+            assert audit.ok
+            assert audit.checked == len(sample_events) - 1
+            assert j.verify_chain() is True
+
+    def test_verify_chain_agrees_with_audit(self, tmp_path, sample_events):
+        db = tmp_path / "audit.db"
+        with Journal(db) as j:
+            j.extend(sample_events)
+            assert j.verify_chain() == j.audit_chain().ok is True
+        _mangle_frame(db, 1)
+        with Journal(db) as j:
+            assert j.verify_chain() == j.audit_chain().ok is False
