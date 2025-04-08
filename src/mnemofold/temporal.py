@@ -116,14 +116,10 @@ class TemporalStore(Generic[T]):
         if cur is None:
             return float("inf")
         try:
-            t_now = datetime.fromisoformat(now)
-            t_from = datetime.fromisoformat(cur.valid_from)
+            t_now = _parse_instant(now)
+            t_from = _parse_instant(cur.valid_from)
         except (ValueError, TypeError):
             return float("inf")
-        if t_now.tzinfo is None:
-            t_now = t_now.replace(tzinfo=UTC)
-        if t_from.tzinfo is None:
-            t_from = t_from.replace(tzinfo=UTC)
         age_days = (t_now - t_from).total_seconds() / 86400.0
         return age_days / max_age_days if max_age_days > 0 else float("inf")
 
@@ -196,14 +192,10 @@ def deadline_overdue(due: str, now: str, grace_hours: float = 0.0) -> bool:
     grace_hours extends the deadline by that many hours.
     """
     try:
-        t_due = datetime.fromisoformat(due)
-        t_now = datetime.fromisoformat(now)
+        t_due = _parse_instant(due)
+        t_now = _parse_instant(now)
     except (ValueError, TypeError):
         return False
-    if t_due.tzinfo is None:
-        t_due = t_due.replace(tzinfo=UTC)
-    if t_now.tzinfo is None:
-        t_now = t_now.replace(tzinfo=UTC)
     grace = timedelta(hours=grace_hours)
     return t_now > (t_due + grace)
 
@@ -214,12 +206,8 @@ def time_until_deadline(due: str, now: str) -> timedelta | None:
     Returns None if parsing fails. Returns negative timedelta if overdue.
     """
     try:
-        t_due = datetime.fromisoformat(due)
-        t_now = datetime.fromisoformat(now)
+        t_due = _parse_instant(due)
+        t_now = _parse_instant(now)
     except (ValueError, TypeError):
         return None
-    if t_due.tzinfo is None:
-        t_due = t_due.replace(tzinfo=UTC)
-    if t_now.tzinfo is None:
-        t_now = t_now.replace(tzinfo=UTC)
     return t_due - t_now
