@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pytest
+
 from mnemofold.temporal import (
     IntervalFact,
     TemporalStore,
@@ -179,3 +181,48 @@ class TestDeadline:
         delta = time_until_deadline("2024-01-10T00:00:00+00:00", "2024-01-15T00:00:00+00:00")
         assert delta is not None
         assert delta < timedelta(0)
+
+
+class TestInstantComparisons:
+    def test_same_instant_different_offsets_agrees(self):
+        f = IntervalFact(
+            "status", "active", "2024-01-01T08:00:00+08:00", "2024-02-01T00:00:00+00:00"
+        )
+        # 2024-01-01T00:00:00Z is the same instant as the +08:00 start
+        assert f.is_valid_at("2024-01-01T00:00:00+00:00")
+
+    def test_just_before_start_in_other_offset(self):
+        f = IntervalFact("status", "active", "2024-01-01T08:00:00+08:00")
+        # start is 2024-01-01T00:00:00Z; one second earlier in UTC is outside
+        assert not f.is_valid_at("2023-12-31T23:59:59+00:00")
+
+    def test_lexicographic_order_would_be_wrong(self):
+        # "2024-01-01T09:00:00+08:00" sorts after "2024-01-01T01:45:00+00:00"
+        # as text, but as instants it is 01:00Z — inside the interval.
+        f = IntervalFact("s", "v", "2024-01-01T00:00:00+00:00", "2024-01-01T01:30:00+00:00")
+        assert f.is_valid_at("2024-01-01T09:00:00+08:00")
+        assert not f.is_valid_at("2024-01-01T10:00:00+08:00")
+
+    def test_as_of_picks_later_start_across_offsets(self):
+        store = TemporalStore[str]()
+        # starts 04:00Z, though its ISO string sorts after the 06:00Z one
+        store.add(
+            IntervalFact("owner", "early", "2024-01-01T12:00:00+08:00", "2024-06-01T00:00:00+00:00")
+        )
+        store.add(
+            IntervalFact("owner", "late", "2024-01-01T06:00:00+00:00", "2024-06-01T00:00:00+00:00")
+        )
+        got = store.as_of("owner", "2024-03-01T00:00:00+00:00")
+        assert got is not None
+        assert got.value == "late"
+
+    def test_history_sorts_by_instant_not_text(self):
+        store = TemporalStore[str]()
+        store.add(IntervalFact("s", "b", "2024-01-02T00:00:00+00:00"))
+        store.add(IntervalFact("s", "a", "2024-01-01T20:00:00-08:00"))  # == 01-02T04:00Z
+        assert [f.value for f in store.history("s")] == ["b", "a"]
+
+    def test_invalid_timestamp_raises(self):
+        f = IntervalFact("s", "v", "2024-01-01T00:00:00+00:00")
+        with pytest.raises(ValueError):
+            f.is_valid_at("not-a-date")

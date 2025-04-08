@@ -14,6 +14,14 @@ from typing import Any, Generic, TypeVar
 T = TypeVar("T")
 
 
+def _parse_instant(value: str) -> datetime:
+    """Parse an ISO timestamp into an aware datetime (naive means UTC)."""
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
 @dataclass(slots=True)
 class IntervalFact(Generic[T]):
     """A fact that is valid during a time interval.
@@ -28,10 +36,17 @@ class IntervalFact(Generic[T]):
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_valid_at(self, when: str) -> bool:
-        """Check if this fact was valid at the given datetime."""
-        if when < self.valid_from:
+        """Check if this fact was valid at the given datetime.
+
+        Bounds are compared as instants, not as strings: the same moment
+        expressed with different UTC offsets gives the same answer.
+        """
+        moment = _parse_instant(when)
+        if moment < _parse_instant(self.valid_from):
             return False
-        return not (self.valid_to is not None and when >= self.valid_to)
+        if self.valid_to is None:
+            return True
+        return moment < _parse_instant(self.valid_to)
 
     def is_current(self) -> bool:
         """Check if this fact is still valid (no end date)."""
@@ -72,7 +87,7 @@ class TemporalStore(Generic[T]):
                 continue
             if not f.is_valid_at(when):
                 continue
-            if best is None or f.valid_from > best.valid_from:
+            if best is None or _parse_instant(f.valid_from) > _parse_instant(best.valid_from):
                 best = f
         return best
 
@@ -80,7 +95,7 @@ class TemporalStore(Generic[T]):
         """Return all versions of a fact key, oldest first."""
         return sorted(
             [f for f in self._facts if f.fact_key == fact_key],
-            key=lambda f: f.valid_from,
+            key=lambda f: _parse_instant(f.valid_from),
         )
 
     def all_current(self) -> list[IntervalFact[T]]:
