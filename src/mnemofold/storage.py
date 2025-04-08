@@ -19,12 +19,14 @@ Schema migrations are versioned and applied on open.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol, TypeVar
 
 from mnemofold.events import Event
 
@@ -424,3 +426,59 @@ class Journal:
         )
         for event_id, reason, deleted_at in cur:
             yield Tombstone(event_id, reason, datetime.fromisoformat(deleted_at))
+
+    # ------------------------------------------------------------------
+    # Projections
+    # ------------------------------------------------------------------
+
+    def project(self, factory: Callable[[], _ProjectionT]) -> _ProjectionT:
+        """Rebuild a projection by folding every frame in seq order.
+
+        Projections are derived state: the journal is the source of truth,
+        so folding the same journal twice (or on two machines, or after a
+        reopen) must always produce an identical digest.
+        """
+        projection = factory()
+        for event in self.iter_events():
+            projection.apply(event)
+        return projection
+
+
+class Projection(Protocol):
+    """A deterministic fold over journal events."""
+
+    def apply(self, event: Event) -> None: ...
+
+    def digest(self) -> str: ...
+
+
+_ProjectionT = TypeVar("_ProjectionT", bound=Projection)
+
+
+@dataclass
+class EventStatsProjection:
+    """Reference projection: per-type counts, id order, and time bounds."""
+
+    counts: dict[str, int] = field(default_factory=dict)
+    event_ids: list[str] = field(default_factory=list)
+    first_timestamp: datetime | None = None
+    last_timestamp: datetime | None = None
+
+    def apply(self, event: Event) -> None:
+        kind = event.event_type.value
+        self.counts[kind] = self.counts.get(kind, 0) + 1
+        self.event_ids.append(event.event_id)
+        if self.first_timestamp is None or event.timestamp < self.first_timestamp:
+            self.first_timestamp = event.timestamp
+        if self.last_timestamp is None or event.timestamp > self.last_timestamp:
+            self.last_timestamp = event.timestamp
+
+    def digest(self) -> str:
+        payload = {
+            "counts": self.counts,
+            "event_ids": self.event_ids,
+            "first": self.first_timestamp.isoformat() if self.first_timestamp else None,
+            "last": self.last_timestamp.isoformat() if self.last_timestamp else None,
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

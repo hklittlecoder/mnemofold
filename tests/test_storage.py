@@ -11,6 +11,7 @@ from mnemofold import storage
 from mnemofold.events import Event
 from mnemofold.storage import (
     SCHEMA_VERSION,
+    EventStatsProjection,
     Journal,
     _frame_chain_checksum,
     _genesis_chain_checksum,
@@ -619,3 +620,64 @@ class TestInterruptedWrites:
             assert info is not None
             assert info.prev_chain_checksum == head
             assert reopened.verify_chain() is True
+
+
+class TestJournalProjection:
+    def test_double_run_produces_identical_state(self, tmp_path, sample_events):
+        db = tmp_path / "proj.db"
+        with Journal(db) as j:
+            j.extend(sample_events)
+            first = j.project(EventStatsProjection)
+            second = j.project(EventStatsProjection)
+        assert first.digest() == second.digest()
+        assert first.event_ids == second.event_ids
+        assert first.counts == second.counts
+
+    def test_separate_journals_with_same_events_agree(self, tmp_path, sample_events):
+        db_a = tmp_path / "a.db"
+        db_b = tmp_path / "b.db"
+        with Journal(db_a) as ja, Journal(db_b) as jb:
+            ja.extend(sample_events)
+            jb.extend(sample_events)
+            assert (
+                ja.project(EventStatsProjection).digest()
+                == jb.project(EventStatsProjection).digest()
+            )
+
+    def test_projection_survives_reopen(self, tmp_path, sample_events):
+        db = tmp_path / "reopen.db"
+        with Journal(db) as j:
+            j.extend(sample_events)
+            before = j.project(EventStatsProjection).digest()
+        with Journal(db) as j:
+            assert j.project(EventStatsProjection).digest() == before
+
+    def test_counts_and_bounds_match_input(self, empty_journal, sample_events):
+        empty_journal.extend(sample_events)
+        projection = empty_journal.project(EventStatsProjection)
+        assert projection.counts == {
+            "note": 2,
+            "chat_message": 1,
+            "mail_received": 1,
+            "focus_block": 1,
+        }
+        assert projection.event_ids == [e.event_id for e in sample_events]
+        assert projection.first_timestamp == SAMPLE_TS
+        assert projection.last_timestamp == SAMPLE_TS
+
+    def test_empty_journal_projection_is_stable(self, tmp_path):
+        with Journal(tmp_path / "e1.db") as j1, Journal(tmp_path / "e2.db") as j2:
+            empty_1 = j1.project(EventStatsProjection)
+            empty_2 = j2.project(EventStatsProjection)
+        assert empty_1.event_ids == []
+        assert empty_1.counts == {}
+        assert empty_1.digest() == empty_2.digest()
+
+    def test_projection_changes_when_events_differ(self, tmp_path, sample_events):
+        with Journal(tmp_path / "x.db") as jx, Journal(tmp_path / "y.db") as jy:
+            jx.extend(sample_events)
+            jy.extend(sample_events[:-1])
+            assert (
+                jx.project(EventStatsProjection).digest()
+                != jy.project(EventStatsProjection).digest()
+            )
