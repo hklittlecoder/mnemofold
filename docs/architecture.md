@@ -36,6 +36,7 @@ mnemofold 是一条从"原始工作事件"到"带引用的助手输出"的确定
 横切所有阶段的支撑设施：
 
 - **存储基底 (storage)**：追加式 SQLite 日志，哈希链校验帧，可从日志重建投影
+  （详见 [storage.md](storage.md)）
 - **录制回放 (replay)**：校验和 JSONL 追踪，字节一致的回放与检查点恢复
 - **策略与隐私 (privacy)**：PII 检测、脱敏、分层读写规则、访问日志
 - **删除语义 (deletion)**：right-to-forget 级联与墓碑，防止已删内容复活
