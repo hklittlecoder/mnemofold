@@ -7,6 +7,7 @@ from datetime import date, timedelta
 import pytest
 
 from mnemofold.temporal import (
+    CalendarRegistry,
     IntervalFact,
     TemporalStore,
     WorkdayCalendar,
@@ -226,3 +227,46 @@ class TestInstantComparisons:
         f = IntervalFact("s", "v", "2024-01-01T00:00:00+00:00")
         with pytest.raises(ValueError):
             f.is_valid_at("not-a-date")
+
+
+class TestCalendarRegistry:
+    def test_defaults_cover_expected_regions(self):
+        registry = CalendarRegistry.with_defaults()
+        assert registry.regions() == ["de", "hk", "us"]
+
+    def test_hk_lunar_new_year_is_not_a_workday(self):
+        calendar = CalendarRegistry.with_defaults().get("hk")
+        assert not calendar.is_workday(date(2025, 1, 29))
+        assert not calendar.is_workday(date(2025, 1, 31))
+        # the following Monday is a normal workday
+        assert calendar.is_workday(date(2025, 2, 3))
+
+    def test_us_federal_holidays(self):
+        calendar = CalendarRegistry.with_defaults().get("us")
+        assert not calendar.is_workday(date(2025, 1, 20))  # MLK Day
+        assert not calendar.is_workday(date(2025, 11, 27))  # Thanksgiving
+        assert calendar.is_workday(date(2025, 11, 28))
+
+    def test_de_movable_holidays(self):
+        calendar = CalendarRegistry.with_defaults().get("de")
+        assert not calendar.is_workday(date(2025, 4, 18))  # Good Friday
+        assert not calendar.is_workday(date(2025, 4, 21))  # Easter Monday
+        assert not calendar.is_workday(date(2025, 10, 3))  # Unity Day
+
+    def test_deadline_arithmetic_skips_region_holidays(self):
+        calendar = CalendarRegistry.with_defaults().get("hk")
+        # Fri 2025-01-24 + 3 workdays: Mon 27, Tue 28, then the Lunar New
+        # Year block (29-31) and weekend are skipped -> Mon 2025-02-03.
+        assert calendar.add_workdays(date(2025, 1, 24), 3) == date(2025, 2, 3)
+
+    def test_unknown_region_raises(self):
+        with pytest.raises(KeyError, match="unknown calendar region"):
+            CalendarRegistry.with_defaults().get("fr")
+
+    def test_custom_region_registration(self):
+        registry = CalendarRegistry()
+        registry.register(WorkdayCalendar(name="lab", weekend_days={4, 5}))
+        assert registry.regions() == ["lab"]
+        # Friday is a weekend day in this lab
+        assert not registry.get("lab").is_workday(date(2025, 3, 14))
+        assert registry.get("lab").is_workday(date(2025, 3, 16))  # Sunday works

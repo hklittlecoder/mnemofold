@@ -211,3 +211,90 @@ def time_until_deadline(due: str, now: str) -> timedelta | None:
     except (ValueError, TypeError):
         return None
     return t_due - t_now
+
+
+# --- Regional calendar registry ----------------------------------------------
+
+# Representative public-holiday sets for 2025, one per supported region.
+# These cover the fixed-date and well-known movable holidays needed by the
+# synthetic factory, examples, and deadline arithmetic tests; they are not
+# an authoritative statutory calendar service.
+HOLIDAYS_2025: dict[str, frozenset[str]] = {
+    "hk": frozenset(
+        {
+            "2025-01-01",  # New Year's Day
+            "2025-01-29",  # Lunar New Year (day 1)
+            "2025-01-30",  # Lunar New Year (day 2)
+            "2025-01-31",  # Lunar New Year (day 3)
+            "2025-04-04",  # Ching Ming
+            "2025-05-01",  # Labour Day
+            "2025-10-01",  # National Day
+            "2025-12-25",  # Christmas
+            "2025-12-26",  # Boxing Day
+        }
+    ),
+    "us": frozenset(
+        {
+            "2025-01-01",  # New Year's Day
+            "2025-01-20",  # Martin Luther King Jr. Day
+            "2025-02-17",  # Washington's Birthday
+            "2025-05-26",  # Memorial Day
+            "2025-06-19",  # Juneteenth
+            "2025-07-04",  # Independence Day
+            "2025-09-01",  # Labor Day
+            "2025-11-27",  # Thanksgiving
+            "2025-12-25",  # Christmas
+        }
+    ),
+    "de": frozenset(
+        {
+            "2025-01-01",  # Neujahr
+            "2025-04-18",  # Good Friday
+            "2025-04-21",  # Easter Monday
+            "2025-05-01",  # Labour Day
+            "2025-05-29",  # Ascension
+            "2025-06-09",  # Whit Monday
+            "2025-10-03",  # German Unity Day
+            "2025-12-25",  # Christmas
+            "2025-12-26",  # Second Christmas Day
+        }
+    ),
+}
+
+# IANA zone names per region, used by wall-clock deadline arithmetic.
+REGION_TIMEZONES: dict[str, str] = {
+    "hk": "Asia/Hong_Kong",
+    "us": "America/New_York",
+    "de": "Europe/Berlin",
+}
+
+
+@dataclass
+class CalendarRegistry:
+    """Named regional working-day calendars.
+
+    ``with_defaults()`` builds the representative 2025 registries; extra
+    regions can be registered at runtime. Region lookup is deterministic
+    and unknown regions raise rather than silently falling back.
+    """
+
+    _calendars: dict[str, WorkdayCalendar] = field(default_factory=dict)
+
+    def register(self, calendar: WorkdayCalendar) -> None:
+        self._calendars[calendar.name] = calendar
+
+    def get(self, region: str) -> WorkdayCalendar:
+        try:
+            return self._calendars[region]
+        except KeyError:
+            raise KeyError(f"unknown calendar region: {region}") from None
+
+    def regions(self) -> list[str]:
+        return sorted(self._calendars)
+
+    @classmethod
+    def with_defaults(cls) -> CalendarRegistry:
+        registry = cls()
+        for region in sorted(HOLIDAYS_2025):
+            registry.register(WorkdayCalendar(name=region, holidays=set(HOLIDAYS_2025[region])))
+        return registry
