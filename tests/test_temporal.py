@@ -10,6 +10,7 @@ import pytest
 from mnemofold.temporal import (
     CalendarRegistry,
     IntervalFact,
+    StalenessPolicy,
     TemporalStore,
     WallDeadline,
     WorkdayCalendar,
@@ -327,3 +328,47 @@ class TestWallDeadline:
         assert (deadline.hour, deadline.minute) == (17, 0)
         with pytest.raises(ValueError, match="unknown calendar region"):
             wall_deadline_in("fr", "2025-07-03")
+
+
+class TestStalenessPolicy:
+    def _store(self, valid_from: str = "2025-01-01T00:00:00+00:00") -> TemporalStore[str]:
+        store: TemporalStore[str] = TemporalStore()
+        store.add(IntervalFact("s", "v", valid_from))
+        return store
+
+    def test_class_thresholds_are_exact(self):
+        policy = StalenessPolicy(max_age_days=30.0, warn_at=0.7, expire_at=2.0)
+        assert policy.classify_ratio(0.0) == "fresh"
+        assert policy.classify_ratio(0.69) == "fresh"
+        assert policy.classify_ratio(0.7) == "aging"
+        assert policy.classify_ratio(0.99) == "aging"
+        assert policy.classify_ratio(1.0) == "stale"
+        assert policy.classify_ratio(1.99) == "stale"
+        assert policy.classify_ratio(2.0) == "expired"
+
+    def test_classify_uses_store_age(self):
+        policy = StalenessPolicy(max_age_days=10.0)
+        store = self._store()
+        assert policy.classify(store, "s", "2025-01-05T00:00:00+00:00") == "fresh"
+        assert policy.classify(store, "s", "2025-01-08T12:00:00+00:00") == "aging"
+        assert policy.classify(store, "s", "2025-01-12T00:00:00+00:00") == "stale"
+        assert policy.classify(store, "s", "2025-01-21T00:00:00+00:00") == "expired"
+
+    def test_missing_fact_is_unknown(self):
+        assert StalenessPolicy().classify(self._store(), "nope", "2025-01-05T00:00:00+00:00") == (
+            "unknown"
+        )
+
+    def test_unparseable_now_is_expired_not_crash(self):
+        policy = StalenessPolicy()
+        assert policy.classify(self._store(), "s", "garbage") == "expired"
+
+    def test_superseded_fact_uses_current_version(self):
+        store: TemporalStore[str] = TemporalStore()
+        store.add(
+            IntervalFact("s", "old", "2024-01-01T00:00:00+00:00", "2025-01-01T00:00:00+00:00")
+        )
+        store.add(IntervalFact("s", "new", "2025-01-01T00:00:00+00:00"))
+        policy = StalenessPolicy(max_age_days=10.0)
+        # age is measured from the CURRENT version, not the year-old one
+        assert policy.classify(store, "s", "2025-01-05T00:00:00+00:00") == "fresh"

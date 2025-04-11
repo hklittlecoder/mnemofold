@@ -344,3 +344,42 @@ def wall_deadline_in(region: str, day: str, hour: int = 17, minute: int = 0) -> 
     except KeyError:
         raise ValueError(f"unknown calendar region: {region}") from None
     return WallDeadline(day=day, hour=hour, minute=minute, region_tz=tz_name)
+
+
+# --- Staleness policy ----------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class StalenessPolicy:
+    """Turns raw staleness ratios into deterministic, documented classes.
+
+    ``ratio = age_days / max_age_days`` (as computed by
+    :meth:`TemporalStore.staleness`). Classification thresholds:
+
+    * ``ratio < warn_at``            -> ``"fresh"``
+    * ``warn_at <= ratio < 1.0``     -> ``"aging"``
+    * ``1.0 <= ratio < expire_at``   -> ``"stale"``
+    * ``ratio >= expire_at``         -> ``"expired"``
+    * fact missing or unparseable    -> ``"unknown"``
+    """
+
+    max_age_days: float = 30.0
+    warn_at: float = 0.7
+    expire_at: float = 2.0
+
+    def classify_ratio(self, ratio: float) -> str:
+        if ratio != ratio or ratio == float("inf"):  # NaN or unbounded
+            return "expired"
+        if ratio < self.warn_at:
+            return "fresh"
+        if ratio < 1.0:
+            return "aging"
+        if ratio < self.expire_at:
+            return "stale"
+        return "expired"
+
+    def classify(self, store: TemporalStore[Any], fact_key: str, now: str) -> str:
+        if store.current(fact_key) is None:
+            return "unknown"
+        ratio = store.staleness(fact_key, now, max_age_days=self.max_age_days)
+        return self.classify_ratio(ratio)
