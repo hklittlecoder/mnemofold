@@ -10,6 +10,7 @@ import pytest
 from mnemofold.temporal import (
     CalendarRegistry,
     IntervalFact,
+    IntervalValidator,
     StalenessPolicy,
     TemporalStore,
     WallDeadline,
@@ -372,3 +373,70 @@ class TestStalenessPolicy:
         policy = StalenessPolicy(max_age_days=10.0)
         # age is measured from the CURRENT version, not the year-old one
         assert policy.classify(store, "s", "2025-01-05T00:00:00+00:00") == "fresh"
+
+
+class TestIntervalValidator:
+    def test_clean_history_has_no_violations(self):
+        store: TemporalStore[str] = TemporalStore()
+        store.add(
+            IntervalFact("owner", "alice", "2025-01-01T00:00:00+00:00", "2025-03-01T00:00:00+00:00")
+        )
+        store.add(
+            IntervalFact("owner", "bob", "2025-03-01T00:00:00+00:00", "2025-06-01T00:00:00+00:00")
+        )
+        store.add(IntervalFact("owner", "carol", "2025-06-01T00:00:00+00:00"))
+        assert IntervalValidator().validate(store) == []
+
+    def test_adjacent_intervals_across_offsets_are_clean(self):
+        store: TemporalStore[str] = TemporalStore()
+        store.add(
+            IntervalFact("owner", "alice", "2025-01-01T00:00:00+00:00", "2025-03-01T08:00:00+08:00")
+        )  # == 00:00Z
+        store.add(IntervalFact("owner", "bob", "2025-03-01T00:00:00+00:00"))
+        assert IntervalValidator().validate(store) == []
+
+    def test_overlapping_versions_are_reported(self):
+        store: TemporalStore[str] = TemporalStore()
+        store.add(
+            IntervalFact("owner", "alice", "2025-01-01T00:00:00+00:00", "2025-04-01T00:00:00+00:00")
+        )
+        store.add(
+            IntervalFact("owner", "bob", "2025-03-01T00:00:00+00:00", "2025-06-01T00:00:00+00:00")
+        )
+        violations = IntervalValidator().validate(store)
+        assert len(violations) == 1
+        v = violations[0]
+        assert v.fact_key == "owner"
+        assert v.earlier_value == "alice"
+        assert v.later_value == "bob"
+        assert v.overlap_start == "2025-03-01T00:00:00+00:00"
+        assert v.overlap_end == "2025-04-01T00:00:00+00:00"
+
+    def test_two_current_versions_are_open_ended_overlap(self):
+        store: TemporalStore[str] = TemporalStore()
+        store.add(IntervalFact("owner", "alice", "2025-01-01T00:00:00+00:00"))
+        store.add(IntervalFact("owner", "bob", "2025-02-01T00:00:00+00:00"))
+        violations = IntervalValidator().validate(store)
+        assert len(violations) == 1
+        assert violations[0].overlap_end is None
+
+    def test_gaps_are_legal(self):
+        store: TemporalStore[str] = TemporalStore()
+        store.add(
+            IntervalFact("owner", "alice", "2025-01-01T00:00:00+00:00", "2025-02-01T00:00:00+00:00")
+        )
+        store.add(IntervalFact("owner", "bob", "2025-05-01T00:00:00+00:00"))
+        assert IntervalValidator().validate(store) == []
+
+    def test_multiple_keys_reported_in_key_order(self):
+        store: TemporalStore[str] = TemporalStore()
+        store.add(
+            IntervalFact("zeta", "a", "2025-01-01T00:00:00+00:00", "2025-06-01T00:00:00+00:00")
+        )
+        store.add(IntervalFact("zeta", "b", "2025-03-01T00:00:00+00:00"))
+        store.add(
+            IntervalFact("alpha", "a", "2025-01-01T00:00:00+00:00", "2025-06-01T00:00:00+00:00")
+        )
+        store.add(IntervalFact("alpha", "b", "2025-03-01T00:00:00+00:00"))
+        violations = IntervalValidator().validate(store)
+        assert [v.fact_key for v in violations] == ["alpha", "zeta"]

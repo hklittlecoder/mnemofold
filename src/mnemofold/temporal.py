@@ -383,3 +383,64 @@ class StalenessPolicy:
             return "unknown"
         ratio = store.staleness(fact_key, now, max_age_days=self.max_age_days)
         return self.classify_ratio(ratio)
+
+
+# --- Interval validation -------------------------------------------------------
+
+
+@dataclass(slots=True)
+class IntervalViolation:
+    """One overlap found in a fact key's validity history."""
+
+    fact_key: str
+    earlier_value: Any
+    later_value: Any
+    overlap_start: str  # instant the two versions both claim (ISO)
+    overlap_end: str | None  # None when the overlap is open-ended
+
+
+@dataclass
+class IntervalValidator:
+    """Checks the "one active version per fact key" structural invariant.
+
+    A well-formed history tiles the timeline: each version ends exactly
+    when the next begins. Overlaps mean two versions claim the same
+    instant, which makes as-of answers ambiguous; gaps are legal (the
+    fact was simply unknown for a while) and are not reported.
+    """
+
+    def validate(self, store: TemporalStore[Any]) -> list[IntervalViolation]:
+        violations: list[IntervalViolation] = []
+        fact_keys = store.keys()
+        for fact_key in fact_keys:
+            versions = store.history(fact_key)
+            for earlier, later in zip(versions, versions[1:], strict=False):
+                later_start = _parse_instant(later.valid_from)
+                if earlier.valid_to is None:
+                    violations.append(
+                        IntervalViolation(
+                            fact_key=fact_key,
+                            earlier_value=earlier.value,
+                            later_value=later.value,
+                            overlap_start=later.valid_from,
+                            overlap_end=None,
+                        )
+                    )
+                    continue
+                earlier_end = _parse_instant(earlier.valid_to)
+                if earlier_end > later_start:
+                    overlap_end = (
+                        earlier.valid_to
+                        if later.valid_to is None
+                        else min(earlier_end, _parse_instant(later.valid_to)).isoformat()
+                    )
+                    violations.append(
+                        IntervalViolation(
+                            fact_key=fact_key,
+                            earlier_value=earlier.value,
+                            later_value=later.value,
+                            overlap_start=later.valid_from,
+                            overlap_end=overlap_end,
+                        )
+                    )
+        return violations
