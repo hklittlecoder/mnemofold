@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -10,9 +11,11 @@ from mnemofold.temporal import (
     CalendarRegistry,
     IntervalFact,
     TemporalStore,
+    WallDeadline,
     WorkdayCalendar,
     deadline_overdue,
     time_until_deadline,
+    wall_deadline_in,
 )
 
 
@@ -270,3 +273,57 @@ class TestCalendarRegistry:
         # Friday is a weekend day in this lab
         assert not registry.get("lab").is_workday(date(2025, 3, 14))
         assert registry.get("lab").is_workday(date(2025, 3, 16))  # Sunday works
+
+
+class TestWallDeadline:
+    NY = ZoneInfo("America/New_York")
+    HK = ZoneInfo("Asia/Hong_Kong")
+
+    def test_instant_resolves_through_region_offset(self):
+        deadline = WallDeadline(day="2025-03-14", hour=17, minute=0, region_tz="America/New_York")
+        instant = deadline.instant()
+        assert instant.utcoffset() == timedelta(hours=-4)  # EDT
+        assert instant.astimezone(UTC) == datetime(2025, 3, 14, 21, 0, tzinfo=UTC)
+
+    def test_offset_shifts_across_dst_boundary(self):
+        before = WallDeadline("2025-03-08", 17, 0, "America/New_York")  # EST
+        after = WallDeadline("2025-03-09", 17, 0, "America/New_York")  # EDT
+        assert before.instant().utcoffset() == timedelta(hours=-5)
+        assert after.instant().utcoffset() == timedelta(hours=-4)
+
+    def test_overdue_checked_from_another_timezone(self):
+        deadline = WallDeadline("2025-03-14", 17, 0, "America/New_York")
+        # 2025-03-15 06:00 in Hong Kong == 2025-03-14 18:00 EDT -> overdue
+        now_hk = datetime(2025, 3, 15, 6, 0, tzinfo=self.HK)
+        assert deadline.is_overdue(now_hk)
+        # 2025-03-15 04:00 in Hong Kong == 2025-03-14 16:00 EDT -> not yet
+        assert not deadline.is_overdue(datetime(2025, 3, 15, 4, 0, tzinfo=self.HK))
+
+    def test_grace_window(self):
+        deadline = WallDeadline("2025-03-14", 17, 0, "America/New_York")
+        now = datetime(2025, 3, 14, 18, 0, tzinfo=self.NY)
+        assert deadline.is_overdue(now)
+        assert not deadline.is_overdue(now, grace_hours=2.0)
+
+    def test_naive_now_is_rejected(self):
+        deadline = WallDeadline("2025-03-14", 17, 0, "America/New_York")
+        with pytest.raises(ValueError, match="timezone-aware"):
+            deadline.is_overdue(datetime(2025, 3, 14, 18, 0))
+
+    def test_rolled_to_workday_skips_weekend_and_holidays(self):
+        registry = CalendarRegistry.with_defaults()
+        # Saturday 2025-03-15 -> Monday 2025-03-17
+        saturday = WallDeadline("2025-03-15", 9, 0, "Asia/Hong_Kong")
+        rolled = saturday.rolled_to_workday(registry.get("hk"))
+        assert rolled.day == "2025-03-17"
+        assert (rolled.hour, rolled.minute) == (9, 0)
+        # Good Friday 2025-04-18 in DE -> Tuesday 2025-04-22 (Mon is Easter)
+        friday = WallDeadline("2025-04-18", 12, 0, "Europe/Berlin")
+        assert friday.rolled_to_workday(registry.get("de")).day == "2025-04-22"
+
+    def test_region_helper_and_unknown_region(self):
+        deadline = wall_deadline_in("us", "2025-07-03")
+        assert deadline.region_tz == "America/New_York"
+        assert (deadline.hour, deadline.minute) == (17, 0)
+        with pytest.raises(ValueError, match="unknown calendar region"):
+            wall_deadline_in("fr", "2025-07-03")

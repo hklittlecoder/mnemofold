@@ -7,9 +7,10 @@ working-day calendars, and deadline arithmetic across time zones.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Generic, TypeVar
+from zoneinfo import ZoneInfo
 
 T = TypeVar("T")
 
@@ -298,3 +299,48 @@ class CalendarRegistry:
         for region in sorted(HOLIDAYS_2025):
             registry.register(WorkdayCalendar(name=region, holidays=set(HOLIDAYS_2025[region])))
         return registry
+
+
+# --- Wall-clock deadlines -----------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class WallDeadline:
+    """A deadline anchored to local wall time in one region.
+
+    "Submit by 17:00 New York time on 2025-03-14" denotes an instant that
+    shifts with the region's UTC offset (DST included), so overdue checks
+    must resolve the wall time through the region's IANA zone rather than
+    assume a fixed offset.
+    """
+
+    day: str  # YYYY-MM-DD, interpreted in region_tz
+    hour: int
+    minute: int
+    region_tz: str
+
+    def instant(self) -> datetime:
+        """The deadline as one concrete tz-aware instant."""
+        tz = ZoneInfo(self.region_tz)
+        wall = time(hour=self.hour, minute=self.minute)
+        return datetime.combine(date.fromisoformat(self.day), wall, tzinfo=tz)
+
+    def is_overdue(self, now: datetime, grace_hours: float = 0.0) -> bool:
+        """Whether ``now`` (any timezone) is past the deadline plus grace."""
+        if now.tzinfo is None:
+            raise ValueError("now must be timezone-aware")
+        return now > self.instant() + timedelta(hours=grace_hours)
+
+    def rolled_to_workday(self, calendar: WorkdayCalendar) -> WallDeadline:
+        """Same wall time, moved forward to the next working day if needed."""
+        rolled = calendar.next_workday(date.fromisoformat(self.day))
+        return replace(self, day=rolled.isoformat())
+
+
+def wall_deadline_in(region: str, day: str, hour: int = 17, minute: int = 0) -> WallDeadline:
+    """Build a wall-clock deadline from a registry region name."""
+    try:
+        tz_name = REGION_TIMEZONES[region]
+    except KeyError:
+        raise ValueError(f"unknown calendar region: {region}") from None
+    return WallDeadline(day=day, hour=hour, minute=minute, region_tz=tz_name)
