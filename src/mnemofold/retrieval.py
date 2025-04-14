@@ -11,6 +11,7 @@ import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from mnemofold.memory import MemoryItem, MemoryStore
@@ -101,6 +102,10 @@ class BM25Index:
 
     def doc_count(self) -> int:
         return len(self._docs)
+
+    def ids(self) -> list[str]:
+        """All indexed item ids in deterministic (sorted) order."""
+        return sorted(self._docs)
 
 
 def mmr_rerank(
@@ -196,24 +201,109 @@ class RetrievalEngine:
                     tag_filtered.append((i, s))
             bm25_results = tag_filtered
 
-        # Collect texts for MMR
+        return self._finalize(bm25_results, query, top_k=top_k, lambda_mmr=lambda_mmr)
+
+    def search_parsed(
+        self,
+        parsed: ParsedQuery,
+        *,
+        top_k: int = 10,
+        lambda_mmr: float = 0.5,
+        min_score: float = 0.0,
+    ) -> list[SearchResult]:
+        """Run a structured query: BM25 over the free text, plus filters.
+
+        Filter semantics (all active filters must pass, i.e. AND):
+
+        * ``tags``/``people`` intersect the item's tags / metadata people;
+        * ``project`` matches the item's ``metadata["project"]``;
+        * ``after`` is inclusive, ``before`` exclusive, ``on`` matches the
+          UTC day of ``created_at``; undated items fail temporal filters;
+        * unparseable temporal filter values are ignored.
+
+        With empty free text the filters alone select candidates (each
+        scoring 0.0), keeping filter-only queries deterministic.
+        """
+        if parsed.text:
+            candidates = self.index.search(parsed.text, top_k=max(top_k * 3, 50))
+            candidates = [(i, s) for i, s in candidates if s >= min_score]
+        else:
+            candidates = [(item_id, 0.0) for item_id in self.index.ids()]
+        if parsed.has_filters():
+            candidates = [
+                (item_id, score)
+                for item_id, score in candidates
+                if self._matches_filters(parsed, item_id)
+            ]
+        return self._finalize(candidates, parsed.text, top_k=top_k, lambda_mmr=lambda_mmr)
+
+    def _matches_filters(self, parsed: ParsedQuery, item_id: str) -> bool:
+        item = self.store.get(item_id)
+        if item is None:
+            return False
+        if parsed.tags:
+            item_tags = {t.lower() for t in item.tags}
+            if not item_tags.intersection(parsed.tags):
+                return False
+        if parsed.people:
+            people = {str(p).lower() for p in item.metadata.get("people", ())}
+            person = str(item.metadata.get("person", "")).lower()
+            if person:
+                people.add(person)
+            if not people.intersection(parsed.people):
+                return False
+        if parsed.projects:
+            project = str(item.metadata.get("project", "")).lower()
+            if project not in parsed.projects:
+                return False
+        return self._within_time_bounds(parsed, item)
+
+    def _within_time_bounds(self, parsed: ParsedQuery, item: MemoryItem) -> bool:
+        if not (parsed.before or parsed.after or parsed.on):
+            return True
+        if not item.created_at:
+            return False  # undated items fail explicit temporal filters
+        created = _parse_filter_instant(item.created_at)
+        if created is None:
+            return False
+        if parsed.before is not None:
+            bound = _parse_filter_instant(parsed.before)
+            if bound is not None and created >= bound:
+                return False
+        if parsed.after is not None:
+            bound = _parse_filter_instant(parsed.after)
+            if bound is not None and created < bound:
+                return False
+        if parsed.on is not None:
+            bound = _parse_filter_instant(parsed.on)
+            if bound is not None and created.date() != bound.date():
+                return False
+        return True
+
+    def _finalize(
+        self,
+        candidates: list[tuple[str, float]],
+        query_text: str,
+        *,
+        top_k: int,
+        lambda_mmr: float,
+    ) -> list[SearchResult]:
+        """MMR-rerank candidates and attach citations to surviving items."""
         texts = {}
-        for item_id, _ in bm25_results:
+        for item_id, _ in candidates:
             item = self.store.get(item_id)
             if item:
                 texts[item_id] = f"{item.title} {item.content}"
 
-        # MMR rerank
-        ranked_ids = mmr_rerank(bm25_results, texts, lambda_param=lambda_mmr, top_k=top_k)
+        ranked_ids = mmr_rerank(candidates, texts, lambda_param=lambda_mmr, top_k=top_k)
 
-        # Build results with citations
         results: list[SearchResult] = []
-        score_map = dict(bm25_results)
+        score_map = dict(candidates)
         for item_id in ranked_ids:
             item = self.store.get(item_id)
             if item is None:
                 continue
-            snippet = self._make_snippet(item.content, query)
+            snippet = self._make_snippet(item.content, query_text)
             citation = f"[{item.item_id}]"
             reasons = [f"bm25_score={score_map.get(item_id, 0):.3f}"]
             results.append(
@@ -237,6 +327,17 @@ class RetrievalEngine:
         """Property test: all result citations point to existing items."""
         results = self.search(query)
         return all(self.store.get(r.item_id) is not None for r in results)
+
+
+def _parse_filter_instant(value: str) -> datetime | None:
+    """Parse an ISO date/datetime filter value; naive means UTC."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 # --- Query parsing -----------------------------------------------------------

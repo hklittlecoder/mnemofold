@@ -210,3 +210,91 @@ class TestQueryParser:
         parsed = parse_query("")
         assert parsed.text == ""
         assert not parsed.has_filters()
+
+
+class TestParsedSearch:
+    def _item(self, item_id, content, *, created="", tags=None, metadata=None) -> MemoryItem:
+        return MemoryItem(
+            item_id=item_id,
+            tier=MemoryTier.SEMANTIC,
+            content=content,
+            created_at=created,
+            tags=tags or set(),
+            metadata=metadata or {},
+        )
+
+    def _engine(self) -> RetrievalEngine:
+        store = MemoryStore()
+        engine = RetrievalEngine(store=store)
+        items = [
+            self._item(
+                "m1",
+                "budget review notes",
+                created="2025-01-10T09:00:00+00:00",
+                tags={"finance"},
+                metadata={"people": ["alice", "bob"], "project": "alpha"},
+            ),
+            self._item(
+                "m2",
+                "budget planning for launch",
+                created="2025-03-05T09:00:00+00:00",
+                tags={"ops"},
+                metadata={"person": "carol", "project": "beta"},
+            ),
+            self._item(
+                "m3",
+                "launch party playlist",
+                created="2025-04-01T09:00:00+00:00",
+                tags={"fun"},
+            ),
+        ]
+        for item in items:
+            store.add(item)
+            engine.index_item(item)
+        return engine
+
+    def _ids(self, engine, query: str) -> list[str]:
+        return [r.item_id for r in engine.search_parsed(parse_query(query))]
+
+    def test_free_text_only_matches_both_budget_items(self):
+        assert sorted(self._ids(self._engine(), "budget")) == ["m1", "m2"]
+
+    def test_tag_filter_narrows_results(self):
+        assert self._ids(self._engine(), "budget tag:finance") == ["m1"]
+
+    def test_person_filter_reads_metadata_list_and_scalar(self):
+        assert self._ids(self._engine(), "budget person:bob") == ["m1"]
+        assert self._ids(self._engine(), "budget person:carol") == ["m2"]
+
+    def test_project_filter(self):
+        assert self._ids(self._engine(), "budget project:beta") == ["m2"]
+
+    def test_before_is_exclusive(self):
+        assert self._ids(self._engine(), "budget before:2025-03-05T09:00:00+00:00") == ["m1"]
+
+    def test_after_is_inclusive(self):
+        assert self._ids(self._engine(), "budget after:2025-03-05T09:00:00+00:00") == ["m2"]
+
+    def test_on_matches_utc_day(self):
+        assert self._ids(self._engine(), "budget on:2025-03-05") == ["m2"]
+
+    def test_combined_filters_are_conjunctive(self):
+        assert self._ids(self._engine(), "budget person:alice project:beta") == []
+        assert self._ids(self._engine(), "budget person:alice project:alpha") == ["m1"]
+
+    def test_filter_only_query_returns_zero_scores(self):
+        engine = self._engine()
+        results = engine.search_parsed(parse_query("tag:finance"))
+        assert [r.item_id for r in results] == ["m1"]
+        assert results[0].score == 0.0
+
+    def test_unparseable_temporal_filter_is_ignored(self):
+        assert sorted(self._ids(self._engine(), "budget before:garbage")) == ["m1", "m2"]
+
+    def test_undated_item_fails_temporal_filter(self):
+        engine = self._engine()
+        undated = self._item("m4", "budget archive without a date")
+        engine.store.add(undated)
+        engine.index_item(undated)
+        assert sorted(self._ids(engine, "budget")) == ["m1", "m2", "m4"]
+        assert self._ids(engine, "budget before:2026-01-01") == ["m1", "m2"]
