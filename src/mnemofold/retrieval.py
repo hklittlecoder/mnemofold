@@ -186,10 +186,16 @@ class RetrievalEngine:
         lambda_mmr: float = 0.5,
         min_score: float = 0.0,
         tags: set[str] | None = None,
+        fusion: FusionWeights | None = None,
+        now: str = "",
     ) -> list[SearchResult]:
         """Search memory items with MMR reranking and citations.
 
-        All citations point to items that exist in the store.
+        All citations point to items that exist in the store. When
+        ``fusion`` is given, candidate scores are refolded from normalized
+        relevance, item salience, and recency (see FusionWeights); ``now``
+        (an ISO instant) is required whenever the recency weight is
+        positive.
         """
         bm25_results = self.index.search(query, top_k=top_k * 3)
         bm25_results = [(i, s) for i, s in bm25_results if s >= min_score]
@@ -202,7 +208,17 @@ class RetrievalEngine:
                     tag_filtered.append((i, s))
             bm25_results = tag_filtered
 
-        return self._finalize(bm25_results, query, top_k=top_k, lambda_mmr=lambda_mmr)
+        extra_reasons: dict[str, list[str]] = {}
+        if fusion is not None:
+            bm25_results = self._apply_fusion(bm25_results, fusion, now, extra_reasons)
+
+        return self._finalize(
+            bm25_results,
+            query,
+            top_k=top_k,
+            lambda_mmr=lambda_mmr,
+            extra_reasons=extra_reasons,
+        )
 
     def search_parsed(
         self,
@@ -211,6 +227,8 @@ class RetrievalEngine:
         top_k: int = 10,
         lambda_mmr: float = 0.5,
         min_score: float = 0.0,
+        fusion: FusionWeights | None = None,
+        now: str = "",
     ) -> list[SearchResult]:
         """Run a structured query: BM25 over the free text, plus filters.
 
@@ -236,7 +254,16 @@ class RetrievalEngine:
                 for item_id, score in candidates
                 if self._matches_filters(parsed, item_id)
             ]
-        return self._finalize(candidates, parsed.text, top_k=top_k, lambda_mmr=lambda_mmr)
+        extra_reasons: dict[str, list[str]] = {}
+        if fusion is not None:
+            candidates = self._apply_fusion(candidates, fusion, now, extra_reasons)
+        return self._finalize(
+            candidates,
+            parsed.text,
+            top_k=top_k,
+            lambda_mmr=lambda_mmr,
+            extra_reasons=extra_reasons,
+        )
 
     def _matches_filters(self, parsed: ParsedQuery, item_id: str) -> bool:
         item = self.store.get(item_id)
@@ -281,6 +308,50 @@ class RetrievalEngine:
                 return False
         return True
 
+    def _apply_fusion(
+        self,
+        candidates: list[tuple[str, float]],
+        weights: FusionWeights,
+        now: str,
+        extra_reasons: dict[str, list[str]],
+    ) -> list[tuple[str, float]]:
+        """Refold candidate scores from relevance, importance, and recency.
+
+        Relevance is normalized by the best candidate score so the three
+        components share a comparable [0, 1] scale. Undated items get no
+        recency contribution. Component values are recorded as reasons so
+        every fused ranking stays explainable.
+        """
+        if not candidates:
+            return candidates
+        now_dt = _parse_filter_instant(now) if now else None
+        if weights.recency > 0 and now_dt is None:
+            raise ValueError("recency fusion requires a valid 'now' timestamp")
+        max_score = max(score for _, score in candidates)
+        fused: list[tuple[str, float]] = []
+        for item_id, score in candidates:
+            item = self.store.get(item_id)
+            relevance = score / max_score if max_score > 0 else 0.0
+            salience = item.salience if item is not None else 0.0
+            age_days: float | None = None
+            if now_dt is not None and item is not None and item.created_at:
+                created = _parse_filter_instant(item.created_at)
+                if created is not None:
+                    age_days = (now_dt - created).total_seconds() / 86400.0
+            recency_component = 0.0
+            if age_days is not None:
+                recency_component = 0.5 ** (max(0.0, age_days) / weights.half_life_days)
+            fused.append((item_id, fuse_score(relevance, salience, age_days, weights)))
+            extra_reasons.setdefault(item_id, []).extend(
+                [
+                    f"relevance={round(relevance, 6)}",
+                    f"importance={round(salience, 6)}",
+                    f"recency={round(recency_component, 6)}",
+                ]
+            )
+        fused.sort(key=lambda pair: (-pair[1], pair[0]))
+        return fused
+
     def _finalize(
         self,
         candidates: list[tuple[str, float]],
@@ -288,6 +359,7 @@ class RetrievalEngine:
         *,
         top_k: int,
         lambda_mmr: float,
+        extra_reasons: dict[str, list[str]] | None = None,
     ) -> list[SearchResult]:
         """MMR-rerank candidates and attach citations to surviving items."""
         texts = {}
@@ -306,7 +378,9 @@ class RetrievalEngine:
                 continue
             snippet = self._make_snippet(item.content, query_text)
             citation = f"[{item.item_id}]"
-            reasons = [f"bm25_score={score_map.get(item_id, 0):.3f}"]
+            reasons = [f"score={score_map.get(item_id, 0.0):.6f}"]
+            if extra_reasons:
+                reasons.extend(extra_reasons.get(item_id, []))
             results.append(
                 SearchResult(
                     item_id=item_id,
@@ -418,3 +492,52 @@ def parse_query(raw: str) -> ParsedQuery:
     remainder = _FILTER_RE.sub(" ", raw)
     parsed.text = " ".join(remainder.split())
     return parsed
+
+
+# --- Score fusion --------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class FusionWeights:
+    """Weights for fusing relevance, importance, and recency.
+
+    ``half_life_days`` controls exponential recency decay, in the spirit
+    of Ebbinghaus forgetting-curve modeling: an item loses half of its
+    recency contribution per half-life. Weights must be non-negative and
+    not all zero.
+    """
+
+    relevance: float = 1.0
+    importance: float = 0.0
+    recency: float = 0.0
+    half_life_days: float = 14.0
+
+    def __post_init__(self) -> None:
+        if min(self.relevance, self.importance, self.recency) < 0:
+            raise ValueError("fusion weights must be non-negative")
+        if self.relevance + self.importance + self.recency <= 0:
+            raise ValueError("fusion weights must not all be zero")
+        if self.half_life_days <= 0:
+            raise ValueError("half_life_days must be positive")
+
+
+def fuse_score(
+    relevance: float,
+    salience: float,
+    age_days: float | None,
+    weights: FusionWeights,
+) -> float:
+    """Weighted sum of normalized relevance, importance, and recency.
+
+    ``relevance`` is expected in [0, 1] (caller normalizes), ``salience``
+    is the item's importance in [0, 1], and ``age_days`` is the item age
+    (``None`` for undated items contributes no recency). The result is
+    quantized here, at the production point, so digests stay stable.
+    """
+    recency = 0.0
+    if age_days is not None:
+        recency = 0.5 ** (max(0.0, age_days) / weights.half_life_days)
+    fused = (
+        weights.relevance * relevance + weights.importance * salience + weights.recency * recency
+    )
+    return round(fused, 6)

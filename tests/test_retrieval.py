@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.retrieval import (
     BM25Index,
+    FusionWeights,
     ParsedQuery,
     RetrievalEngine,
+    fuse_score,
     mmr_rerank,
     parse_query,
     tokenize,
@@ -353,3 +357,99 @@ class TestIndexBookkeeping:
             idx.remove(item_id)
         assert idx.doc_count() == 0
         assert idx.search("alpha") == []
+
+
+class TestFusion:
+    def test_weight_validation(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            FusionWeights(relevance=-1.0)
+        with pytest.raises(ValueError, match="not all be zero"):
+            FusionWeights(relevance=0.0, importance=0.0, recency=0.0)
+        with pytest.raises(ValueError, match="half_life_days"):
+            FusionWeights(half_life_days=0.0)
+
+    def test_recency_halves_at_half_life(self):
+        w = FusionWeights(relevance=0.0, importance=0.0, recency=1.0, half_life_days=10.0)
+        assert fuse_score(0.0, 0.0, 0.0, w) == 1.0
+        assert fuse_score(0.0, 0.0, 10.0, w) == 0.5
+        assert fuse_score(0.0, 0.0, 20.0, w) == 0.25
+
+    def test_undated_items_get_no_recency(self):
+        w = FusionWeights(relevance=0.0, importance=0.0, recency=1.0)
+        assert fuse_score(0.0, 0.0, None, w) == 0.0
+
+    def test_negative_age_clamps_to_fresh(self):
+        w = FusionWeights(relevance=0.0, importance=0.0, recency=1.0)
+        assert fuse_score(0.0, 0.0, -3.0, w) == 1.0
+
+    def test_weighted_sum_is_quantized(self):
+        w = FusionWeights(relevance=1.0, importance=1.0, recency=0.0)
+        assert fuse_score(0.5, 0.25, None, w) == 0.75
+        thirds = FusionWeights(relevance=1.0 / 3.0, importance=0.0, recency=0.0)
+        assert fuse_score(1.0, 0.0, None, thirds) == 0.333333
+
+
+class TestFusionInEngine:
+    NOW = "2025-06-15T00:00:00+00:00"
+
+    def _engine(self) -> RetrievalEngine:
+        store = MemoryStore()
+        engine = RetrievalEngine(store=store)
+        old = MemoryItem(
+            item_id="old",
+            tier=MemoryTier.SEMANTIC,
+            content="release report draft",
+            salience=0.2,
+            created_at="2025-01-01T00:00:00+00:00",
+        )
+        new = MemoryItem(
+            item_id="new",
+            tier=MemoryTier.SEMANTIC,
+            content="release report final",
+            salience=0.9,
+            created_at="2025-06-01T00:00:00+00:00",
+        )
+        store.add(old)
+        store.add(new)
+        engine.index_item(old)
+        engine.index_item(new)
+        return engine
+
+    def test_equal_relevance_recency_prefers_newer(self):
+        engine = self._engine()
+        weights = FusionWeights(relevance=1.0, recency=1.0, half_life_days=30.0)
+        results = engine.search("release report", lambda_mmr=1.0, fusion=weights, now=self.NOW)
+        assert results[0].item_id == "new"
+
+    def test_importance_uses_salience(self):
+        engine = self._engine()
+        weights = FusionWeights(relevance=0.0, importance=1.0)
+        results = engine.search("release report", lambda_mmr=1.0, fusion=weights)
+        assert results[0].item_id == "new"
+
+    def test_recency_weight_without_now_raises(self):
+        engine = self._engine()
+        with pytest.raises(ValueError, match="now"):
+            engine.search("release report", fusion=FusionWeights(recency=1.0))
+
+    def test_reasons_explain_components(self):
+        engine = self._engine()
+        weights = FusionWeights(relevance=1.0, importance=1.0, recency=1.0)
+        results = engine.search("release report", fusion=weights, now=self.NOW)
+        joined = " ".join(results[0].reasons)
+        assert "relevance=" in joined
+        assert "importance=" in joined
+        assert "recency=" in joined
+        assert joined.startswith("score=")
+
+    def test_fusion_is_deterministic(self):
+        weights = FusionWeights(relevance=1.0, importance=0.5, recency=0.5)
+        first = [
+            (r.item_id, r.score)
+            for r in self._engine().search("release report", fusion=weights, now=self.NOW)
+        ]
+        second = [
+            (r.item_id, r.score)
+            for r in self._engine().search("release report", fusion=weights, now=self.NOW)
+        ]
+        assert first == second
