@@ -11,6 +11,7 @@ import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Any
 
 from mnemofold.memory import MemoryItem, MemoryStore
 
@@ -236,3 +237,82 @@ class RetrievalEngine:
         """Property test: all result citations point to existing items."""
         results = self.search(query)
         return all(self.store.get(r.item_id) is not None for r in results)
+
+
+# --- Query parsing -----------------------------------------------------------
+
+_FILTER_RE = re.compile(
+    r"(?:^|\s)(?P<key>tag|person|project|before|after|on):(?P<value>\S+)",
+    re.IGNORECASE,
+)
+
+_LIST_FILTERS = ("tag", "person", "project")
+_INSTANT_FILTERS = ("before", "after", "on")
+
+
+@dataclass(slots=True)
+class ParsedQuery:
+    """Structured form of a query string.
+
+    Grammar (all filters optional, in any position):
+
+    * ``tag:<t>``, ``person:<p>``, ``project:<pr>`` — accumulate, matched
+      case-insensitively;
+    * ``before:<iso>``, ``after:<iso>``, ``on:<iso>`` — temporal bounds,
+      last occurrence wins;
+    * everything else is free text for BM25.
+    """
+
+    text: str = ""
+    tags: list[str] = field(default_factory=list)
+    people: list[str] = field(default_factory=list)
+    projects: list[str] = field(default_factory=list)
+    before: str | None = None
+    after: str | None = None
+    on: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "tags": list(self.tags),
+            "people": list(self.people),
+            "projects": list(self.projects),
+            "before": self.before,
+            "after": self.after,
+            "on": self.on,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ParsedQuery:
+        return cls(
+            text=data.get("text", ""),
+            tags=list(data.get("tags", [])),
+            people=list(data.get("people", [])),
+            projects=list(data.get("projects", [])),
+            before=data.get("before"),
+            after=data.get("after"),
+            on=data.get("on"),
+        )
+
+    def has_filters(self) -> bool:
+        return bool(
+            self.tags or self.people or self.projects or self.before or self.after or self.on
+        )
+
+
+def parse_query(raw: str) -> ParsedQuery:
+    """Split a raw query string into filters and free text, deterministically."""
+    parsed = ParsedQuery()
+    for match in _FILTER_RE.finditer(raw):
+        key = match.group("key").lower()
+        value = match.group("value")
+        if key in _LIST_FILTERS:
+            target = {"tag": parsed.tags, "person": parsed.people, "project": parsed.projects}[key]
+            lowered = value.lower()
+            if lowered not in target:
+                target.append(lowered)
+        elif key in _INSTANT_FILTERS:
+            setattr(parsed, key, value)
+    remainder = _FILTER_RE.sub(" ", raw)
+    parsed.text = " ".join(remainder.split())
+    return parsed

@@ -5,8 +5,10 @@ from __future__ import annotations
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.retrieval import (
     BM25Index,
+    ParsedQuery,
     RetrievalEngine,
     mmr_rerank,
+    parse_query,
     tokenize,
 )
 
@@ -153,3 +155,58 @@ class TestRetrievalEngine:
         engine.build_index()
         results = engine.search("xyzzynonexistent")
         assert len(results) == 0
+
+
+class TestQueryParser:
+    def test_plain_text_query(self):
+        parsed = parse_query("budget planning notes")
+        assert parsed.text == "budget planning notes"
+        assert not parsed.has_filters()
+
+    def test_filters_extracted_from_any_position(self):
+        parsed = parse_query("person:alice budget tag:finance before:2025-03-01")
+        assert parsed.text == "budget"
+        assert parsed.people == ["alice"]
+        assert parsed.tags == ["finance"]
+        assert parsed.before == "2025-03-01"
+
+    def test_filter_keys_are_case_insensitive(self):
+        parsed = parse_query("Tag:Finance PERSON:Bob")
+        assert parsed.tags == ["finance"]
+        assert parsed.people == ["bob"]
+        assert parsed.text == ""
+
+    def test_list_filters_accumulate_without_duplicates(self):
+        parsed = parse_query("tag:a tag:b tag:a project:alpha person:carol")
+        assert parsed.tags == ["a", "b"]
+        assert parsed.projects == ["alpha"]
+        assert parsed.people == ["carol"]
+
+    def test_instant_filters_last_wins(self):
+        parsed = parse_query("before:2025-01-01 before:2025-06-01")
+        assert parsed.before == "2025-06-01"
+
+    def test_on_after_before_combine(self):
+        parsed = parse_query("on:2025-03-01 after:2025-01-01 standup")
+        assert parsed.on == "2025-03-01"
+        assert parsed.after == "2025-01-01"
+        assert parsed.text == "standup"
+
+    def test_words_with_colons_stay_in_text(self):
+        parsed = parse_query("see taglike:x and mytag:y notes")
+        assert parsed.tags == []
+        assert "taglike:x" in parsed.text
+        assert "mytag:y" in parsed.text
+
+    def test_whitespace_collapses_in_text(self):
+        parsed = parse_query("  alpha   tag:x    beta  ")
+        assert parsed.text == "alpha beta"
+
+    def test_dict_roundtrip(self):
+        parsed = parse_query("budget person:alice tag:finance after:2025-01-01")
+        assert ParsedQuery.from_dict(parsed.to_dict()) == parsed
+
+    def test_empty_query(self):
+        parsed = parse_query("")
+        assert parsed.text == ""
+        assert not parsed.has_filters()
