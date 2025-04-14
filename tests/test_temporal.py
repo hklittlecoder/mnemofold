@@ -440,3 +440,48 @@ class TestIntervalValidator:
         store.add(IntervalFact("alpha", "b", "2025-03-01T00:00:00+00:00"))
         violations = IntervalValidator().validate(store)
         assert [v.fact_key for v in violations] == ["alpha", "zeta"]
+
+
+class TestTemporalBoundaries:
+    def test_leap_day_interval_bounds(self):
+        f = IntervalFact("s", "v", "2024-02-28T00:00:00+00:00", "2024-03-01T00:00:00+00:00")
+        assert f.is_valid_at("2024-02-29T12:00:00+00:00")
+        assert not f.is_valid_at("2024-03-01T00:00:00+00:00")
+
+    def test_workdays_across_leap_day(self):
+        cal = WorkdayCalendar("test")
+        # Thu 2024-02-29 + 1 workday -> Fri 03-01; + 2 -> Mon 03-04
+        assert cal.add_workdays(date(2024, 2, 29), 1) == date(2024, 3, 1)
+        assert cal.add_workdays(date(2024, 2, 29), 2) == date(2024, 3, 4)
+
+    def test_staleness_across_year_boundary(self):
+        store: TemporalStore[str] = TemporalStore()
+        store.add(IntervalFact("s", "v", "2024-12-30T00:00:00+00:00"))
+        age = store.staleness("s", "2025-01-02T00:00:00+00:00", max_age_days=6)
+        assert age == 0.5  # 3 days old / 6-day horizon
+
+    def test_workdays_between_is_signed(self):
+        cal = WorkdayCalendar("test")
+        forward = cal.workdays_between(date(2025, 3, 10), date(2025, 3, 14))
+        assert forward == 4
+        assert cal.workdays_between(date(2025, 3, 14), date(2025, 3, 10)) == -4
+
+    def test_next_workday_over_holiday_run(self):
+        cal = WorkdayCalendar("test", holidays={"2025-03-10", "2025-03-11"})
+        assert cal.next_workday(date(2025, 3, 8)) == date(2025, 3, 12)
+
+    def test_deadline_exactly_at_due_is_not_overdue(self):
+        due = "2025-03-14T17:00:00+00:00"
+        assert not deadline_overdue(due, due)
+        assert deadline_overdue(due, "2025-03-14T17:00:01+00:00")
+
+    def test_time_until_deadline_zero_and_invalid(self):
+        due = "2025-03-14T17:00:00+00:00"
+        assert time_until_deadline(due, due) == timedelta(0)
+        assert time_until_deadline("bad", due) is None
+        assert not deadline_overdue("bad", due)
+
+    def test_naive_timestamps_are_treated_as_utc(self):
+        f = IntervalFact("s", "v", "2025-01-01T00:00:00", "2025-02-01T00:00:00")
+        assert f.is_valid_at("2025-01-15T00:00:00")
+        assert deadline_overdue("2025-01-01T00:00:00", "2025-01-02T00:00:00")
