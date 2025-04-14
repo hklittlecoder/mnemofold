@@ -1,0 +1,52 @@
+{
+  "alpha risk milestone": [
+    {
+      "citation": "[d6]",
+      "item_id": "d6",
+      "score": 5.548675
+    }
+  ],
+  "budget": [
+    {
+      "citation": "[d1]",
+      "item_id": "d1",
+      "score": 1.503094
+    },
+    {
+      "citation": "[d2]",
+      "item_id": "d2",
+      "score": 0.944605
+    }
+  ],
+  "launch planning": [
+    {
+      "citation": "[d2]",
+      "item_id": "d2",
+      "score": 3.449751
+    },
+    {
+      "citation": "[d5]",
+      "item_id": "d5",
+      "score": 1.503094
+    }
+  ],
+  "notes": [
+    {
+      "citation": "[d3]",
+      "item_id": "d3",
+      "score": 1.211317
+    },
+    {
+      "citation": "[d2]",
+      "item_id": "d2",
+      "score": 0.944605
+    }
+  ],
+  "parser design doc": [
+    {
+      "citation": "[d4]",
+      "item_id": "d4",
+      "score": 5.804515
+    }
+  ]
+}
