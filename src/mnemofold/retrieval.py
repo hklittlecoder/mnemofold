@@ -52,6 +52,7 @@ class BM25Index:
     )  # term -> {item_id: freq}
     _avgdl: float = 0.0
     _total_len: int = 0
+    _dl: dict[str, int] = field(default_factory=dict)  # item_id -> token count
 
     def add(self, item_id: str, text: str) -> None:
         """Add an item to the index."""
@@ -59,6 +60,7 @@ class BM25Index:
             self.remove(item_id)
         tokens = tokenize(text)
         self._docs[item_id] = text
+        self._dl[item_id] = len(tokens)
         self._total_len += len(tokens)
         self._avgdl = self._total_len / len(self._docs) if self._docs else 0.0
         freq: dict[str, int] = defaultdict(int)
@@ -73,10 +75,9 @@ class BM25Index:
         if item_id not in self._docs:
             return
         text = self._docs.pop(item_id)
-        tokens = tokenize(text)
-        self._total_len -= len(tokens)
+        self._total_len -= self._dl.pop(item_id, 0)
         self._avgdl = self._total_len / len(self._docs) if self._docs else 0.0
-        for term in set(tokens):
+        for term in set(tokenize(text)):
             if item_id in self._tf.get(term, {}):
                 del self._tf[term][item_id]
                 self._df[term] = max(0, self._df[term] - 1)
@@ -94,7 +95,7 @@ class BM25Index:
                 continue
             idf = math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
             for doc_id, tf in self._tf.get(term, {}).items():
-                dl = len(tokenize(self._docs[doc_id]))
+                dl = self._dl[doc_id]
                 denom = tf + self.k1 * (1 - self.b + self.b * dl / max(1.0, self._avgdl))
                 scores[doc_id] += idf * (tf * (self.k1 + 1)) / denom
         results = sorted(scores.items(), key=lambda x: x[1], reverse=True)

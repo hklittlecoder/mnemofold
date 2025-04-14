@@ -298,3 +298,58 @@ class TestParsedSearch:
         engine.index_item(undated)
         assert sorted(self._ids(engine, "budget")) == ["m1", "m2", "m4"]
         assert self._ids(engine, "budget before:2026-01-01") == ["m1", "m2"]
+
+
+class TestIndexBookkeeping:
+    """Black-box checks that length statistics survive add/remove/re-add."""
+
+    def _corpus(self, idx: BM25Index) -> None:
+        idx.add("d1", "alpha beta gamma")
+        idx.add("d2", "alpha alpha beta delta epsilon zeta")
+        idx.add("d3", "gamma delta")
+
+    def test_add_remove_restores_identical_scores(self):
+        before = BM25Index()
+        self._corpus(before)
+        baseline = before.search("alpha beta")
+
+        after = BM25Index()
+        self._corpus(after)
+        after.add("tmp", "unrelated words about gardening and cooking")
+        after.remove("tmp")
+        assert after.search("alpha beta") == baseline
+
+    def test_readd_replaces_document(self):
+        idx = BM25Index()
+        self._corpus(idx)
+        idx.add("d1", "totally different content about orbit mechanics")
+        assert idx.doc_count() == 3
+        assert [d for d, _ in idx.search("alpha beta")] == ["d2"]
+        assert [d for d, _ in idx.search("orbit")] == ["d1"]
+
+    def test_remove_missing_id_is_noop(self):
+        idx = BM25Index()
+        self._corpus(idx)
+        baseline = idx.search("alpha")
+        idx.remove("nope")
+        assert idx.search("alpha") == baseline
+        assert idx.doc_count() == 3
+
+    def test_removing_a_doc_changes_length_statistics(self):
+        # avgdl feeds BM25 normalization, so removing one long doc must
+        # observably shift scores of the remaining docs.
+        idx = BM25Index()
+        idx.add("long", "alpha " + " ".join(f"pad{i}" for i in range(200)))
+        idx.add("short", "alpha beta")
+        with_long = dict(idx.search("alpha"))
+        idx.remove("long")
+        without_long = dict(idx.search("alpha"))
+        assert with_long["short"] != without_long["short"]
+
+    def test_remove_everything_returns_to_genesis(self):
+        idx = BM25Index()
+        self._corpus(idx)
+        for item_id in ("d1", "d2", "d3"):
+            idx.remove(item_id)
+        assert idx.doc_count() == 0
+        assert idx.search("alpha") == []
