@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from mnemofold.graph import Edge, EdgeType, Node, NodeType, WorkstreamGraph
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.retrieval import (
     BM25Index,
@@ -453,3 +454,95 @@ class TestFusionInEngine:
             for r in self._engine().search("release report", fusion=weights, now=self.NOW)
         ]
         assert first == second
+
+
+class TestGraphExpansion:
+    def _engine(self, with_graph: bool = True) -> RetrievalEngine:
+        store = MemoryStore()
+        graph = None
+        if with_graph:
+            graph = WorkstreamGraph()
+            graph.add_node(Node(node_id="alice", node_type=NodeType.PERSON, label="Alice"))
+            graph.add_node(Node(node_id="alpha", node_type=NodeType.PROJECT, label="Alpha"))
+            graph.add_node(Node(node_id="zeta", node_type=NodeType.PROJECT, label="Zeta"))
+            graph.add_edge(
+                Edge(
+                    edge_id="e1",
+                    edge_type=EdgeType.PARTICIPATES,
+                    source_id="alice",
+                    target_id="alpha",
+                )
+            )
+        engine = RetrievalEngine(store=store, graph=graph)
+        items = [
+            MemoryItem(
+                item_id="m-hit",
+                tier=MemoryTier.EPISODIC,
+                content="quarterly report draft",
+                metadata={"entity_ids": ["alice"]},
+            ),
+            MemoryItem(
+                item_id="m-rel",
+                tier=MemoryTier.EPISODIC,
+                content="alpha milestone notes",
+                metadata={"entity_ids": ["alpha"]},
+            ),
+            MemoryItem(
+                item_id="m-off",
+                tier=MemoryTier.EPISODIC,
+                content="zeta unrelated report",
+                metadata={"entity_ids": ["zeta"]},
+            ),
+        ]
+        for item in items:
+            store.add(item)
+            engine.index_item(item)
+        return engine
+
+    def test_expansion_adds_graph_neighbors(self):
+        engine = self._engine()
+        plain = {r.item_id for r in engine.search("report")}
+        assert plain == {"m-hit", "m-off"}
+        expanded = {r.item_id for r in engine.search("report", expand_graph=True)}
+        assert expanded == {"m-hit", "m-off", "m-rel"}
+
+    def test_expansion_reason_and_discounted_score(self):
+        engine = self._engine()
+        results = {r.item_id: r for r in engine.search("report", expand_graph=True)}
+        base = results["m-hit"].score
+        assert results["m-rel"].score == pytest.approx(base * 0.5)
+        assert any(
+            "expanded_via=graph:alice->alpha" in reason for reason in results["m-rel"].reasons
+        )
+        assert not any("expanded_via" in reason for reason in results["m-hit"].reasons)
+
+    def test_discount_zero_still_expands_at_zero_score(self):
+        engine = self._engine()
+        results = {
+            r.item_id: r for r in engine.search("report", expand_graph=True, expansion_discount=0.0)
+        }
+        assert "m-rel" in results
+        assert results["m-rel"].score == 0.0
+
+    def test_without_graph_expansion_is_noop(self):
+        engine = self._engine(with_graph=False)
+        results = {r.item_id for r in engine.search("report", expand_graph=True)}
+        assert results == {"m-hit", "m-off"}
+
+    def test_expansion_is_deterministic(self):
+        first = [
+            (r.item_id, round(r.score, 6))
+            for r in self._engine().search("report", expand_graph=True)
+        ]
+        second = [
+            (r.item_id, round(r.score, 6))
+            for r in self._engine().search("report", expand_graph=True)
+        ]
+        assert first == second
+
+    def test_parsed_search_supports_expansion(self):
+        engine = self._engine()
+        results = {
+            r.item_id for r in engine.search_parsed(parse_query("report"), expand_graph=True)
+        }
+        assert results == {"m-hit", "m-off", "m-rel"}

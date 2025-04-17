@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from mnemofold.graph import WorkstreamGraph
 from mnemofold.memory import MemoryItem, MemoryStore
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+")
@@ -167,11 +168,15 @@ class RetrievalEngine:
 
     store: MemoryStore
     index: BM25Index = field(default_factory=BM25Index)
+    graph: WorkstreamGraph | None = None
     _graph_cache: dict[str, list[str]] = field(default_factory=dict)
+    _entity_index: dict[str, set[str]] = field(default_factory=dict)
 
     def index_item(self, item: MemoryItem) -> None:
         text = f"{item.title} {item.content}"
         self.index.add(item.item_id, text)
+        for entity_id in sorted(str(e) for e in item.metadata.get("entity_ids", ())):
+            self._entity_index.setdefault(entity_id, set()).add(item.item_id)
 
     def build_index(self) -> None:
         """Build index from all items in the store."""
@@ -188,6 +193,8 @@ class RetrievalEngine:
         tags: set[str] | None = None,
         fusion: FusionWeights | None = None,
         now: str = "",
+        expand_graph: bool = False,
+        expansion_discount: float = 0.5,
     ) -> list[SearchResult]:
         """Search memory items with MMR reranking and citations.
 
@@ -200,6 +207,10 @@ class RetrievalEngine:
         bm25_results = self.index.search(query, top_k=top_k * 3)
         bm25_results = [(i, s) for i, s in bm25_results if s >= min_score]
 
+        extra_reasons: dict[str, list[str]] = {}
+        if expand_graph and self.graph is not None:
+            bm25_results = self._expand_with_graph(bm25_results, expansion_discount, extra_reasons)
+
         if tags:
             tag_filtered: list[tuple[str, float]] = []
             for i, s in bm25_results:
@@ -208,7 +219,6 @@ class RetrievalEngine:
                     tag_filtered.append((i, s))
             bm25_results = tag_filtered
 
-        extra_reasons: dict[str, list[str]] = {}
         if fusion is not None:
             bm25_results = self._apply_fusion(bm25_results, fusion, now, extra_reasons)
 
@@ -229,6 +239,8 @@ class RetrievalEngine:
         min_score: float = 0.0,
         fusion: FusionWeights | None = None,
         now: str = "",
+        expand_graph: bool = False,
+        expansion_discount: float = 0.5,
     ) -> list[SearchResult]:
         """Run a structured query: BM25 over the free text, plus filters.
 
@@ -248,13 +260,15 @@ class RetrievalEngine:
             candidates = [(i, s) for i, s in candidates if s >= min_score]
         else:
             candidates = [(item_id, 0.0) for item_id in self.index.ids()]
+        extra_reasons: dict[str, list[str]] = {}
+        if expand_graph and self.graph is not None:
+            candidates = self._expand_with_graph(candidates, expansion_discount, extra_reasons)
         if parsed.has_filters():
             candidates = [
                 (item_id, score)
                 for item_id, score in candidates
                 if self._matches_filters(parsed, item_id)
             ]
-        extra_reasons: dict[str, list[str]] = {}
         if fusion is not None:
             candidates = self._apply_fusion(candidates, fusion, now, extra_reasons)
         return self._finalize(
@@ -307,6 +321,43 @@ class RetrievalEngine:
             if bound is not None and created.date() != bound.date():
                 return False
         return True
+
+    def _expand_with_graph(
+        self,
+        candidates: list[tuple[str, float]],
+        discount: float,
+        extra_reasons: dict[str, list[str]],
+    ) -> list[tuple[str, float]]:
+        """Add items linked through the entity graph to the candidate pool.
+
+        For every base candidate, items attached to a graph neighbor of
+        its entities join the pool with score ``base * discount`` (the
+        best source wins). Entity and neighbor iteration is sorted, so
+        expansion is deterministic for identical inputs.
+        """
+        present = {item_id for item_id, _ in candidates}
+        additions: dict[str, tuple[float, str]] = {}
+        for item_id, score in candidates:
+            item = self.store.get(item_id)
+            if item is None or self.graph is None:
+                continue
+            for entity_id in sorted(str(e) for e in item.metadata.get("entity_ids", ())):
+                neighbors = sorted(self.graph.neighbors(entity_id), key=lambda n: n.node_id)
+                for neighbor in neighbors:
+                    for related_id in sorted(self._entity_index.get(neighbor.node_id, ())):
+                        if related_id in present:
+                            continue
+                        expanded = score * discount
+                        via = f"graph:{entity_id}->{neighbor.node_id}"
+                        current = additions.get(related_id)
+                        if current is None or expanded > current[0]:
+                            additions[related_id] = (expanded, via)
+        merged = list(candidates)
+        for related_id in sorted(additions):
+            expanded, via = additions[related_id]
+            merged.append((related_id, expanded))
+            extra_reasons.setdefault(related_id, []).append(f"expanded_via={via}")
+        return merged
 
     def _apply_fusion(
         self,
