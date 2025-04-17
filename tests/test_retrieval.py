@@ -546,3 +546,117 @@ class TestGraphExpansion:
             r.item_id for r in engine.search_parsed(parse_query("report"), expand_graph=True)
         }
         assert results == {"m-hit", "m-off", "m-rel"}
+
+
+class TestAsOfRetrieval:
+    def _engine(self) -> RetrievalEngine:
+        store = MemoryStore()
+        engine = RetrievalEngine(store=store)
+        early = MemoryItem(
+            item_id="early",
+            tier=MemoryTier.EPISODIC,
+            content="migration plan draft",
+            created_at="2025-01-10T00:00:00+00:00",
+        )
+        store.add(early)
+        engine.index_item(early)
+        return engine
+
+    def _add_later(self, engine: RetrievalEngine) -> None:
+        later = MemoryItem(
+            item_id="later",
+            tier=MemoryTier.EPISODIC,
+            content="migration plan final",
+            created_at="2025-05-10T00:00:00+00:00",
+        )
+        engine.store.add(later)
+        engine.index_item(later)
+
+    def test_items_created_after_bound_are_excluded(self):
+        engine = self._engine()
+        self._add_later(engine)
+        ids = [
+            r.item_id for r in engine.search("migration plan", as_of="2025-03-01T00:00:00+00:00")
+        ]
+        assert ids == ["early"]
+        ids_all = {r.item_id for r in engine.search("migration plan")}
+        assert ids_all == {"early", "later"}
+
+    def test_bound_is_inclusive(self):
+        engine = self._engine()
+        ids = [r.item_id for r in engine.search("migration", as_of="2025-01-10T00:00:00+00:00")]
+        assert ids == ["early"]
+
+    def test_as_of_answers_are_stable_under_later_additions(self):
+        # The id set and order must not change when later items arrive;
+        # raw BM25 scores may shift because corpus statistics (idf, avgdl)
+        # legitimately evolve as the index grows.
+        engine = self._engine()
+        bound = "2025-03-01T00:00:00+00:00"
+        before = [r.item_id for r in engine.search("migration plan", as_of=bound)]
+        self._add_later(engine)
+        after = [r.item_id for r in engine.search("migration plan", as_of=bound)]
+        assert before == after == ["early"]
+
+    def test_undated_items_stay_visible(self):
+        engine = self._engine()
+        undated = MemoryItem(
+            item_id="undated", tier=MemoryTier.EPISODIC, content="migration trivia"
+        )
+        engine.store.add(undated)
+        engine.index_item(undated)
+        ids = {r.item_id for r in engine.search("migration", as_of="2025-02-01T00:00:00+00:00")}
+        assert ids == {"early", "undated"}
+
+    def test_invalid_as_of_disables_filter(self):
+        engine = self._engine()
+        self._add_later(engine)
+        ids = {r.item_id for r in engine.search("migration plan", as_of="not-a-date")}
+        assert ids == {"early", "later"}
+
+    def test_parsed_search_honors_as_of(self):
+        engine = self._engine()
+        self._add_later(engine)
+        results = engine.search_parsed(
+            parse_query("migration plan"), as_of="2025-03-01T00:00:00+00:00"
+        )
+        assert [r.item_id for r in results] == ["early"]
+
+    def test_as_of_also_screens_graph_expansions(self):
+        store = MemoryStore()
+        graph = WorkstreamGraph()
+        graph.add_node(Node(node_id="alice", node_type=NodeType.PERSON, label="Alice"))
+        graph.add_node(Node(node_id="alpha", node_type=NodeType.PROJECT, label="Alpha"))
+        graph.add_edge(
+            Edge(
+                edge_id="e1",
+                edge_type=EdgeType.PARTICIPATES,
+                source_id="alice",
+                target_id="alpha",
+            )
+        )
+        engine = RetrievalEngine(store=store, graph=graph)
+        base = MemoryItem(
+            item_id="base",
+            tier=MemoryTier.EPISODIC,
+            content="migration report",
+            created_at="2025-01-01T00:00:00+00:00",
+            metadata={"entity_ids": ["alice"]},
+        )
+        future = MemoryItem(
+            item_id="future",
+            tier=MemoryTier.EPISODIC,
+            content="migration followup",
+            created_at="2025-09-01T00:00:00+00:00",
+            metadata={"entity_ids": ["alpha"]},
+        )
+        for item in (base, future):
+            store.add(item)
+            engine.index_item(item)
+        ids = {
+            r.item_id
+            for r in engine.search(
+                "migration", expand_graph=True, as_of="2025-03-01T00:00:00+00:00"
+            )
+        }
+        assert ids == {"base"}

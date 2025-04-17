@@ -195,6 +195,7 @@ class RetrievalEngine:
         now: str = "",
         expand_graph: bool = False,
         expansion_discount: float = 0.5,
+        as_of: str = "",
     ) -> list[SearchResult]:
         """Search memory items with MMR reranking and citations.
 
@@ -210,6 +211,8 @@ class RetrievalEngine:
         extra_reasons: dict[str, list[str]] = {}
         if expand_graph and self.graph is not None:
             bm25_results = self._expand_with_graph(bm25_results, expansion_discount, extra_reasons)
+        if as_of:
+            bm25_results = self._apply_as_of(bm25_results, as_of)
 
         if tags:
             tag_filtered: list[tuple[str, float]] = []
@@ -241,6 +244,7 @@ class RetrievalEngine:
         now: str = "",
         expand_graph: bool = False,
         expansion_discount: float = 0.5,
+        as_of: str = "",
     ) -> list[SearchResult]:
         """Run a structured query: BM25 over the free text, plus filters.
 
@@ -263,6 +267,8 @@ class RetrievalEngine:
         extra_reasons: dict[str, list[str]] = {}
         if expand_graph and self.graph is not None:
             candidates = self._expand_with_graph(candidates, expansion_discount, extra_reasons)
+        if as_of:
+            candidates = self._apply_as_of(candidates, as_of)
         if parsed.has_filters():
             candidates = [
                 (item_id, score)
@@ -321,6 +327,31 @@ class RetrievalEngine:
             if bound is not None and created.date() != bound.date():
                 return False
         return True
+
+    def _apply_as_of(
+        self, candidates: list[tuple[str, float]], as_of: str
+    ) -> list[tuple[str, float]]:
+        """Drop candidates created after the as-of instant.
+
+        As-of retrieval answers "what could be known at time T": items
+        whose ``created_at`` is strictly after the bound are excluded,
+        items exactly at the bound are kept, and undated items stay
+        visible (they carry no evidence of arriving later). The filter
+        runs after graph expansion so expanded items are screened too.
+        An unparseable ``as_of`` disables the filter.
+        """
+        bound = _parse_filter_instant(as_of)
+        if bound is None:
+            return candidates
+        kept: list[tuple[str, float]] = []
+        for item_id, score in candidates:
+            item = self.store.get(item_id)
+            if item is not None and item.created_at:
+                created = _parse_filter_instant(item.created_at)
+                if created is not None and created > bound:
+                    continue
+            kept.append((item_id, score))
+        return kept
 
     def _expand_with_graph(
         self,
