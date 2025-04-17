@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from mnemofold.factory import WorkHistoryFactory
 from mnemofold.graph import Edge, EdgeType, Node, NodeType, WorkstreamGraph
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.retrieval import (
@@ -660,3 +661,77 @@ class TestAsOfRetrieval:
             )
         }
         assert ids == {"base"}
+
+
+def _factory_engine(seed: int = 9, days: int = 30) -> RetrievalEngine:
+    """Build a retrieval engine over a synthetic factory history."""
+    factory = WorkHistoryFactory(seed=seed, days=days)
+    events, _ = factory.generate()
+    store = MemoryStore()
+    engine = RetrievalEngine(store=store)
+    for synthetic in events:
+        event = synthetic.to_event()
+        parts = [
+            str(value)
+            for key, value in sorted(event.content.items())
+            if isinstance(value, str) and value
+        ]
+        item = MemoryItem(
+            item_id=event.event_id,
+            tier=MemoryTier.EPISODIC,
+            content=" ".join(parts),
+            title=str(event.event_type),
+            created_at=event.timestamp.isoformat(),
+            tags={event.event_type.value},
+        )
+        store.add(item)
+        engine.index_item(item)
+    return engine
+
+
+class TestRetrievalPropertiesOnFactory:
+    QUERIES = (
+        "budget",
+        "milestone",
+        "meeting notes",
+        "design doc",
+        "review",
+        "deadline",
+        "alpha",
+        "standup",
+        "risk",
+        "launch",
+    )
+
+    def test_citations_always_resolve(self):
+        engine = _factory_engine()
+        for query in self.QUERIES:
+            assert engine.property_citations_resolve(query), query
+            for result in engine.search(query):
+                assert engine.store.get(result.item_id) is not None
+                assert result.citation == f"[{result.item_id}]"
+
+    def test_top_k_respected_and_ids_unique(self):
+        engine = _factory_engine()
+        for query in ("the", "project", "mail", "notes"):
+            results = engine.search(query, top_k=5)
+            assert len(results) <= 5
+            ids = [r.item_id for r in results]
+            assert len(ids) == len(set(ids))
+
+    def test_repeated_search_is_deterministic(self):
+        engine = _factory_engine()
+        first = [(r.item_id, round(r.score, 6)) for r in engine.search("deadline review")]
+        second = [(r.item_id, round(r.score, 6)) for r in engine.search("deadline review")]
+        assert first == second
+
+    def test_results_disappear_with_their_memory(self):
+        engine = _factory_engine()
+        results = engine.search("milestone")
+        assert results
+        victim = results[0].item_id
+        engine.store.remove(victim)
+        engine.index.remove(victim)
+        after = engine.search("milestone")
+        assert all(r.item_id != victim for r in after)
+        assert engine.property_citations_resolve("milestone")
