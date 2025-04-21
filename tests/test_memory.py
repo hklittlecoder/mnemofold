@@ -6,6 +6,7 @@ from mnemofold.memory import (
     MemoryItem,
     MemoryStore,
     MemoryTier,
+    TierPolicy,
 )
 
 
@@ -214,3 +215,121 @@ class TestRetention:
         store = self._store_with("2025-06-01T00:00:00+00:00")
         assert store.under_retention("nope", "2025-01-01T00:00:00+00:00") is False
         assert store.under_retention("i1", "garbage") is False
+
+
+class TestTierPolicy:
+    NOW = "2025-06-01T00:00:00+00:00"
+
+    def _store(self) -> MemoryStore:
+        return MemoryStore(working_set_size=10)
+
+    def _item(self, item_id, tier=MemoryTier.EPISODIC, **kwargs) -> MemoryItem:
+        return MemoryItem(item_id, tier, "content", **kwargs)
+
+    def test_promotion_requires_salience_and_accesses(self):
+        store = self._store()
+        store.add(self._item("hot", salience=0.8, access_count=3))
+        store.add(self._item("cold", salience=0.8, access_count=2))
+        report = store.apply_policy(TierPolicy(), self.NOW)
+        assert report.promoted == ["hot"]
+        # promotion moves one tier up the ladder: episodic -> working
+        assert store._items["hot"].tier == MemoryTier.WORKING
+        assert store._items["cold"].tier == MemoryTier.EPISODIC
+
+    def test_working_tier_is_the_ceiling(self):
+        store = self._store()
+        store.add(self._item("top", tier=MemoryTier.WORKING, salience=0.9, access_count=9))
+        report = store.apply_policy(TierPolicy(), self.NOW)
+        assert report.promoted == []
+        assert store._items["top"].tier == MemoryTier.WORKING
+
+    def test_demotion_on_staleness_and_low_salience(self):
+        store = self._store()
+        store.add(
+            self._item(
+                "old",
+                salience=0.1,
+                last_accessed="2025-01-01T00:00:00+00:00",
+            )
+        )
+        report = store.apply_policy(TierPolicy(), self.NOW)
+        assert report.demoted == ["old"]
+        # demotion moves one tier down the ladder, not straight to the floor
+        assert store._items["old"].tier == MemoryTier.SEMANTIC
+
+    def test_recent_or_salient_items_are_kept(self):
+        store = self._store()
+        store.add(self._item("recent", salience=0.1, last_accessed="2025-05-30T00:00:00+00:00"))
+        store.add(self._item("salient", salience=0.5, last_accessed="2025-01-01T00:00:00+00:00"))
+        report = store.apply_policy(TierPolicy(), self.NOW)
+        assert report.demoted == []
+
+    def test_pinned_items_are_protected(self):
+        store = self._store()
+        store.add(
+            self._item(
+                "pinned", salience=0.0, last_accessed="2025-01-01T00:00:00+00:00", pinned=True
+            )
+        )
+        report = store.apply_policy(TierPolicy(), self.NOW)
+        assert report.demoted == []
+        assert report.protected == ["pinned"]
+        assert store._items["pinned"].tier == MemoryTier.EPISODIC
+
+    def test_retention_hold_protects(self):
+        store = self._store()
+        store.add(
+            self._item(
+                "held",
+                salience=0.0,
+                last_accessed="2025-01-01T00:00:00+00:00",
+                retain_until="2025-12-31T00:00:00+00:00",
+            )
+        )
+        report = store.apply_policy(TierPolicy(), self.NOW)
+        assert report.protected == ["held"]
+        assert store._items["held"].tier == MemoryTier.EPISODIC
+
+    def test_procedural_is_the_floor(self):
+        store = self._store()
+        store.add(
+            self._item(
+                "bottom",
+                tier=MemoryTier.PROCEDURAL,
+                salience=0.0,
+                last_accessed="2025-01-01T00:00:00+00:00",
+            )
+        )
+        report = store.apply_policy(TierPolicy(), self.NOW)
+        assert report.demoted == []
+        assert report.protected == []
+
+    def test_promotion_wins_over_demotion(self):
+        store = self._store()
+        store.add(
+            self._item(
+                "both", salience=0.75, access_count=5, last_accessed="2024-01-01T00:00:00+00:00"
+            )
+        )
+        report = store.apply_policy(TierPolicy(), self.NOW)
+        assert report.promoted == ["both"]
+        assert report.demoted == []
+
+    def test_report_ids_are_sorted(self):
+        store = self._store()
+        for name in ("z", "a", "m"):
+            store.add(self._item(name, salience=0.9, access_count=3))
+        report = store.apply_policy(TierPolicy(), self.NOW)
+        assert report.promoted == ["a", "m", "z"]
+
+    def test_invalid_now_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="invalid policy timestamp"):
+            self._store().apply_policy(TierPolicy(), "not-a-time")
+
+    def test_created_at_fallback_for_demotion_age(self):
+        store = self._store()
+        store.add(self._item("noaccess", salience=0.1, created_at="2025-01-01T00:00:00+00:00"))
+        report = store.apply_policy(TierPolicy(), self.NOW)
+        assert report.demoted == ["noaccess"]

@@ -57,6 +57,34 @@ class MemoryItem:
             self.tags = set(self.tags)
 
 
+@dataclass(frozen=True, slots=True)
+class TierPolicy:
+    """Deterministic promotion/demotion rules for the tier ladder.
+
+    Promotion (one tier up) requires BOTH a salience and an access-count
+    threshold. Demotion (one tier down) happens when the item is older
+    than ``demote_after_days`` since its last access (falling back to
+    creation time) AND its salience is below ``demote_below_salience``.
+    Pinned items and items under a retention hold are never demoted;
+    PROCEDURAL is the floor and WORKING the ceiling. Promotion wins over
+    demotion within a single run.
+    """
+
+    promote_min_salience: float = 0.7
+    promote_min_accesses: int = 3
+    demote_after_days: float = 30.0
+    demote_below_salience: float = 0.3
+
+
+@dataclass(slots=True)
+class PolicyReport:
+    """What one policy run changed, with deterministic id ordering."""
+
+    promoted: list[str] = field(default_factory=list)
+    demoted: list[str] = field(default_factory=list)
+    protected: list[str] = field(default_factory=list)
+
+
 @dataclass
 class MemoryStore:
     """Multi-tier memory store with promotion and demotion.
@@ -198,6 +226,44 @@ class MemoryStore:
         item.access_count += 1
         item.last_accessed = now
         return True
+
+    def apply_policy(self, policy: TierPolicy, now: str) -> PolicyReport:
+        """Run promotion/demotion rules over every item once.
+
+        Items are visited in sorted id order, so the report (and any
+        working-set evictions triggered by promotions) is deterministic
+        for identical store contents. ``now`` must be a valid ISO
+        instant; the store's clock is never read implicitly.
+        """
+        moment = _moment(now)
+        if moment is None:
+            raise ValueError(f"invalid policy timestamp: {now!r}")
+        report = PolicyReport()
+        for item_id in sorted(self._items):
+            item = self._items[item_id]
+            if (
+                item.tier is not MemoryTier.WORKING
+                and item.salience >= policy.promote_min_salience
+                and item.access_count >= policy.promote_min_accesses
+                and self.promote(item_id)
+            ):
+                report.promoted.append(item_id)
+                continue
+            if item.tier is MemoryTier.PROCEDURAL:
+                continue
+            reference = item.last_accessed or item.created_at
+            reference_at = _moment(reference) if reference else None
+            if reference_at is None:
+                continue
+            age_days = (moment - reference_at).total_seconds() / 86400.0
+            stale = age_days >= policy.demote_after_days
+            if not (stale and item.salience < policy.demote_below_salience):
+                continue
+            if item.pinned or self.under_retention(item_id, now):
+                report.protected.append(item_id)
+            elif self.demote(item_id):
+                report.demoted.append(item_id)
+        return report
 
     def under_retention(self, item_id: str, now: str) -> bool:
         """True while the item sits inside its retention window.
