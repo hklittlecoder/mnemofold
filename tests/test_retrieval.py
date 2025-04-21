@@ -774,3 +774,73 @@ class TestSnippets:
         engine = self._engine(content)
         snippet = engine._make_snippet(content, "zzz qqq")
         assert snippet == content[:120] + "..."
+
+
+class TestRetrievalBoundaries:
+    def _engine(self) -> RetrievalEngine:
+        store = MemoryStore()
+        engine = RetrievalEngine(store=store)
+        for item_id, content, tags in (
+            ("a", "release report draft one", {"work"}),
+            ("b", "release report draft two", {"work"}),
+            ("c", "garden planning ideas", {"home"}),
+        ):
+            item = MemoryItem(
+                item_id=item_id, tier=MemoryTier.SEMANTIC, content=content, tags=set(tags)
+            )
+            store.add(item)
+            engine.index_item(item)
+        return engine
+
+    def test_empty_query_returns_nothing(self):
+        assert self._engine().search("") == []
+
+    def test_empty_index_returns_nothing(self):
+        engine = RetrievalEngine(store=MemoryStore())
+        assert engine.search("anything") == []
+
+    def test_top_k_larger_than_corpus(self):
+        results = self._engine().search("release report", top_k=99)
+        assert {r.item_id for r in results} == {"a", "b"}
+
+    def test_min_score_above_all_scores_filters_everything(self):
+        assert self._engine().search("release", min_score=1e9) == []
+
+    def test_tag_filter_with_no_overlap(self):
+        assert self._engine().search("release", tags={"nonexistent"}) == []
+
+    def test_tag_filter_keeps_matches(self):
+        results = self._engine().search("planning", tags={"home"})
+        assert [r.item_id for r in results] == ["c"]
+
+    def test_mmr_lambda_extremes(self):
+        self._engine()
+        candidates = [("a", 3.0), ("b", 2.9), ("c", 1.0)]
+        texts = {
+            "a": "release report draft one",
+            "b": "release report draft two",
+            "c": "garden planning ideas",
+        }
+        assert mmr_rerank(candidates, texts, lambda_param=1.0, top_k=3) == ["a", "b", "c"]
+        diverse = mmr_rerank(candidates, texts, lambda_param=0.0, top_k=3)
+        assert diverse[0] == "a"
+        assert diverse[1] == "c"  # dissimilar item promoted over near-duplicate
+
+    def test_mmr_top_k_zero_and_empty_input(self):
+        assert mmr_rerank([("a", 1.0)], {"a": "x"}, top_k=0) == []
+        assert mmr_rerank([], {}, top_k=5) == []
+
+    def test_mmr_is_deterministic_on_ties(self):
+        candidates = [("a", 1.0), ("b", 1.0)]
+        texts = {"a": "same text", "b": "same text"}
+        first = mmr_rerank(candidates, texts, top_k=2)
+        second = mmr_rerank(candidates, texts, top_k=2)
+        assert first == second
+        assert sorted(first) == ["a", "b"]
+
+    def test_index_store_divergence_never_leaks_citations(self):
+        engine = self._engine()
+        engine.store.remove("a")  # index still knows "a"
+        results = engine.search("release report")
+        assert all(r.item_id != "a" for r in results)
+        assert engine.property_citations_resolve("release report")
