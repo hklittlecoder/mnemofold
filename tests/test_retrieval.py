@@ -735,3 +735,42 @@ class TestRetrievalPropertiesOnFactory:
         after = engine.search("milestone")
         assert all(r.item_id != victim for r in after)
         assert engine.property_citations_resolve("milestone")
+
+
+class TestSnippets:
+    def _engine(self, content: str) -> RetrievalEngine:
+        store = MemoryStore()
+        engine = RetrievalEngine(store=store)
+        item = MemoryItem(item_id="m1", tier=MemoryTier.SEMANTIC, content=content)
+        store.add(item)
+        engine.index_item(item)
+        return engine
+
+    def test_short_text_returned_verbatim(self):
+        engine = self._engine("short note about budgets")
+        result = engine.search("budgets")[0]
+        assert result.snippet == "short note about budgets"
+
+    def test_snippet_centers_on_match(self):
+        filler = " ".join(f"filler{i}" for i in range(60))
+        content = f"{filler} budget anomaly {filler}"
+        engine = self._engine(content)
+        result = engine.search("budget")[0]
+        assert "budget" in result.snippet
+        assert result.snippet.startswith("...")
+        assert result.snippet.endswith("...")
+        assert len(result.snippet) <= 120 + 6
+
+    def test_match_near_head_has_no_lead_ellipsis(self):
+        content = " ".join(f"word{i}" for i in range(60))
+        engine = self._engine(content)
+        result = engine.search("word1 word50")[0]
+        # earliest match (word1) sits at the very start -> no lead ellipsis
+        assert result.snippet.startswith("word0 word1")
+        assert result.snippet.endswith("...")
+
+    def test_unmatched_query_text_uses_head_truncation(self):
+        content = " ".join(f"alpha{i}" for i in range(60))
+        engine = self._engine(content)
+        snippet = engine._make_snippet(content, "zzz qqq")
+        assert snippet == content[:120] + "..."

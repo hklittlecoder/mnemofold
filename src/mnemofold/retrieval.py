@@ -476,9 +476,28 @@ class RetrievalEngine:
         return results
 
     def _make_snippet(self, text: str, query: str, max_len: int = 120) -> str:
+        """Window the text around the earliest query-term match.
+
+        Falls back to a head truncation when no query term occurs in the
+        text. The returned window is at most ``max_len`` characters of
+        content, plus ``...`` markers on the elided sides.
+        """
         if len(text) <= max_len:
             return text
-        return text[:max_len] + "..."
+        lowered = text.lower()
+        match_at = -1
+        for term in tokenize(query):
+            found = lowered.find(term)
+            if found != -1 and (match_at == -1 or found < match_at):
+                match_at = found
+        if match_at == -1:
+            return text[:max_len] + "..."
+        start = max(0, match_at - max_len // 4)
+        end = min(len(text), start + max_len)
+        start = max(0, end - max_len)
+        prefix = "..." if start > 0 else ""
+        suffix = "..." if end < len(text) else ""
+        return prefix + text[start:end] + suffix
 
     def property_citations_resolve(self, query: str) -> bool:
         """Property test: all result citations point to existing items."""
