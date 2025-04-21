@@ -8,8 +8,20 @@ size; items are evicted based on recency and importance.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
+
+
+def _moment(value: str) -> datetime | None:
+    """Parse an ISO instant (naive means UTC); None when unparseable."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 class MemoryTier(StrEnum):
@@ -36,6 +48,7 @@ class MemoryItem:
     tags: set[str] = field(default_factory=set)
     metadata: dict[str, Any] = field(default_factory=dict)
     pinned: bool = False
+    retain_until: str = ""  # retention hold: never forget before this instant
 
     def __post_init__(self) -> None:
         if isinstance(self.tier, str):
@@ -170,3 +183,34 @@ class MemoryStore:
     def total_count(self) -> int:
         """Total number of items across all tiers."""
         return len(self._items)
+
+    def record_access(self, item_id: str, now: str) -> bool:
+        """Record an access at an explicit instant.
+
+        Deterministic counterpart to the implicit counting in
+        :meth:`get`: callers that operate on simulated time pass the
+        instant in, so ``last_accessed`` stays reproducible. Returns
+        False when the item does not exist.
+        """
+        item = self._items.get(item_id)
+        if item is None:
+            return False
+        item.access_count += 1
+        item.last_accessed = now
+        return True
+
+    def under_retention(self, item_id: str, now: str) -> bool:
+        """True while the item sits inside its retention window.
+
+        A retention hold (``retain_until``) shields the item from
+        forgetting-style demotion until the instant passes; the bound is
+        exclusive (at ``now == retain_until`` the hold is over).
+        """
+        item = self._items.get(item_id)
+        if item is None or not item.retain_until:
+            return False
+        hold = _moment(item.retain_until)
+        moment = _moment(now)
+        if hold is None or moment is None:
+            return False
+        return moment < hold

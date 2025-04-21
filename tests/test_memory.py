@@ -158,3 +158,59 @@ class TestMemoryStore:
         store.add(MemoryItem("b", MemoryTier.SEMANTIC, "2"))
         store.add(MemoryItem("c", MemoryTier.EPISODIC, "3"))
         assert store.total_count() == 3
+
+
+class TestAccessRecording:
+    def test_record_access_updates_count_and_timestamp(self):
+        store = MemoryStore()
+        store.add(MemoryItem("i1", MemoryTier.EPISODIC, "c"))
+        assert store.record_access("i1", "2025-03-10T09:00:00+00:00") is True
+        item = store._items["i1"]
+        assert item.access_count == 1
+        assert item.last_accessed == "2025-03-10T09:00:00+00:00"
+
+    def test_record_access_accumulates(self):
+        store = MemoryStore()
+        store.add(MemoryItem("i1", MemoryTier.EPISODIC, "c"))
+        store.record_access("i1", "2025-03-10T09:00:00+00:00")
+        store.record_access("i1", "2025-03-11T09:00:00+00:00")
+        item = store._items["i1"]
+        assert item.access_count == 2
+        assert item.last_accessed == "2025-03-11T09:00:00+00:00"
+
+    def test_record_access_unknown_item(self):
+        assert MemoryStore().record_access("nope", "2025-03-10T09:00:00+00:00") is False
+
+
+class TestRetention:
+    def _store_with(self, retain_until: str) -> MemoryStore:
+        store = MemoryStore()
+        store.add(MemoryItem("i1", MemoryTier.EPISODIC, "c", retain_until=retain_until))
+        return store
+
+    def test_inside_window_is_protected(self):
+        store = self._store_with("2025-06-01T00:00:00+00:00")
+        assert store.under_retention("i1", "2025-05-31T23:59:59+00:00") is True
+
+    def test_boundary_is_exclusive(self):
+        store = self._store_with("2025-06-01T00:00:00+00:00")
+        assert store.under_retention("i1", "2025-06-01T00:00:00+00:00") is False
+
+    def test_after_window_is_not_protected(self):
+        store = self._store_with("2025-06-01T00:00:00+00:00")
+        assert store.under_retention("i1", "2025-06-02T00:00:00+00:00") is False
+
+    def test_mixed_offsets_compare_as_instants(self):
+        store = self._store_with("2025-06-01T00:00:00+00:00")
+        # 2025-06-01 07:00 +08:00 == 2025-05-31 23:00 UTC -> still inside
+        assert store.under_retention("i1", "2025-06-01T07:00:00+08:00") is True
+
+    def test_no_hold_means_no_protection(self):
+        store = MemoryStore()
+        store.add(MemoryItem("i1", MemoryTier.EPISODIC, "c"))
+        assert store.under_retention("i1", "2025-01-01T00:00:00+00:00") is False
+
+    def test_unknown_item_or_bad_timestamps(self):
+        store = self._store_with("2025-06-01T00:00:00+00:00")
+        assert store.under_retention("nope", "2025-01-01T00:00:00+00:00") is False
+        assert store.under_retention("i1", "garbage") is False
