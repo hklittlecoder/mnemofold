@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from mnemofold.salience import (
+    FEATURE_NAMES,
     SalienceFeatures,
     SalienceScorer,
     SalienceWeights,
@@ -174,3 +175,58 @@ class TestDeadlineProximity:
         has_d, days = compute_deadline_proximity("not-a-date", "2024-01-01T00:00:00+00:00")
         assert has_d is False
         assert days == 0.0
+
+
+class TestFeatureVector:
+    def _features(self) -> SalienceFeatures:
+        return SalienceFeatures(
+            has_deadline=True,
+            days_until_deadline=2.0,
+            is_owner=True,
+            is_decision=True,
+            recurrence_count=5,
+            is_pinned=True,
+            days_since_access=1.0,
+            access_count=2,
+            priority_label=0.4,
+        )
+
+    def test_vector_follows_canonical_order(self):
+        scorer = SalienceScorer()
+        result = scorer.score(self._features())
+        vector = scorer.feature_vector(self._features())
+        assert len(vector) == len(FEATURE_NAMES) == 7
+        for name, value in zip(FEATURE_NAMES, vector, strict=True):
+            assert value == round(result.feature_scores[name], 6)
+
+    def test_vector_values_are_normalized(self):
+        vector = SalienceScorer().feature_vector(self._features())
+        assert all(0.0 <= v <= 1.0 for v in vector)
+
+    def test_boolean_features_map_to_unit_values(self):
+        vector = SalienceScorer().feature_vector(self._features())
+        by_name = dict(zip(FEATURE_NAMES, vector, strict=True))
+        assert by_name["ownership"] == 1.0
+        assert by_name["decision_weight"] == 1.0
+        assert by_name["pinning"] == 1.0
+
+    def test_default_features_produce_zero_vector(self):
+        vector = SalienceScorer().feature_vector(SalienceFeatures())
+        assert vector == [0.0] * 7
+
+    def test_scoring_unchanged_by_refactor(self):
+        # pin one exact score so the normalization refactor cannot drift
+        scorer = SalienceScorer()
+        result = scorer.score(self._features())
+        recomputed = sum(
+            result.feature_scores[name] * getattr(scorer.weights, name) for name in FEATURE_NAMES
+        )
+        assert result.score == pytest.approx(recomputed)
+
+    @pytest.mark.model
+    def test_torch_module_declares_same_dimension(self):
+        from mnemofold import salience_torch
+
+        if not salience_torch.torch_available():
+            pytest.skip("torch extra not installed")
+        assert len(FEATURE_NAMES) == salience_torch.N_FEATURES

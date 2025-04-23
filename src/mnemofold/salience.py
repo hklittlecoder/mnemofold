@@ -16,6 +16,18 @@ from datetime import UTC, datetime
 
 import numpy as np
 
+# Canonical feature ordering — the single source of truth shared by the
+# NumPy scorer and the optional torch MLP so both see identical inputs.
+FEATURE_NAMES: tuple[str, ...] = (
+    "deadline_proximity",
+    "ownership",
+    "decision_weight",
+    "recurrence",
+    "pinning",
+    "recency",
+    "priority",
+)
+
 
 @dataclass
 class SalienceFeatures:
@@ -89,39 +101,36 @@ class SalienceScorer:
 
     def score(self, features: SalienceFeatures) -> SalienceResult:
         """Compute salience score for a single item."""
-        # Normalize each feature to [0, 1]
-        f_deadline = self._norm_deadline(features)
-        f_ownership = 1.0 if features.is_owner else 0.0
-        f_decision = 1.0 if features.is_decision else 0.0
-        f_recurrence = min(1.0, features.recurrence_count / 10.0)
-        f_pinning = 1.0 if features.is_pinned else 0.0
-        f_recency = self._norm_recency(features)
-        f_priority = max(0.0, min(1.0, features.priority_label))
-
-        feature_scores = {
-            "deadline_proximity": f_deadline,
-            "ownership": f_ownership,
-            "decision_weight": f_decision,
-            "recurrence": f_recurrence,
-            "pinning": f_pinning,
-            "recency": f_recency,
-            "priority": f_priority,
-        }
-
+        feature_scores = self._normalized(features)
         weighted = {
-            "deadline_proximity": f_deadline * self.weights.deadline_proximity,
-            "ownership": f_ownership * self.weights.ownership,
-            "decision_weight": f_decision * self.weights.decision_weight,
-            "recurrence": f_recurrence * self.weights.recurrence,
-            "pinning": f_pinning * self.weights.pinning,
-            "recency": f_recency * self.weights.recency,
-            "priority": f_priority * self.weights.priority,
+            name: feature_scores[name] * getattr(self.weights, name) for name in FEATURE_NAMES
         }
 
         total = sum(weighted.values()) / self._weight_sum
         total = max(0.0, min(1.0, total))
 
         return SalienceResult(score=total, feature_scores=feature_scores, weighted_scores=weighted)
+
+    def feature_vector(self, features: SalienceFeatures) -> list[float]:
+        """Normalized features in canonical FEATURE_NAMES order.
+
+        Quantized at this production point so vectors, digests, and any
+        downstream learned model see identical values across platforms.
+        """
+        normalized = self._normalized(features)
+        return [round(normalized[name], 6) for name in FEATURE_NAMES]
+
+    def _normalized(self, features: SalienceFeatures) -> dict[str, float]:
+        """Normalize every raw feature into [0, 1], keyed by FEATURE_NAMES."""
+        return {
+            "deadline_proximity": self._norm_deadline(features),
+            "ownership": 1.0 if features.is_owner else 0.0,
+            "decision_weight": 1.0 if features.is_decision else 0.0,
+            "recurrence": min(1.0, features.recurrence_count / 10.0),
+            "pinning": 1.0 if features.is_pinned else 0.0,
+            "recency": self._norm_recency(features),
+            "priority": max(0.0, min(1.0, features.priority_label)),
+        }
 
     def score_batch(self, items: list[SalienceFeatures]) -> np.ndarray:
         """Compute salience scores for a batch of items.
