@@ -188,8 +188,10 @@ class MemoryStore:
         working = [i for i in self._items.values() if i.tier == MemoryTier.WORKING]
         if len(working) <= self.working_set_size:
             return
-        # Sort by salience ascending, but pinned items sort to the end
-        working.sort(key=lambda i: (i.pinned, i.salience))
+        # Sort by salience ascending, pinned items to the end; item_id is
+        # the final tie-break so eviction is deterministic for equal
+        # salience instead of depending on insertion order.
+        working.sort(key=lambda i: (i.pinned, i.salience, i.item_id))
         evict_count = len(working) - self.working_set_size
         for item in working[:evict_count]:
             if item.pinned:

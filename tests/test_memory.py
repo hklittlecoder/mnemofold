@@ -333,3 +333,39 @@ class TestTierPolicy:
         store.add(self._item("noaccess", salience=0.1, created_at="2025-01-01T00:00:00+00:00"))
         report = store.apply_policy(TierPolicy(), self.NOW)
         assert report.demoted == ["noaccess"]
+
+
+class TestEvictionDeterminism:
+    def test_tie_evicts_lexicographically_smallest_id(self):
+        store = MemoryStore(working_set_size=1)
+        store.add(MemoryItem("b1", MemoryTier.WORKING, "c", salience=0.5))
+        store.add(MemoryItem("a1", MemoryTier.WORKING, "c", salience=0.5))
+        # second add exceeds the bound; the tie must break on id
+        assert store._items["a1"].tier == MemoryTier.EPISODIC
+        assert store._items["b1"].tier == MemoryTier.WORKING
+
+    def test_insertion_order_does_not_matter(self):
+        first = MemoryStore(working_set_size=1)
+        first.add(MemoryItem("a1", MemoryTier.WORKING, "c", salience=0.5))
+        first.add(MemoryItem("b1", MemoryTier.WORKING, "c", salience=0.5))
+
+        second = MemoryStore(working_set_size=1)
+        second.add(MemoryItem("b1", MemoryTier.WORKING, "c", salience=0.5))
+        second.add(MemoryItem("a1", MemoryTier.WORKING, "c", salience=0.5))
+
+        assert first._items["a1"].tier == second._items["a1"].tier
+        assert first._items["b1"].tier == second._items["b1"].tier
+
+    def test_pinned_survives_tie(self):
+        store = MemoryStore(working_set_size=1)
+        store.add(MemoryItem("a0", MemoryTier.WORKING, "c", salience=0.5, pinned=True))
+        store.add(MemoryItem("b1", MemoryTier.WORKING, "c", salience=0.5))
+        assert store._items["b1"].tier == MemoryTier.EPISODIC
+        assert store._items["a0"].tier == MemoryTier.WORKING
+
+    def test_lower_salience_still_evicted_first(self):
+        store = MemoryStore(working_set_size=1)
+        store.add(MemoryItem("z9", MemoryTier.WORKING, "c", salience=0.2))
+        store.add(MemoryItem("a1", MemoryTier.WORKING, "c", salience=0.9))
+        assert store._items["z9"].tier == MemoryTier.EPISODIC
+        assert store._items["a1"].tier == MemoryTier.WORKING
