@@ -186,3 +186,77 @@ def compute_deadline_proximity(due_date: str, now: str) -> tuple[bool, float]:
         t_now = t_now.replace(tzinfo=UTC)
     days = (t_due - t_now).total_seconds() / 86400.0
     return True, days
+
+
+# --- Slice diagnostics ---------------------------------------------------------
+
+
+@dataclass
+class SalienceDiagnostics:
+    """Transparent diagnostics over a batch of salience scores.
+
+    Answers "why does this slice score the way it does" with plain NumPy
+    statistics: distribution summaries, per-slice means, and Pearson
+    correlations between each normalized feature and the final score.
+    Every number is quantized to six decimals at this production point
+    so reports are reproducible across platforms.
+    """
+
+    scorer: SalienceScorer
+
+    def scores(self, batch: list[SalienceFeatures]) -> list[float]:
+        return [round(self.scorer.score(features).score, 6) for features in batch]
+
+    def describe(self, batch: list[SalienceFeatures]) -> dict[str, float]:
+        """Count/mean/std/min/median/max of the batch scores."""
+        if not batch:
+            return {"count": 0.0, "mean": 0.0, "std": 0.0, "min": 0.0, "median": 0.0, "max": 0.0}
+        scores = np.array(self.scores(batch), dtype=np.float64)
+        return {
+            "count": float(scores.size),
+            "mean": round(float(scores.mean()), 6),
+            "std": round(float(scores.std()), 6),
+            "min": round(float(scores.min()), 6),
+            "median": round(float(np.median(scores)), 6),
+            "max": round(float(scores.max()), 6),
+        }
+
+    def slice_means(self, batch: list[SalienceFeatures], key: str) -> dict[str, float]:
+        """Mean score per slice of one feature field.
+
+        ``key`` must name a SalienceFeatures field; slice labels are the
+        lowercase string forms of its values (``true``/``false`` for
+        booleans). Output is sorted by slice label.
+        """
+        if not hasattr(SalienceFeatures(), key):
+            raise ValueError(f"unknown feature field: {key}")
+        buckets: dict[str, list[float]] = {}
+        for features, score in zip(batch, self.scores(batch), strict=True):
+            label = str(getattr(features, key)).lower()
+            buckets.setdefault(label, []).append(score)
+        return {
+            label: round(float(np.mean(values)), 6) for label, values in sorted(buckets.items())
+        }
+
+    def feature_correlations(self, batch: list[SalienceFeatures]) -> dict[str, float]:
+        """Pearson correlation of each normalized feature with the score.
+
+        Constant features (zero variance) report 0.0 rather than NaN, so
+        the output is always finite and comparable across batches.
+        """
+        zeros = {name: 0.0 for name in FEATURE_NAMES}
+        if len(batch) < 2:
+            return zeros
+        matrix = np.array([self.scorer.feature_vector(f) for f in batch], dtype=np.float64)
+        scores = np.array(self.scores(batch), dtype=np.float64)
+        if float(scores.std()) == 0.0:
+            return zeros
+        out: dict[str, float] = {}
+        for column, name in enumerate(FEATURE_NAMES):
+            values = matrix[:, column]
+            if float(values.std()) == 0.0:
+                out[name] = 0.0
+                continue
+            correlation = float(np.corrcoef(values, scores)[0, 1])
+            out[name] = round(correlation, 6)
+        return out

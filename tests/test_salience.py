@@ -7,6 +7,7 @@ import pytest
 
 from mnemofold.salience import (
     FEATURE_NAMES,
+    SalienceDiagnostics,
     SalienceFeatures,
     SalienceScorer,
     SalienceWeights,
@@ -230,3 +231,69 @@ class TestFeatureVector:
         if not salience_torch.torch_available():
             pytest.skip("torch extra not installed")
         assert len(FEATURE_NAMES) == salience_torch.N_FEATURES
+
+
+class TestSalienceDiagnostics:
+    def _batch(self) -> list[SalienceFeatures]:
+        return [
+            SalienceFeatures(is_pinned=True, priority_label=0.9),
+            SalienceFeatures(is_pinned=True, priority_label=0.1),
+            SalienceFeatures(is_pinned=False, priority_label=0.5),
+            SalienceFeatures(
+                is_pinned=False, is_decision=True, days_since_access=2.0, access_count=1
+            ),
+        ]
+
+    def _diagnostics(self) -> SalienceDiagnostics:
+        return SalienceDiagnostics(scorer=SalienceScorer())
+
+    def test_describe_empty_batch(self):
+        stats = self._diagnostics().describe([])
+        assert stats == {
+            "count": 0.0,
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "median": 0.0,
+            "max": 0.0,
+        }
+
+    def test_describe_matches_manual_aggregation(self):
+        diagnostics = self._diagnostics()
+        batch = self._batch()
+        scores = diagnostics.scores(batch)
+        stats = diagnostics.describe(batch)
+        assert stats["count"] == float(len(batch))
+        assert stats["mean"] == round(sum(scores) / len(scores), 6)
+        assert stats["min"] == min(scores)
+        assert stats["max"] == max(scores)
+
+    def test_slice_means_split_on_boolean_field(self):
+        diagnostics = self._diagnostics()
+        means = diagnostics.slice_means(self._batch(), "is_pinned")
+        assert set(means) == {"true", "false"}
+        # pinned items score higher under default weights (pinning + priority)
+        assert means["true"] > means["false"]
+
+    def test_slice_means_unknown_field_raises(self):
+        with pytest.raises(ValueError, match="unknown feature field"):
+            self._diagnostics().slice_means(self._batch(), "not_a_field")
+
+    def test_correlations_have_expected_signs(self):
+        diagnostics = self._diagnostics()
+        correlations = diagnostics.feature_correlations(self._batch())
+        assert set(correlations) == set(FEATURE_NAMES)
+        assert correlations["pinning"] > 0.0
+        assert all(-1.0 <= value <= 1.0 for value in correlations.values())
+
+    def test_correlations_degenerate_cases(self):
+        diagnostics = self._diagnostics()
+        single = [SalienceFeatures(is_pinned=True)]
+        assert diagnostics.feature_correlations(single) == {name: 0.0 for name in FEATURE_NAMES}
+        identical = [SalienceFeatures(is_pinned=True)] * 3
+        assert diagnostics.feature_correlations(identical) == {name: 0.0 for name in FEATURE_NAMES}
+
+    def test_diagnostics_are_deterministic(self):
+        first = self._diagnostics().describe(self._batch())
+        second = self._diagnostics().describe(self._batch())
+        assert first == second
