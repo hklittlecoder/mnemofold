@@ -14,6 +14,15 @@ from typing import Any
 import numpy as np
 
 
+class BudgetExceededError(RuntimeError):
+    """Raised when a pack would exceed its token budget.
+
+    The knapsack DP makes this unreachable in normal operation; the
+    explicit error (instead of a bare assert, which -O strips) keeps the
+    budget invariant enforced in every runtime mode.
+    """
+
+
 class PackingProfile(StrEnum):
     """Task-conditioned packing profiles."""
 
@@ -184,7 +193,8 @@ class ContextPacker:
         selected_items = self._order(selected_items)
 
         total = sum(it.token_estimate for it in selected_items)
-        assert total <= self.budget, f"Budget exceeded: {total} > {self.budget}"
+        if total > self.budget:
+            raise BudgetExceededError(f"Budget exceeded: {total} > {self.budget}")
 
         return ContextPack(
             items=selected_items,

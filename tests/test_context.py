@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from mnemofold import context as context_module
 from mnemofold.context import (
+    BudgetExceededError,
     ContextItem,
     ContextPacker,
     PackingProfile,
@@ -210,3 +212,32 @@ class TestPackingProfiles:
         for profile in PackingProfile:
             assert profile in PROFILE_WEIGHTS
             assert len(PROFILE_WEIGHTS[profile]) > 0
+
+
+class TestBudgetGuard:
+    def _items(self) -> list[ContextItem]:
+        return [
+            ContextItem(item_id="a", content="aaa", token_estimate=50, priority=1.0),
+            ContextItem(item_id="b", content="bbb", token_estimate=60, priority=1.0),
+        ]
+
+    def test_normal_packing_never_raises(self):
+        packer = ContextPacker(budget=100)
+        pack = packer.pack(self._items())
+        assert pack.total_tokens <= 100
+        assert verify_budget(pack)
+
+    def test_broken_selection_raises_explicit_error(self, monkeypatch):
+        # Simulate a hypothetical selector bug that ignores the budget:
+        # the packer must fail loudly rather than silently overflow.
+        monkeypatch.setattr(
+            context_module,
+            "knapsack_dp",
+            lambda items, budget, **kwargs: list(range(len(items))),
+        )
+        packer = ContextPacker(budget=100)
+        with pytest.raises(BudgetExceededError, match="Budget exceeded"):
+            packer.pack(self._items())
+
+    def test_error_is_a_runtime_error(self):
+        assert issubclass(BudgetExceededError, RuntimeError)
