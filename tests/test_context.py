@@ -10,6 +10,7 @@ from mnemofold.context import (
     ContextItem,
     ContextPacker,
     PackingProfile,
+    effective_priority,
     estimate_tokens,
     knapsack_dp,
     knapsack_greedy,
@@ -241,3 +242,56 @@ class TestBudgetGuard:
 
     def test_error_is_a_runtime_error(self):
         assert issubclass(BudgetExceededError, RuntimeError)
+
+
+class TestEffectivePriority:
+    def test_general_profile_combines_components(self):
+        item = ContextItem(
+            item_id="x",
+            content="c",
+            priority=1.0,
+            metadata={"salience": 0.5, "recency": 0.4, "relevance": 0.2},
+        )
+        # 1.0 + 1.0*0.5 + 0.5*0.4 + 0.8*0.2 = 1.86
+        assert effective_priority(item, PackingProfile.GENERAL) == 1.86
+
+    def test_boolean_components_count_as_one(self):
+        item = ContextItem(
+            item_id="x", content="c", priority=0.0, metadata={"deadline": True, "sender": False}
+        )
+        assert effective_priority(item, PackingProfile.TRIAGE) == 1.0
+
+    def test_non_numeric_metadata_is_ignored(self):
+        item = ContextItem(
+            item_id="x", content="c", priority=0.5, metadata={"salience": "high", "recency": None}
+        )
+        assert effective_priority(item, PackingProfile.GENERAL) == 0.5
+
+    def test_without_metadata_priority_is_unchanged(self):
+        item = ContextItem(item_id="x", content="c", priority=0.75)
+        assert effective_priority(item) == 0.75
+        assert effective_priority(item, PackingProfile.TRIAGE) == 0.75
+
+    def test_profile_changes_selection_under_tight_budget(self):
+        items = [
+            ContextItem(item_id="a", content="a", token_estimate=10, priority=1.0),
+            ContextItem(
+                item_id="b", content="b", token_estimate=10, priority=0.6, metadata={"recency": 1.0}
+            ),
+        ]
+        general = ContextPacker(budget=10, profile=PackingProfile.GENERAL).pack(items)
+        assert [it.item_id for it in general.items] == ["b"]  # 0.6 + 0.5*1.0 > 1.0
+        triage = ContextPacker(budget=10, profile=PackingProfile.TRIAGE).pack(items)
+        assert [it.item_id for it in triage.items] == ["a"]  # recency not a triage signal
+
+    def test_ordering_uses_effective_priority(self):
+        items = [
+            ContextItem(item_id="a", content="a", token_estimate=5, priority=1.0),
+            ContextItem(
+                item_id="b", content="b", token_estimate=5, priority=0.6, metadata={"recency": 1.0}
+            ),
+        ]
+        general = ContextPacker(budget=20, profile=PackingProfile.GENERAL).pack(items)
+        assert [it.item_id for it in general.items] == ["b", "a"]
+        triage = ContextPacker(budget=20, profile=PackingProfile.TRIAGE).pack(items)
+        assert [it.item_id for it in triage.items] == ["a", "b"]

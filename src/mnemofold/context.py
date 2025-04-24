@@ -100,10 +100,36 @@ def estimate_tokens(text: str) -> int:
     return max(1, int((char_count / 4.0 + word_count / 1.3) / 2.0))
 
 
-def knapsack_dp(items: list[ContextItem], budget: int) -> list[int]:
+def effective_priority(
+    item: ContextItem, profile: PackingProfile = PackingProfile.GENERAL
+) -> float:
+    """Base priority plus the profile-weighted component bonuses.
+
+    Each packing profile names the signals it cares about (see
+    PROFILE_WEIGHTS). Component values are read from ``item.metadata``:
+    numbers are used as-is, booleans count as 1.0/0.0, and missing or
+    non-numeric entries contribute nothing. The result is quantized to
+    six decimals at this production point so selection and ordering are
+    reproducible across platforms.
+    """
+    weights = PROFILE_WEIGHTS.get(profile) or PROFILE_WEIGHTS[PackingProfile.GENERAL]
+    total = item.priority
+    for name in sorted(weights):
+        value = item.metadata.get(name)
+        if isinstance(value, bool):
+            total += weights[name] * (1.0 if value else 0.0)
+        elif isinstance(value, (int, float)):
+            total += weights[name] * float(value)
+    return round(total, 6)
+
+
+def knapsack_dp(
+    items: list[ContextItem], budget: int, values: list[float] | None = None
+) -> list[int]:
     """0/1 knapsack exact DP solution. Returns indices of selected items.
 
-    Maximizes total priority subject to total token_estimate <= budget.
+    Maximizes total value (item priority by default, or the ``values``
+    override when given) subject to total token_estimate <= budget.
     Result is always optimal for integer token counts.
     """
     n = len(items)
@@ -111,7 +137,8 @@ def knapsack_dp(items: list[ContextItem], budget: int) -> list[int]:
         return []
 
     weights = np.array([it.token_estimate for it in items], dtype=np.int64)
-    values = np.array([it.priority for it in items], dtype=np.float64)
+    value_list = values if values is not None else [it.priority for it in items]
+    value_array = np.array(value_list, dtype=np.float64)
 
     # DP table: dp[w] = max value achievable with weight w
     dp = np.zeros(budget + 1, dtype=np.float64)
@@ -119,7 +146,7 @@ def knapsack_dp(items: list[ContextItem], budget: int) -> list[int]:
 
     for i in range(n):
         w = weights[i]
-        v = values[i]
+        v = value_array[i]
         if w > budget:
             continue
         # Iterate backwards to avoid reusing items
@@ -186,7 +213,8 @@ class ContextPacker:
                 ordering=self.ordering,
             )
 
-        selected_indices = knapsack_dp(eligible, self.budget)
+        values = [effective_priority(it, self.profile) for it in eligible]
+        selected_indices = knapsack_dp(eligible, self.budget, values=values)
         selected_items = [eligible[i] for i in selected_indices]
 
         # Order the selected items
@@ -206,7 +234,7 @@ class ContextPacker:
 
     def _order(self, items: list[ContextItem]) -> list[ContextItem]:
         if self.ordering == "priority":
-            return sorted(items, key=lambda it: it.priority, reverse=True)
+            return sorted(items, key=lambda it: effective_priority(it, self.profile), reverse=True)
         if self.ordering == "category_grouped":
             # Group by category, within each category sort by priority
             by_cat: dict[str, list[ContextItem]] = {}
@@ -214,10 +242,16 @@ class ContextPacker:
                 by_cat.setdefault(it.category, []).append(it)
             result: list[ContextItem] = []
             for cat in sorted(by_cat.keys()):
-                result.extend(sorted(by_cat[cat], key=lambda it: it.priority, reverse=True))
+                result.extend(
+                    sorted(
+                        by_cat[cat],
+                        key=lambda it: effective_priority(it, self.profile),
+                        reverse=True,
+                    )
+                )
             return result
         # default: priority order
-        return sorted(items, key=lambda it: it.priority, reverse=True)
+        return sorted(items, key=lambda it: effective_priority(it, self.profile), reverse=True)
 
 
 def verify_budget(pack: ContextPack) -> bool:
