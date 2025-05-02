@@ -136,6 +136,7 @@ class Folder:
         # Include both episodic and semantic items for pattern detection
         all_items = episodic + store.items_by_tier(MemoryTier.SEMANTIC)
         self._mine_recurrence(all_items, report)
+        self._mine_workflow_sequences(all_items, report)
 
         # Step 3: merge near-duplicates in semantic tier
         self._merge_near_duplicates(store, semantic + promoted, report)
@@ -242,6 +243,46 @@ class Folder:
                     )
                 )
 
+    def _mine_workflow_sequences(self, items: list[MemoryItem], report: FoldReport) -> None:
+        """Propose playbooks from repeated step sequences.
+
+        Items carrying ``metadata["workflow"]`` / ``metadata["run_id"]`` /
+        ``metadata["step"]`` are grouped per run and ordered by creation
+        time (id as tie-break). When the same ordered step sequence shows
+        up in at least ``min_episodes_for_recurrence`` runs of a workflow,
+        it becomes a playbook proposal. Ordering is sorted throughout, so
+        proposals are deterministic for identical inputs.
+        """
+        runs: dict[tuple[str, str], list[MemoryItem]] = {}
+        for item in items:
+            workflow = item.metadata.get("workflow")
+            run_id = item.metadata.get("run_id")
+            if not isinstance(workflow, str) or not isinstance(run_id, str):
+                continue
+            runs.setdefault((workflow, run_id), []).append(item)
+
+        sequences: dict[str, dict[tuple[str, ...], list[str]]] = {}
+        for (workflow, run_id), run_items in runs.items():
+            ordered = sorted(run_items, key=lambda i: (i.created_at, i.item_id))
+            steps = tuple(str(i.metadata.get("step", "")) for i in ordered)
+            if not any(steps):
+                continue
+            sequences.setdefault(workflow, {}).setdefault(steps, []).append(run_id)
+
+        for workflow in sorted(sequences):
+            for steps, run_ids in sorted(sequences[workflow].items()):
+                if len(run_ids) >= self.min_episodes_for_recurrence:
+                    report.recurrence_proposals.append(
+                        {
+                            "kind": "workflow_sequence",
+                            "workflow": workflow,
+                            "steps": list(steps),
+                            "run_count": len(run_ids),
+                            "run_ids": sorted(run_ids),
+                            "confidence": round(min(1.0, len(run_ids) / 10.0), 6),
+                        }
+                    )
+
     def _mine_recurrence(self, items: list[MemoryItem], report: FoldReport) -> None:
         """Mine for recurrent patterns that could become playbooks.
 
@@ -259,6 +300,7 @@ class Folder:
             if len(items) >= self.min_episodes_for_recurrence:
                 report.recurrence_proposals.append(
                     {
+                        "kind": "tag_frequency",
                         "pattern_tag": tag,
                         "instance_count": len(items),
                         "example_titles": [i.title for i in items[:3]],

@@ -153,3 +153,80 @@ class TestFolder:
         assert "merges" in d
         assert "rejected" in d
         assert "new_semantic" in d
+
+
+class TestWorkflowSequenceMining:
+    def _workflow_item(self, run: str, step: str, minute: int) -> MemoryItem:
+        return MemoryItem(
+            item_id=f"{run}_{step}",
+            tier=MemoryTier.EPISODIC,
+            content=f"{step} for {run}",
+            created_at=f"2025-03-10T{minute:02d}:00:00+00:00",
+            metadata={"workflow": "release", "run_id": run, "step": step},
+        )
+
+    def _store_with_runs(self) -> MemoryStore:
+        store = MemoryStore()
+        for run in ("r1", "r2", "r3"):
+            for minute, step in ((10, "build"), (20, "test"), (30, "ship")):
+                store.add(self._workflow_item(run, step, minute))
+        # one outlier run with a different sequence
+        store.add(self._workflow_item("r4", "build", 10))
+        store.add(self._workflow_item("r4", "ship", 20))
+        return store
+
+    def test_repeated_sequence_becomes_proposal(self):
+        folder = Folder(min_episodes_for_recurrence=3)
+        report = folder.fold(self._store_with_runs(), "2025-03-11T00:00:00+00:00")
+        seqs = [p for p in report.recurrence_proposals if p.get("kind") == "workflow_sequence"]
+        assert len(seqs) == 1
+        proposal = seqs[0]
+        assert proposal["workflow"] == "release"
+        assert proposal["steps"] == ["build", "test", "ship"]
+        assert proposal["run_count"] == 3
+        assert proposal["run_ids"] == ["r1", "r2", "r3"]
+        assert proposal["confidence"] == 0.3
+
+    def test_outlier_sequence_not_proposed(self):
+        folder = Folder(min_episodes_for_recurrence=3)
+        report = folder.fold(self._store_with_runs(), "2025-03-11T00:00:00+00:00")
+        seqs = [p for p in report.recurrence_proposals if p.get("kind") == "workflow_sequence"]
+        assert all(p["steps"] != ["build", "ship"] for p in seqs)
+
+    def test_steps_ordered_by_creation_time(self):
+        store = MemoryStore()
+        # inserted out of order; created_at must drive the sequence
+        store.add(self._workflow_item("r1", "ship", 30))
+        store.add(self._workflow_item("r1", "build", 10))
+        store.add(self._workflow_item("r1", "test", 20))
+        store.add(self._workflow_item("r2", "ship", 30))
+        store.add(self._workflow_item("r2", "build", 10))
+        store.add(self._workflow_item("r2", "test", 20))
+        store.add(self._workflow_item("r3", "build", 10))
+        store.add(self._workflow_item("r3", "test", 20))
+        store.add(self._workflow_item("r3", "ship", 30))
+        report = Folder(min_episodes_for_recurrence=3).fold(store, "2025-03-11T00:00:00+00:00")
+        seqs = [p for p in report.recurrence_proposals if p.get("kind") == "workflow_sequence"]
+        assert seqs[0]["steps"] == ["build", "test", "ship"]
+
+    def test_items_without_workflow_metadata_ignored(self):
+        store = MemoryStore()
+        store.add(MemoryItem("plain", MemoryTier.EPISODIC, "no metadata here"))
+        report = Folder().fold(store, "2025-03-11T00:00:00+00:00")
+        assert report.recurrence_proposals == []
+
+    def test_tag_proposals_labeled_with_kind(self):
+        store = MemoryStore()
+        for i in range(3):
+            store.add(
+                MemoryItem(
+                    f"t{i}",
+                    MemoryTier.SEMANTIC,
+                    f"content {i}",
+                    tags={"weekly"},
+                )
+            )
+        report = Folder(min_episodes_for_recurrence=3).fold(store, "2025-03-11T00:00:00+00:00")
+        tags = [p for p in report.recurrence_proposals if p.get("kind") == "tag_frequency"]
+        assert len(tags) == 1
+        assert tags[0]["pattern_tag"] == "weekly"
