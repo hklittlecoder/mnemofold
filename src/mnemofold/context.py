@@ -8,6 +8,7 @@ and a guarantee that packed context never exceeds the budget.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -53,6 +54,7 @@ class ContextItem:
     priority: float = 0.0
     category: str = "general"
     metadata: dict[str, Any] = field(default_factory=dict)
+    item_time: str = ""  # ISO instant; drives chronological ordering
 
 
 @dataclass(slots=True)
@@ -250,8 +252,29 @@ class ContextPacker:
                     )
                 )
             return result
+        if self.ordering == "chronological":
+            return sorted(items, key=_chrono_key)
         # default: priority order
         return sorted(items, key=lambda it: effective_priority(it, self.profile), reverse=True)
+
+
+def _chrono_key(item: ContextItem) -> tuple[int, float, str]:
+    """Sort key for chronological ordering.
+
+    Compares true instants (offset-aware), not ISO strings: items with
+    undated or unparseable ``item_time`` sort last, and ids break ties
+    deterministically.
+    """
+    if item.item_time:
+        try:
+            parsed: datetime | None = datetime.fromisoformat(item.item_time)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return (0, parsed.timestamp(), item.item_id)
+    return (1, 0.0, item.item_id)
 
 
 def verify_budget(pack: ContextPack) -> bool:

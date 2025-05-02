@@ -295,3 +295,57 @@ class TestEffectivePriority:
         assert [it.item_id for it in general.items] == ["b", "a"]
         triage = ContextPacker(budget=20, profile=PackingProfile.TRIAGE).pack(items)
         assert [it.item_id for it in triage.items] == ["a", "b"]
+
+
+class TestChronologicalOrdering:
+    def _item(self, item_id: str, item_time: str, priority: float = 1.0) -> ContextItem:
+        # priority must be positive: zero-value items are never selected
+        # by the knapsack, which is the documented packing behavior
+        return ContextItem(
+            item_id=item_id,
+            content="c",
+            token_estimate=5,
+            priority=priority,
+            item_time=item_time,
+        )
+
+    def test_orders_by_instant_across_offsets(self):
+        items = [
+            self._item("late", "2025-03-10T09:00:00+00:00"),
+            # 08:00 UTC — earlier than "late" though its ISO string sorts after
+            self._item("early", "2025-03-10T17:00:00+09:00"),
+        ]
+        pack = ContextPacker(budget=100, ordering="chronological").pack(items)
+        assert [it.item_id for it in pack.items] == ["early", "late"]
+
+    def test_undated_items_sort_last(self):
+        items = [
+            self._item("nodate", ""),
+            self._item("dated", "2025-03-10T09:00:00+00:00"),
+        ]
+        pack = ContextPacker(budget=100, ordering="chronological").pack(items)
+        assert [it.item_id for it in pack.items] == ["dated", "nodate"]
+
+    def test_invalid_timestamp_treated_as_undated(self):
+        items = [
+            self._item("bad", "not-a-time"),
+            self._item("good", "2025-03-10T09:00:00+00:00"),
+        ]
+        pack = ContextPacker(budget=100, ordering="chronological").pack(items)
+        assert [it.item_id for it in pack.items] == ["good", "bad"]
+
+    def test_ties_break_on_item_id(self):
+        items = [
+            self._item("b", "2025-03-10T09:00:00+00:00"),
+            self._item("a", "2025-03-10T09:00:00+00:00"),
+        ]
+        pack = ContextPacker(budget=100, ordering="chronological").pack(items)
+        assert [it.item_id for it in pack.items] == ["a", "b"]
+
+    def test_unknown_ordering_falls_back_to_priority(self):
+        items = [self._item("low", "", priority=0.1), self._item("high", "", priority=0.9)]
+        pack = ContextPacker(budget=100, ordering="nonsense").pack(items)
+        assert [it.item_id for it in pack.items] == ["high", "low"]
+
+    def test_item_time_defaults_to_empty(self):
+        assert ContextItem(item_id="x", content="c").item_time == ""
