@@ -11,6 +11,7 @@ from mnemofold import context as context_module
 from mnemofold.context import (
     BudgetExceededError,
     ContextItem,
+    ContextPack,
     ContextPacker,
     PackingProfile,
     effective_priority,
@@ -432,3 +433,84 @@ class TestKnapsackProperties:
         assert knapsack_dp(items, 0) == []
         assert knapsack_dp(items, -5) == []
         assert knapsack_greedy(items, 0) == []
+
+
+class TestTokenEstimatorBoundaries:
+    def test_empty_text_is_zero(self):
+        assert estimate_tokens("") == 0
+
+    def test_single_char_is_at_least_one(self):
+        assert estimate_tokens("a") == 1
+
+    def test_estimator_is_deterministic(self):
+        text = "the quick brown fox jumps over the lazy dog"
+        assert estimate_tokens(text) == estimate_tokens(text)
+
+    def test_longer_text_estimates_more_tokens(self):
+        short = estimate_tokens("word")
+        long = estimate_tokens("word " * 100)
+        assert long > short
+
+    def test_unicode_text_counts_characters(self):
+        assert estimate_tokens("记忆折叠") >= 1
+
+
+class TestPackerBoundaries:
+    def _item(self, item_id, tokens, priority=1.0, category="general") -> ContextItem:
+        return ContextItem(
+            item_id=item_id,
+            content="c",
+            token_estimate=tokens,
+            priority=priority,
+            category=category,
+        )
+
+    def test_zero_token_items_are_excluded(self):
+        pack = ContextPacker(budget=100).pack([self._item("zero", 0), self._item("real", 10)])
+        assert [it.item_id for it in pack.items] == ["real"]
+
+    def test_oversized_items_are_excluded(self):
+        pack = ContextPacker(budget=10).pack([self._item("huge", 11)])
+        assert pack.items == []
+        assert pack.total_tokens == 0
+
+    def test_empty_input_produces_empty_pack_with_metadata(self):
+        packer = ContextPacker(budget=64, profile=PackingProfile.STANDUP)
+        pack = packer.pack([])
+        assert pack.items == []
+        assert pack.budget == 64
+        assert pack.profile == PackingProfile.STANDUP
+        assert len(pack) == 0
+
+    def test_zero_budget_packs_nothing(self):
+        assert ContextPacker(budget=0).pack([self._item("a", 1)]).items == []
+
+    def test_budget_adherence_with_many_items(self):
+        items = [self._item(f"i{n}", n + 1, priority=float(n % 5)) for n in range(30)]
+        pack = ContextPacker(budget=50).pack(items)
+        assert pack.total_tokens <= 50
+        assert verify_budget(pack)
+
+    def test_category_grouped_ordering(self):
+        items = [
+            self._item("b2", 5, priority=0.2, category="beta"),
+            self._item("a1", 5, priority=0.9, category="alpha"),
+            self._item("a2", 5, priority=0.5, category="alpha"),
+        ]
+        pack = ContextPacker(budget=100, ordering="category_grouped").pack(items)
+        assert [it.item_id for it in pack.items] == ["a1", "a2", "b2"]
+
+    def test_markdown_contains_budget_titles_and_sources(self):
+        pack = ContextPacker(budget=100).pack([self._item("m1", 10)])
+        markdown = pack.to_markdown()
+        assert "Budget: 100 tokens" in markdown
+        assert "m1" in markdown
+        assert "*Source: `m1`*" in markdown
+
+    def test_verify_budget_false_on_overfull_manual_pack(self):
+        pack = ContextPack(
+            items=[self._item("a", 60), self._item("b", 60)],
+            total_tokens=120,
+            budget=100,
+        )
+        assert verify_budget(pack) is False
