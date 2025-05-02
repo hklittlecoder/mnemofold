@@ -132,10 +132,11 @@ def knapsack_dp(
 
     Maximizes total value (item priority by default, or the ``values``
     override when given) subject to total token_estimate <= budget.
-    Result is always optimal for integer token counts.
+    Result is always optimal for integer token counts. Zero-weight
+    items always fit, including at a zero budget.
     """
     n = len(items)
-    if n == 0 or budget <= 0:
+    if n == 0 or budget < 0:
         return []
 
     weights = np.array([it.token_estimate for it in items], dtype=np.int64)
@@ -175,7 +176,7 @@ def knapsack_greedy(items: list[ContextItem], budget: int) -> list[int]:
     Used as a comparator for the DP solution. On small instances the DP
     solution should always be >= the greedy solution.
     """
-    if not items or budget <= 0:
+    if not items or budget < 0:
         return []
     # Sort by priority per token (descending)
     indexed = [(i, it.priority / max(1, it.token_estimate)) for i, it in enumerate(items)]
@@ -285,7 +286,7 @@ def verify_budget(pack: ContextPack) -> bool:
 
 def verify_dp_vs_greedy(items: list[ContextItem], budget: int) -> bool:
     """Property check: DP solution is at least as good as greedy."""
-    if not items or budget <= 0:
+    if not items or budget < 0:
         return True
     dp_indices = knapsack_dp(items, budget)
     greedy_indices = knapsack_greedy(items, budget)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import itertools
+import random
+
 import pytest
 
 from mnemofold import context as context_module
@@ -349,3 +352,83 @@ class TestChronologicalOrdering:
 
     def test_item_time_defaults_to_empty(self):
         assert ContextItem(item_id="x", content="c").item_time == ""
+
+
+class TestKnapsackProperties:
+    """DP optimality checked against brute force on small seeded instances."""
+
+    TOKEN_CHOICES = (0, 1, 3, 7, 12, 25, 80)
+    PRIORITY_CHOICES = (0.0, 0.5, 1.0, 2.5, 3.0, 3.0)  # 3.0 twice: deliberate ties
+
+    def _random_items(self, rng: random.Random, n: int) -> list[ContextItem]:
+        return [
+            ContextItem(
+                item_id=f"i{i}",
+                content="c",
+                token_estimate=rng.choice(self.TOKEN_CHOICES),
+                priority=rng.choice(self.PRIORITY_CHOICES),
+            )
+            for i in range(n)
+        ]
+
+    def _brute_force_value(self, items: list[ContextItem], budget: int) -> float:
+        best = 0.0
+        for size in range(len(items) + 1):
+            for combo in itertools.combinations(range(len(items)), size):
+                if sum(items[i].token_estimate for i in combo) <= budget:
+                    best = max(best, sum(items[i].priority for i in combo))
+        return best
+
+    def test_dp_matches_brute_force_optimum(self):
+        for seed in range(50):
+            rng = random.Random(seed)
+            items = self._random_items(rng, rng.randint(1, 10))
+            budget = rng.randint(0, 40)
+            picked = knapsack_dp(items, budget)
+            weight = sum(items[i].token_estimate for i in picked)
+            value = sum(items[i].priority for i in picked)
+            assert weight <= budget, f"seed {seed}: budget violated"
+            assert value == pytest.approx(self._brute_force_value(items, budget)), (
+                f"seed {seed}: suboptimal selection"
+            )
+
+    def test_dp_never_worse_than_greedy(self):
+        for seed in range(50):
+            rng = random.Random(seed + 1000)
+            items = self._random_items(rng, rng.randint(1, 10))
+            budget = rng.randint(0, 40)
+            assert verify_dp_vs_greedy(items, budget), f"seed {seed}"
+
+    def test_selection_is_deterministic_and_unique(self):
+        rng = random.Random(7)
+        items = self._random_items(rng, 10)
+        first = knapsack_dp(items, 30)
+        second = knapsack_dp(items, 30)
+        assert first == second
+        assert len(first) == len(set(first))
+
+    def test_zero_weight_items_always_included_when_valuable(self):
+        items = [
+            ContextItem(item_id="free", content="c", token_estimate=0, priority=2.0),
+            ContextItem(item_id="costly", content="c", token_estimate=100, priority=5.0),
+        ]
+        picked = knapsack_dp(items, 10)
+        assert picked == [0]  # only the free item fits
+
+    def test_zero_budget_still_takes_free_items(self):
+        # regression: the early-return guard used to drop zero-weight
+        # items that fit even when the budget is exactly zero
+        items = [
+            ContextItem(item_id="paid", content="c", token_estimate=3, priority=2.5),
+            ContextItem(item_id="free", content="c", token_estimate=0, priority=0.5),
+        ]
+        assert knapsack_dp(items, 0) == [1]
+        assert knapsack_greedy(items, 0) == [1]
+        assert verify_dp_vs_greedy(items, 0)
+
+    def test_empty_and_negative_budgets(self):
+        items = [ContextItem(item_id="a", content="c", token_estimate=1, priority=1.0)]
+        assert knapsack_dp([], 10) == []
+        assert knapsack_dp(items, 0) == []
+        assert knapsack_dp(items, -5) == []
+        assert knapsack_greedy(items, 0) == []
