@@ -299,3 +299,76 @@ class TestFoldReportRendering:
         assert "## Merges" not in markdown
         assert "## Rejected candidates" not in markdown
         assert "- merges: 0" in markdown
+
+
+class TestFoldProperties:
+    def _store(self) -> MemoryStore:
+        store = MemoryStore()
+        # near-duplicate pair in semantic tier
+        store.add(
+            MemoryItem("dup_a", MemoryTier.SEMANTIC, "release checklist for alpha", salience=0.5)
+        )
+        store.add(
+            MemoryItem("dup_b", MemoryTier.SEMANTIC, "release checklist for alpha!", salience=0.9)
+        )
+        # promotable episodic item
+        store.add(MemoryItem("ep_1", MemoryTier.EPISODIC, "notes from planning", salience=0.7))
+        # untouched episodic item
+        store.add(MemoryItem("ep_2", MemoryTier.EPISODIC, "random chatter", salience=0.1))
+        return store
+
+    def test_second_fold_changes_nothing(self):
+        folder = Folder(similarity_threshold=0.7)
+        store = self._store()
+        first = folder.fold(store, "2025-03-11T00:00:00+00:00", fold_id="f1")
+        count_after_first = store.total_count()
+        second = folder.fold(store, "2025-03-11T00:00:00+00:00", fold_id="f2")
+        assert second.merges == []
+        assert second.new_semantic == []
+        assert store.total_count() == count_after_first
+        # promotion adds one semantic copy, merging removes one loser
+        assert first.items_after == first.items_before - len(first.merges) + len(first.new_semantic)
+
+    def test_winner_is_higher_salience_not_lower_id(self):
+        store = self._store()
+        report = Folder(similarity_threshold=0.7).fold(store, "2025-03-11T00:00:00+00:00")
+        assert len(report.merges) == 1
+        merge = report.merges[0]
+        # dup_b has the higher salience even though dup_a sorts first by id
+        assert merge.kept_id == "dup_b"
+        assert merge.removed_id == "dup_a"
+
+    def test_id_tiebreak_when_salience_equal(self):
+        store = MemoryStore()
+        store.add(MemoryItem("zzz", MemoryTier.SEMANTIC, "same content here", salience=0.5))
+        store.add(MemoryItem("aaa", MemoryTier.SEMANTIC, "same content here", salience=0.5))
+        report = Folder(similarity_threshold=0.7).fold(store, "2025-03-11T00:00:00+00:00")
+        assert report.merges[0].kept_id == "aaa"
+        assert report.merges[0].removed_id == "zzz"
+
+    def test_loser_id_recorded_in_winner_provenance(self):
+        store = self._store()
+        Folder(similarity_threshold=0.7).fold(store, "2025-03-11T00:00:00+00:00")
+        kept = store._items["dup_b"]
+        assert "dup_a" in kept.metadata["provenance"]
+        assert "dup_a" not in store._items
+
+    def test_promotion_creates_semantic_copy_with_provenance(self):
+        store = self._store()
+        report = Folder(similarity_threshold=0.7).fold(store, "2025-03-11T00:00:00+00:00")
+        assert "ep_1_sem" in report.new_semantic
+        sem = store._items["ep_1_sem"]
+        assert sem.metadata["derived_from"] == "ep_1"
+        assert sem.metadata["fold_promoted"] is True
+        # original episodic item survives promotion
+        assert "ep_1" in store._items
+
+    def test_low_salience_episodic_not_promoted(self):
+        store = self._store()
+        report = Folder(similarity_threshold=0.7).fold(store, "2025-03-11T00:00:00+00:00")
+        assert "ep_2_sem" not in report.new_semantic
+
+    def test_idempotent_check_helper(self):
+        assert fold_idempotent_check(
+            self._store(), Folder(similarity_threshold=0.7), "2025-03-11T00:00:00+00:00"
+        )
