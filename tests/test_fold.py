@@ -230,3 +230,72 @@ class TestWorkflowSequenceMining:
         tags = [p for p in report.recurrence_proposals if p.get("kind") == "tag_frequency"]
         assert len(tags) == 1
         assert tags[0]["pattern_tag"] == "weekly"
+
+
+class TestFoldReportRendering:
+    def _store_with_duplicates(self) -> MemoryStore:
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                "sem_a",
+                MemoryTier.SEMANTIC,
+                "quarterly budget review with finance team",
+                salience=0.8,
+            )
+        )
+        store.add(
+            MemoryItem(
+                "sem_b",
+                MemoryTier.SEMANTIC,
+                "quarterly budget review with finance team!",
+                salience=0.2,
+            )
+        )
+        store.add(MemoryItem("sem_c", MemoryTier.SEMANTIC, "unrelated release notes", salience=0.4))
+        return store
+
+    def test_markdown_cites_merges_and_rejects(self):
+        report = Folder(similarity_threshold=0.7).fold(
+            self._store_with_duplicates(), "2025-03-11T00:00:00+00:00", fold_id="fold_x"
+        )
+        markdown = report.to_markdown()
+        assert markdown.startswith("# Fold Report fold_x\n")
+        assert "## Merges" in markdown
+        assert "kept `sem_a`" in markdown
+        assert "removed `sem_b`" in markdown
+        assert "## Rejected candidates" in markdown
+
+    def test_markdown_is_deterministic(self):
+        first = Folder(similarity_threshold=0.7).fold(
+            self._store_with_duplicates(), "2025-03-11T00:00:00+00:00", fold_id="f1"
+        )
+        second = Folder(similarity_threshold=0.7).fold(
+            self._store_with_duplicates(), "2025-03-11T00:00:00+00:00", fold_id="f1"
+        )
+        assert first.to_markdown() == second.to_markdown()
+
+    def test_digest_stable_and_input_sensitive(self):
+        report_a = Folder().fold(
+            self._store_with_duplicates(), "2025-03-11T00:00:00+00:00", fold_id="f1"
+        )
+        report_a2 = Folder().fold(
+            self._store_with_duplicates(), "2025-03-11T00:00:00+00:00", fold_id="f1"
+        )
+        report_b = Folder().fold(
+            self._store_with_duplicates(), "2025-03-12T00:00:00+00:00", fold_id="f2"
+        )
+        assert report_a.digest() == report_a2.digest()
+        assert report_a.digest() != report_b.digest()
+
+    def test_digest_is_hex_sha256(self):
+        report = Folder().fold(MemoryStore(), "2025-03-11T00:00:00+00:00")
+        digest = report.digest()
+        assert len(digest) == 64
+        assert all(c in "0123456789abcdef" for c in digest)
+
+    def test_empty_report_markdown_sections_omitted(self):
+        report = Folder().fold(MemoryStore(), "2025-03-11T00:00:00+00:00", fold_id="empty")
+        markdown = report.to_markdown()
+        assert "## Merges" not in markdown
+        assert "## Rejected candidates" not in markdown
+        assert "- merges: 0" in markdown

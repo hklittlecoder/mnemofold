@@ -9,6 +9,7 @@ produces fold reports citing every merge and every rejected candidate.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -61,7 +62,7 @@ class FoldReport:
                     "kept_id": m.kept_id,
                     "removed_id": m.removed_id,
                     "reason": m.reason,
-                    "similarity": m.similarity,
+                    "similarity": round(m.similarity, 6),
                     "provenance": list(m.provenance),
                 }
                 for m in self.merges
@@ -70,6 +71,76 @@ class FoldReport:
             "new_semantic": list(self.new_semantic),
             "recurrence_proposals": self.recurrence_proposals,
         }
+
+    def digest(self) -> str:
+        """SHA-256 over the canonical JSON of this report.
+
+        Floats are already quantized in ``to_dict``; rejected-candidate
+        similarities are quantized here so digests are stable across
+        platforms and reruns.
+        """
+        payload = self.to_dict()
+        payload["rejected"] = [
+            {
+                **entry,
+                "similarity": round(entry["similarity"], 6),
+            }
+            if "similarity" in entry
+            else entry
+            for entry in payload["rejected"]
+        ]
+        canonical = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def to_markdown(self) -> str:
+        """Deterministic Markdown rendering; cites every merge and reject."""
+        lines = [
+            f"# Fold Report {self.fold_id}",
+            "",
+            f"- timestamp: {self.timestamp}",
+            f"- items: {self.items_before} -> {self.items_after}",
+            f"- merges: {len(self.merges)}",
+            f"- rejected candidates: {len(self.rejected)}",
+            f"- new semantic items: {len(self.new_semantic)}",
+            f"- recurrence proposals: {len(self.recurrence_proposals)}",
+            "",
+        ]
+        if self.merges:
+            lines.append("## Merges")
+            lines.append("")
+            for m in self.merges:
+                provenance = ", ".join(m.provenance) or "-"
+                lines.append(
+                    f"- kept `{m.kept_id}`, removed `{m.removed_id}` "
+                    f"({m.reason}, similarity {round(m.similarity, 6)}); "
+                    f"provenance: {provenance}"
+                )
+            lines.append("")
+        if self.rejected:
+            lines.append("## Rejected candidates")
+            lines.append("")
+            for entry in self.rejected:
+                similarity = round(entry.get("similarity", 0.0), 6)
+                lines.append(
+                    f"- `{entry.get('a')}` vs `{entry.get('b')}` "
+                    f"({entry.get('reason')}, similarity {similarity})"
+                )
+            lines.append("")
+        if self.new_semantic:
+            lines.append("## New semantic items")
+            lines.append("")
+            for sem_id in self.new_semantic:
+                lines.append(f"- `{sem_id}`")
+            lines.append("")
+        if self.recurrence_proposals:
+            lines.append("## Recurrence proposals")
+            lines.append("")
+            for proposal in self.recurrence_proposals:
+                lines.append(f"- {json.dumps(proposal, sort_keys=True, ensure_ascii=True)}")
+            lines.append("")
+        return "\n".join(lines)
 
 
 def _content_hash(text: str) -> str:
