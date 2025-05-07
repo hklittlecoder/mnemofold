@@ -5,6 +5,7 @@ from __future__ import annotations
 from mnemofold.conflict import (
     ConflictDetector,
     ConflictResolver,
+    Contradiction,
     EvidenceSource,
     FactEvidence,
     corroborate,
@@ -290,3 +291,112 @@ class TestConflictDetector:
         )
         found = ConflictDetector().scan(store)
         assert found[0].winner == "b"
+
+
+class TestResolutionRules:
+    def _evidence(
+        self,
+        source=EvidenceSource.DEFAULT,
+        timestamp="2025-01-01T00:00:00+00:00",
+        source_id="s",
+        count=0,
+    ) -> FactEvidence:
+        return FactEvidence(
+            source=source, timestamp=timestamp, source_id=source_id, corroboration_count=count
+        )
+
+    def test_source_rank_ordering(self):
+        scores = [
+            ConflictResolver().evidence_score(self._evidence(source=s))[0]
+            for s in (
+                EvidenceSource.VERIFIED,
+                EvidenceSource.TRUSTED,
+                EvidenceSource.DEFAULT,
+                EvidenceSource.UNVERIFIED,
+                EvidenceSource.SPECULATIVE,
+            )
+        ]
+        assert scores == sorted(scores, reverse=True)
+        assert len(set(scores)) == 5
+
+    def test_reason_precedence_corroboration(self):
+        resolver = ConflictResolver()
+        c = resolver.resolve("k", "a", self._evidence(count=3), "b", self._evidence(count=1))
+        assert c.winner == "a"
+        assert c.resolution_reason == "corroboration"
+
+    def test_reason_precedence_recency(self):
+        resolver = ConflictResolver()
+        c = resolver.resolve(
+            "k",
+            "a",
+            self._evidence(timestamp="2025-01-01T00:00:00+00:00"),
+            "b",
+            self._evidence(timestamp="2025-02-01T00:00:00+00:00"),
+        )
+        assert c.winner == "b"
+        assert c.resolution_reason == "recency"
+
+    def test_reason_precedence_source_id(self):
+        resolver = ConflictResolver()
+        c = resolver.resolve(
+            "k", "a", self._evidence(source_id="aaa"), "b", self._evidence(source_id="bbb")
+        )
+        assert c.winner == "b"
+        assert c.resolution_reason == "source_id"
+
+    def test_identical_values_short_circuit(self):
+        c = ConflictResolver().resolve("k", "same", self._evidence(), "same", self._evidence())
+        assert c.resolved
+        assert c.winner == "a"
+        assert c.resolution_reason == "identical_values"
+
+    def test_hash_tiebreak_is_symmetric_in_value(self):
+        resolver = ConflictResolver()
+        forward = resolver.resolve("k", "x", self._evidence(), "y", self._evidence())
+        swapped = resolver.resolve("k", "y", self._evidence(), "x", self._evidence())
+        assert forward.resolution_reason == "deterministic_tiebreak"
+        winning_forward = forward.value_a if forward.winner == "a" else forward.value_b
+        winning_swapped = swapped.value_a if swapped.winner == "a" else swapped.value_b
+        assert winning_forward == winning_swapped
+
+    def test_hash_tiebreak_is_stable_across_runs(self):
+        first = ConflictResolver().resolve("k", "x", self._evidence(), "y", self._evidence())
+        second = ConflictResolver().resolve("k", "x", self._evidence(), "y", self._evidence())
+        assert first.winner == second.winner
+
+
+class TestAuditReport:
+    def test_report_counts_and_reasons(self):
+        resolver = ConflictResolver()
+        evidence = FactEvidence(
+            source=EvidenceSource.DEFAULT, timestamp="2025-01-01T00:00:00+00:00"
+        )
+        strong = FactEvidence(source=EvidenceSource.VERIFIED, timestamp="2025-01-01T00:00:00+00:00")
+        contradictions = [
+            resolver.resolve("k1", "a", strong, "b", evidence),
+            resolver.resolve("k2", "same", evidence, "same", evidence),
+            Contradiction(
+                fact_key="k3",
+                value_a="x",
+                value_b="y",
+                evidence_a=evidence,
+                evidence_b=evidence,
+            ),  # left unresolved on purpose
+        ]
+        report = resolver.audit_report(contradictions)
+        assert report["total"] == 3
+        assert report["resolved"] == 2
+        assert report["unresolved"] == 1
+        assert report["by_reason"] == {"source_trust": 1, "identical_values": 1}
+        assert len(report["contradictions"]) == 3
+
+    def test_empty_report(self):
+        report = ConflictResolver().audit_report([])
+        assert report == {
+            "total": 0,
+            "resolved": 0,
+            "unresolved": 0,
+            "by_reason": {},
+            "contradictions": [],
+        }
