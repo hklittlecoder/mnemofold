@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from mnemofold.conflict import (
+    ConflictDetector,
     ConflictResolver,
     EvidenceSource,
     FactEvidence,
@@ -182,3 +183,110 @@ class TestCorroboration:
             backward.source_id,
             backward.corroboration_count,
         )
+
+
+class TestConflictDetector:
+    def _conflicting_store(self) -> TemporalStore:
+        store: TemporalStore = TemporalStore()
+        store.add(
+            IntervalFact(
+                "owner",
+                "alice",
+                "2025-01-01T00:00:00+00:00",
+                metadata={"source": "trusted", "source_id": "mail-1"},
+            )
+        )
+        store.add(
+            IntervalFact(
+                "owner",
+                "bob",
+                "2025-02-01T00:00:00+00:00",
+                metadata={"source": "verified", "source_id": "hr-2"},
+            )
+        )
+        return store
+
+    def test_overlapping_conflict_detected_with_winner(self):
+        found = ConflictDetector().scan(self._conflicting_store())
+        assert len(found) == 1
+        assert found[0].fact_key == "owner"
+        assert found[0].winner == "b"
+        assert found[0].resolution_reason == "source_trust"
+
+    def test_sequential_versions_do_not_conflict(self):
+        store: TemporalStore = TemporalStore()
+        store.add(
+            IntervalFact("owner", "alice", "2025-01-01T00:00:00+00:00", "2025-02-01T00:00:00+00:00")
+        )
+        store.add(IntervalFact("owner", "bob", "2025-02-01T00:00:00+00:00"))
+        assert ConflictDetector().scan(store) == []
+
+    def test_identical_values_never_conflict(self):
+        store: TemporalStore = TemporalStore()
+        store.add(IntervalFact("owner", "alice", "2025-01-01T00:00:00+00:00"))
+        store.add(IntervalFact("owner", "alice", "2025-02-01T00:00:00+00:00"))
+        assert ConflictDetector().scan(store) == []
+
+    def test_corroboration_metadata_breaks_source_ties(self):
+        store: TemporalStore = TemporalStore()
+        store.add(
+            IntervalFact(
+                "owner",
+                "alice",
+                "2025-01-01T00:00:00+00:00",
+                metadata={"source": "trusted", "corroboration": 5},
+            )
+        )
+        store.add(
+            IntervalFact(
+                "owner",
+                "bob",
+                "2025-02-01T00:00:00+00:00",
+                metadata={"source": "trusted", "corroboration": 0},
+            )
+        )
+        found = ConflictDetector().scan(store)
+        assert found[0].winner == "a"
+        assert found[0].resolution_reason == "corroboration"
+
+    def test_scan_and_apply_preserves_as_of_history(self):
+        store = self._conflicting_store()
+        found = ConflictDetector().scan_and_apply(store, "2025-02-01T00:00:00+00:00")
+        assert len(found) == 1
+        # loser interval closed, but the past stays queryable
+        past = store.as_of("owner", "2025-01-15T00:00:00+00:00")
+        assert past is not None and past.value == "alice"
+        present = store.current("owner")
+        assert present is not None and present.value == "bob"
+        history = store.history("owner")
+        assert history[0].metadata["superseded_by_value"] == "bob"
+
+    def test_clean_tiling_after_apply_at_boundary(self):
+        store = self._conflicting_store()
+        detector = ConflictDetector()
+        detector.scan_and_apply(store, "2025-02-01T00:00:00+00:00")
+        # loser now ends exactly where the winner starts -> no overlap left
+        assert detector.scan(store) == []
+
+    def test_keys_scanned_in_sorted_order(self):
+        store: TemporalStore = TemporalStore()
+        for key in ("zeta", "alpha"):
+            store.add(IntervalFact(key, "one", "2025-01-01T00:00:00+00:00"))
+            store.add(IntervalFact(key, "two", "2025-01-02T00:00:00+00:00"))
+        found = ConflictDetector().scan(store)
+        assert [c.fact_key for c in found] == ["alpha", "zeta"]
+
+    def test_unknown_source_metadata_falls_back_to_default(self):
+        store: TemporalStore = TemporalStore()
+        store.add(
+            IntervalFact(
+                "owner", "alice", "2025-01-01T00:00:00+00:00", metadata={"source": "rumor-mill"}
+            )
+        )
+        store.add(
+            IntervalFact(
+                "owner", "bob", "2025-02-01T00:00:00+00:00", metadata={"source": "verified"}
+            )
+        )
+        found = ConflictDetector().scan(store)
+        assert found[0].winner == "b"

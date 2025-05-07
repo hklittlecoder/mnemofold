@@ -9,12 +9,13 @@ reports, and a never-lose-history guarantee.
 from __future__ import annotations
 
 import hashlib
+import itertools
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from mnemofold.temporal import TemporalStore
+from mnemofold.temporal import IntervalFact, TemporalStore
 
 
 def _instant_or_min(timestamp: str) -> datetime:
@@ -234,3 +235,81 @@ class ConflictResolver:
                 for c in contradictions
             ],
         }
+
+
+# --- Contradiction scanning over temporal stores ------------------------------
+
+
+def _fact_interval(fact: IntervalFact[Any]) -> tuple[datetime, datetime]:
+    """Half-open [start, end) interval of a fact; open-ended ends at max."""
+    start = _instant_or_min(fact.valid_from)
+    end = (
+        _instant_or_min(fact.valid_to)
+        if fact.valid_to is not None
+        else datetime.max.replace(tzinfo=UTC)
+    )
+    return start, end
+
+
+def _evidence_from_fact(fact: IntervalFact[Any]) -> FactEvidence:
+    """Derive evidence from a fact's metadata (source, source_id, corroboration)."""
+    metadata = dict(fact.metadata)
+    source_value = metadata.get("source", EvidenceSource.DEFAULT)
+    try:
+        source = EvidenceSource(source_value)
+    except ValueError:
+        source = EvidenceSource.DEFAULT
+    count = metadata.get("corroboration", 0)
+    return FactEvidence(
+        source=source,
+        timestamp=fact.valid_from,
+        source_id=str(metadata.get("source_id", "")),
+        corroboration_count=count if isinstance(count, int) else 0,
+        metadata=metadata,
+    )
+
+
+@dataclass(slots=True)
+class ConflictDetector:
+    """Finds fact keys whose versions claim overlapping periods.
+
+    Two versions of one fact key conflict when their validity intervals
+    overlap and their values differ. Each conflicting pair is resolved
+    through the standard evidence-trust ordering. History is never
+    destroyed: ``scan_and_apply`` closes the loser's interval at the
+    supersede instant, so as-of queries for earlier time keep answering
+    with the superseded value.
+    """
+
+    resolver: ConflictResolver = field(default_factory=ConflictResolver)
+
+    def scan(self, store: TemporalStore[Any]) -> list[Contradiction]:
+        """All overlapping incompatible value pairs, in key/history order."""
+        found: list[Contradiction] = []
+        fact_keys = store.keys()  # bound first: the store is not a dict
+        for fact_key in fact_keys:
+            versions = store.history(fact_key)
+            for earlier, later in itertools.combinations(versions, 2):
+                if earlier.value == later.value:
+                    continue
+                e_start, e_end = _fact_interval(earlier)
+                l_start, l_end = _fact_interval(later)
+                if not (e_start < l_end and l_start < e_end):
+                    continue
+                found.append(
+                    self.resolver.resolve(
+                        fact_key,
+                        earlier.value,
+                        _evidence_from_fact(earlier),
+                        later.value,
+                        _evidence_from_fact(later),
+                    )
+                )
+        return found
+
+    def scan_and_apply(self, store: TemporalStore[Any], superseded_at: str) -> list[Contradiction]:
+        """Scan and immediately supersede every losing fact version."""
+        contradictions = self.scan(store)
+        for contradiction in contradictions:
+            self.resolver.apply_resolution(store, contradiction, superseded_at)
+        return contradictions
