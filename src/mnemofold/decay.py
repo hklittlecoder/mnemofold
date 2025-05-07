@@ -151,12 +151,16 @@ class DecayEngine:
         return results
 
     def property_protected_never_deleted(self, store: MemoryStore, now: str) -> bool:
+        """Invariant check: decay must never remove protected items.
+
+        Any protected item missing after a decay run violates the
+        invariant, no matter how it disappeared — the earlier version of
+        this check also demanded a tombstone record, which protected
+        items never have, so genuine violations slipped through.
+        """
         protected_ids = {i.item_id for i in store._items.values() if self.is_protected(i)}
         self.apply_decay(store, now)
-        for pid in protected_ids:
-            if store.get(pid) is None and self._tombstones.get(pid) == TombstoneState.TOMBSTONED:
-                return False
-        return True
+        return all(pid in store._items for pid in sorted(protected_ids))
 
 
 def _days_between(a: str, b: str) -> float:

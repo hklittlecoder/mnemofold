@@ -134,3 +134,60 @@ class TestDecayEngine:
         assert len(store.items_by_tier(MemoryTier.WORKING)) == 0
         # Semantic should still have items
         assert len(store.items_by_tier(MemoryTier.SEMANTIC)) >= 1
+
+
+class TestProtectedPropertyCheck:
+    def _store_with_protected(self) -> MemoryStore:
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                "hold1",
+                MemoryTier.PROCEDURAL,
+                "audit records",
+                salience=0.0,
+                created_at="2020-01-01T00:00:00+00:00",
+                tags={"legal_hold"},
+            )
+        )
+        return store
+
+    def test_healthy_run_satisfies_property(self):
+        engine = DecayEngine()
+        store = self._store_with_protected()
+        assert engine.property_protected_never_deleted(store, "2025-06-01T00:00:00+00:00")
+
+    def test_detects_vanishing_protected_item(self):
+        engine = DecayEngine()
+        store = self._store_with_protected()
+        original = engine.apply_decay
+
+        def buggy_decay(target: MemoryStore, now: str) -> dict:
+            stats = original(target, now)
+            target.remove("hold1")  # simulate a faulty code path
+            return stats
+
+        engine.apply_decay = buggy_decay  # type: ignore[method-assign]
+        assert engine.property_protected_never_deleted(store, "2025-06-01T00:00:00+00:00") is False
+
+    def test_property_does_not_flag_unprotected_removals(self):
+        engine = DecayEngine()
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                "temp",
+                MemoryTier.PROCEDURAL,
+                "scratch",
+                salience=0.0,
+                created_at="2020-01-01T00:00:00+00:00",
+            )
+        )
+        original = engine.apply_decay
+
+        def removes_unprotected(target: MemoryStore, now: str) -> dict:
+            stats = original(target, now)
+            target.remove("temp")
+            return stats
+
+        engine.apply_decay = removes_unprotected  # type: ignore[method-assign]
+        # "temp" is not protected, so the invariant says nothing about it
+        assert engine.property_protected_never_deleted(store, "2025-06-01T00:00:00+00:00")
