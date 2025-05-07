@@ -10,10 +10,56 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
 from mnemofold.temporal import TemporalStore
+
+
+def _instant_or_min(timestamp: str) -> datetime:
+    """Parse an ISO instant for comparisons; unparseable sorts earliest."""
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except (ValueError, TypeError):
+        return datetime.min.replace(tzinfo=UTC)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def corroborate(evidences: list[FactEvidence]) -> FactEvidence:
+    """Aggregate several pieces of evidence for one value into a single record.
+
+    Deterministic regardless of input order:
+
+    * source: the highest-trust source among the inputs;
+    * corroboration_count: every input votes at least once
+      (``max(1, count)``), minus the winner's own vote;
+    * timestamp: the most recent instant (source_id breaks ties);
+    * source_id: from the highest-trust input (earliest id on ties);
+    * metadata: merged, plus a sorted ``corroborated_from`` contributor list.
+    """
+    if not evidences:
+        raise ValueError("corroborate requires at least one evidence")
+    if len(evidences) == 1:
+        return evidences[0]
+    best = min(
+        evidences,
+        key=lambda e: (-SOURCE_RANK.get(e.source, 0), e.source_id, e.timestamp),
+    )
+    latest = max(evidences, key=lambda e: (_instant_or_min(e.timestamp), e.source_id))
+    votes = sum(max(1, e.corroboration_count) for e in evidences) - 1
+    metadata: dict[str, Any] = {}
+    for evidence in evidences:
+        for key, value in evidence.metadata.items():
+            metadata.setdefault(key, value)
+    metadata["corroborated_from"] = sorted({e.source_id for e in evidences if e.source_id})
+    return FactEvidence(
+        source=best.source,
+        timestamp=latest.timestamp,
+        source_id=best.source_id,
+        corroboration_count=votes,
+        metadata=metadata,
+    )
 
 
 class EvidenceSource(StrEnum):

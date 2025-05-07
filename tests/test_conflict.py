@@ -6,6 +6,7 @@ from mnemofold.conflict import (
     ConflictResolver,
     EvidenceSource,
     FactEvidence,
+    corroborate,
 )
 from mnemofold.temporal import IntervalFact, TemporalStore
 
@@ -103,3 +104,81 @@ class TestConflictResolver:
         assert report["total"] == 3
         assert report["resolved"] == 3
         assert report["by_reason"]["source_trust"] == 3
+
+
+class TestCorroboration:
+    def _evidence(self, source, timestamp, source_id="", count=0, **metadata) -> FactEvidence:
+        return FactEvidence(
+            source=source,
+            timestamp=timestamp,
+            source_id=source_id,
+            corroboration_count=count,
+            metadata=dict(metadata),
+        )
+
+    def test_single_evidence_passes_through(self):
+        only = self._evidence(EvidenceSource.TRUSTED, "2025-01-01T00:00:00+00:00")
+        assert corroborate([only]) is only
+
+    def test_empty_input_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="at least one"):
+            corroborate([])
+
+    def test_highest_trust_wins_regardless_of_order(self):
+        weak = self._evidence(EvidenceSource.SPECULATIVE, "2025-01-02T00:00:00+00:00", "w")
+        strong = self._evidence(EvidenceSource.VERIFIED, "2025-01-01T00:00:00+00:00", "s")
+        forward = corroborate([weak, strong])
+        backward = corroborate([strong, weak])
+        assert forward.source == EvidenceSource.VERIFIED
+        assert forward.source_id == "s"
+        assert (forward.source, forward.source_id) == (backward.source, backward.source_id)
+
+    def test_votes_accumulate_with_at_least_one_each(self):
+        a = self._evidence(EvidenceSource.DEFAULT, "2025-01-01T00:00:00+00:00", count=0)
+        b = self._evidence(EvidenceSource.DEFAULT, "2025-01-02T00:00:00+00:00", count=0)
+        assert corroborate([a, b]).corroboration_count == 1
+        c = self._evidence(EvidenceSource.DEFAULT, "2025-01-01T00:00:00+00:00", count=3)
+        d = self._evidence(EvidenceSource.DEFAULT, "2025-01-02T00:00:00+00:00", count=2)
+        assert corroborate([c, d]).corroboration_count == 4
+
+    def test_most_recent_timestamp_wins_across_offsets(self):
+        # 09:00-05:00 == 14:00Z, later than 12:00Z though its string sorts first
+        early = self._evidence(EvidenceSource.DEFAULT, "2025-01-01T12:00:00+00:00", "e")
+        late = self._evidence(EvidenceSource.DEFAULT, "2025-01-01T09:00:00-05:00", "l")
+        merged = corroborate([early, late])
+        assert merged.timestamp == "2025-01-01T09:00:00-05:00"
+
+    def test_rank_ties_break_on_source_id(self):
+        b_evidence = self._evidence(EvidenceSource.TRUSTED, "2025-01-01T00:00:00+00:00", "bbb")
+        a_evidence = self._evidence(EvidenceSource.TRUSTED, "2025-01-02T00:00:00+00:00", "aaa")
+        assert corroborate([b_evidence, a_evidence]).source_id == "aaa"
+
+    def test_metadata_merged_with_contributor_list(self):
+        a = self._evidence(
+            EvidenceSource.DEFAULT, "2025-01-01T00:00:00+00:00", "src-a", note="first"
+        )
+        b = self._evidence(EvidenceSource.DEFAULT, "2025-01-02T00:00:00+00:00", "src-b", extra=2)
+        merged = corroborate([a, b])
+        assert merged.metadata["note"] == "first"
+        assert merged.metadata["extra"] == 2
+        assert merged.metadata["corroborated_from"] == ["src-a", "src-b"]
+
+    def test_aggregation_is_order_independent(self):
+        a = self._evidence(EvidenceSource.TRUSTED, "2025-01-01T00:00:00+00:00", "a", count=2)
+        b = self._evidence(EvidenceSource.VERIFIED, "2025-01-03T00:00:00+00:00", "b", count=1)
+        c = self._evidence(EvidenceSource.DEFAULT, "2025-01-02T00:00:00+00:00", "c", count=5)
+        forward = corroborate([a, b, c])
+        backward = corroborate([c, b, a])
+        assert (
+            forward.source,
+            forward.timestamp,
+            forward.source_id,
+            forward.corroboration_count,
+        ) == (
+            backward.source,
+            backward.timestamp,
+            backward.source_id,
+            backward.corroboration_count,
+        )
