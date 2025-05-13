@@ -191,3 +191,74 @@ class TestProtectedPropertyCheck:
         engine.apply_decay = removes_unprotected  # type: ignore[method-assign]
         # "temp" is not protected, so the invariant says nothing about it
         assert engine.property_protected_never_deleted(store, "2025-06-01T00:00:00+00:00")
+
+
+class TestLegalHolds:
+    NOW = "2025-06-01T00:00:00+00:00"
+
+    def _decaying_store(self) -> MemoryStore:
+        # 5 days old with salience 0.1: decayed below the working-tier
+        # floor (half-life 1d) but above the episodic floor (half-life
+        # 14d), so one decay run demotes exactly one tier.
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                "stale",
+                MemoryTier.WORKING,
+                "old scratch",
+                salience=0.1,
+                created_at="2025-05-27T00:00:00+00:00",
+            )
+        )
+        return store
+
+    def test_hold_protects_from_demotion(self):
+        engine = DecayEngine()
+        store = self._decaying_store()
+        engine.place_hold("stale", reason="audit-2025")
+        stats = engine.apply_decay(store, self.NOW)
+        assert stats["protected_skipped"] == 1
+        assert store._items["stale"].tier == MemoryTier.WORKING
+
+    def test_release_makes_item_decay_again(self):
+        engine = DecayEngine()
+        store = self._decaying_store()
+        engine.place_hold("stale")
+        engine.apply_decay(store, self.NOW)
+        assert engine.release_hold("stale") is True
+        engine.apply_decay(store, self.NOW)
+        assert store._items["stale"].tier == MemoryTier.EPISODIC
+
+    def test_release_unknown_hold_returns_false(self):
+        assert DecayEngine().release_hold("nope") is False
+
+    def test_holds_listing_is_sorted_with_reasons(self):
+        engine = DecayEngine()
+        engine.place_hold("b2", reason="second")
+        engine.place_hold("a1", reason="first")
+        assert engine.holds() == {"a1": "first", "b2": "second"}
+        assert engine.is_on_hold("a1")
+        assert not engine.is_on_hold("z")
+
+    def test_hold_protects_procedural_from_tombstone(self):
+        engine = DecayEngine()
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                "record",
+                MemoryTier.PROCEDURAL,
+                "compliance record",
+                salience=0.0,
+                created_at="2020-01-01T00:00:00+00:00",
+            )
+        )
+        engine.place_hold("record", reason="legal")
+        stats = engine.apply_decay(store, self.NOW)
+        assert stats["tombstoned"] == 0
+        assert "record" in store._items
+
+    def test_hold_replaces_reason(self):
+        engine = DecayEngine()
+        engine.place_hold("x", reason="first")
+        engine.place_hold("x", reason="second")
+        assert engine.holds() == {"x": "second"}

@@ -91,9 +91,12 @@ class DecayEngine:
     )
     protected_tags: set[str] = field(default_factory=lambda: {"legal_hold", "protected"})
     _tombstones: dict[str, TombstoneState] = field(default_factory=dict)
+    _holds: dict[str, str] = field(default_factory=dict)  # item_id -> reason
 
     def is_protected(self, item: MemoryItem) -> bool:
         if item.pinned:
+            return True
+        if item.item_id in self._holds:
             return True
         return bool(item.tags & self.protected_tags)
 
@@ -161,6 +164,26 @@ class DecayEngine:
         protected_ids = {i.item_id for i in store._items.values() if self.is_protected(i)}
         self.apply_decay(store, now)
         return all(pid in store._items for pid in sorted(protected_ids))
+
+    def place_hold(self, item_id: str, reason: str = "") -> None:
+        """Place a legal hold; held items are protected from all decay.
+
+        Holds are keyed by item id and independent of tags, so records
+        can be frozen for audits or legal requests without touching the
+        items themselves.
+        """
+        self._holds[item_id] = reason
+
+    def release_hold(self, item_id: str) -> bool:
+        """Release a hold. Returns False when no hold existed."""
+        return self._holds.pop(item_id, None) is not None
+
+    def is_on_hold(self, item_id: str) -> bool:
+        return item_id in self._holds
+
+    def holds(self) -> dict[str, str]:
+        """All active holds as {item_id: reason}, sorted by item id."""
+        return dict(sorted(self._holds.items()))
 
 
 def _days_between(a: str, b: str) -> float:
