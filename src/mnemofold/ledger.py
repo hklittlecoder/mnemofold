@@ -61,6 +61,7 @@ class Commitment:
     depends_on: list[str] = field(default_factory=list)  # other commitment IDs
     tags: set[str] = field(default_factory=set)
     metadata: dict[str, Any] = field(default_factory=dict)
+    grace_hours: float = 0.0  # per-commitment grace window for overdue checks
 
     def __post_init__(self) -> None:
         if isinstance(self.status, str):
@@ -74,8 +75,12 @@ class Commitment:
             new_status = CommitmentStatus(new_status)
         return new_status in VALID_TRANSITIONS.get(self.status, set())
 
-    def is_overdue(self, now: str, grace_hours: float = 0.0) -> bool:
-        """Check if this commitment is overdue."""
+    def is_overdue(self, now: str, grace_hours: float | None = None) -> bool:
+        """Check if this commitment is overdue.
+
+        ``grace_hours=None`` uses the commitment's own grace window; an
+        explicit argument overrides it for this call only.
+        """
         if self.status in {
             CommitmentStatus.DONE,
             CommitmentStatus.CANCELLED,
@@ -91,7 +96,8 @@ class Commitment:
                 t_due = t_due.replace(tzinfo=UTC)
             if t_now.tzinfo is None:
                 t_now = t_now.replace(tzinfo=UTC)
-            return t_now > t_due + timedelta(hours=grace_hours)
+            effective_grace = self.grace_hours if grace_hours is None else grace_hours
+            return t_now > t_due + timedelta(hours=effective_grace)
         except (ValueError, TypeError):
             return False
 
@@ -107,6 +113,17 @@ class Commitment:
             return (t_due - t_now).total_seconds() / 86400.0
         except (ValueError, TypeError):
             return None
+
+
+@dataclass(slots=True)
+class Nudge:
+    """A deterministic reminder suggestion for one commitment."""
+
+    commitment_id: str
+    owed_by: str
+    kind: str  # upcoming | overdue
+    due_date: str
+    message: str
 
 
 @dataclass
@@ -154,8 +171,8 @@ class CommitmentLedger:
         )
         return True
 
-    def overdue(self, now: str, grace_hours: float = 0.0) -> list[Commitment]:
-        """Return all overdue commitments."""
+    def overdue(self, now: str, grace_hours: float | None = None) -> list[Commitment]:
+        """Return all overdue commitments (per-commitment grace by default)."""
         return [c for c in self._commitments.values() if c.is_overdue(now, grace_hours)]
 
     def by_status(self, status: CommitmentStatus) -> list[Commitment]:
@@ -207,6 +224,7 @@ class CommitmentLedger:
                     "due_date": c.due_date,
                     "status": str(c.status),
                     "priority": c.priority,
+                    "grace_hours": round(c.grace_hours, 6),
                     "created_at": c.created_at,
                     "updated_at": c.updated_at,
                     "source_event_ids": list(c.source_event_ids),
@@ -240,3 +258,42 @@ class CommitmentLedger:
                     lines.append(f"- **Tags**: {', '.join(sorted(c.tags))}")
                 lines.append("")
         return "\n".join(lines)
+
+    def nudges(self, now: str, ahead_days: float = 2.0) -> list[Nudge]:
+        """Reminder suggestions for active commitments, deterministically ordered.
+
+        Kinds: ``overdue`` (past due including the commitment's own grace
+        window) and ``upcoming`` (due within ``ahead_days`` from now).
+        Items inside their grace window are not nudged. Sorted by
+        (due_date, commitment_id).
+        """
+        closed = {
+            CommitmentStatus.DONE,
+            CommitmentStatus.CANCELLED,
+            CommitmentStatus.SUPERSEDED,
+        }
+        out: list[Nudge] = []
+        for commitment_id in sorted(self._commitments):
+            c = self._commitments[commitment_id]
+            if c.status in closed:
+                continue
+            if c.is_overdue(now):
+                kind = "overdue"
+                message = f"Overdue: {c.description} (was due {c.due_date})"
+            else:
+                days_left = c.days_until_due(now)
+                if days_left is None or days_left < 0 or days_left > ahead_days:
+                    continue
+                kind = "upcoming"
+                message = f"Due soon: {c.description} (due {c.due_date})"
+            out.append(
+                Nudge(
+                    commitment_id=c.commitment_id,
+                    owed_by=c.owed_by,
+                    kind=kind,
+                    due_date=c.due_date,
+                    message=message,
+                )
+            )
+        out.sort(key=lambda n: (n.due_date, n.commitment_id))
+        return out

@@ -11,6 +11,7 @@ from mnemofold.ledger import (
     Commitment,
     CommitmentLedger,
     CommitmentStatus,
+    Nudge,
 )
 
 
@@ -162,3 +163,76 @@ class TestCommitmentLedger:
         ledger.add(Commitment("c2", "bob", "alice", "d2", "2024-01-01T00:00:00+00:00"))
         assert len(ledger.by_owed_by("alice")) == 1
         assert len(ledger.by_owed_to("alice")) == 1
+
+
+class TestGraceWindows:
+    def test_per_commitment_grace_honored_by_default(self):
+        c = Commitment("c1", "a", "b", "d", "2024-01-01T00:00:00+00:00", grace_hours=6.0)
+        assert not c.is_overdue("2024-01-01T03:00:00+00:00")
+        assert c.is_overdue("2024-01-01T07:00:00+00:00")
+
+    def test_explicit_grace_overrides_field(self):
+        c = Commitment("c1", "a", "b", "d", "2024-01-01T00:00:00+00:00", grace_hours=6.0)
+        assert c.is_overdue("2024-01-01T03:00:00+00:00", grace_hours=0.0)
+
+    def test_zero_grace_default_matches_previous_behavior(self):
+        c = Commitment("c1", "a", "b", "d", "2024-01-01T00:00:00+00:00")
+        assert not c.is_overdue("2024-01-01T00:00:00+00:00")
+        assert c.is_overdue("2024-01-01T00:00:01+00:00")
+
+    def test_ledger_overdue_uses_commitment_grace(self):
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("c1", "a", "b", "d", "2024-01-01T00:00:00+00:00", grace_hours=48.0))
+        assert ledger.overdue("2024-01-02T00:00:00+00:00") == []
+        assert len(ledger.overdue("2024-01-04T00:00:00+00:00")) == 1
+
+
+class TestNudges:
+    def _ledger(self) -> CommitmentLedger:
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("c_over", "alice", "bob", "ship report", "2024-01-01T00:00:00+00:00"))
+        ledger.add(Commitment("c_soon", "carol", "dave", "review PR", "2024-01-10T12:00:00+00:00"))
+        ledger.add(
+            Commitment("c_far", "erin", "frank", "plan offsite", "2024-03-01T00:00:00+00:00")
+        )
+        ledger.add(
+            Commitment(
+                "c_done",
+                "alice",
+                "bob",
+                "old task",
+                "2024-01-05T00:00:00+00:00",
+                status=CommitmentStatus.DONE,
+            )
+        )
+        return ledger
+
+    def test_overdue_and_upcoming_kinds(self):
+        nudges = self._ledger().nudges("2024-01-09T12:00:00+00:00", ahead_days=2.0)
+        by_id = {n.commitment_id: n for n in nudges}
+        assert by_id["c_over"].kind == "overdue"
+        assert by_id["c_soon"].kind == "upcoming"
+        assert "c_far" not in by_id
+        assert "c_done" not in by_id
+
+    def test_nudges_sorted_by_due_then_id(self):
+        nudges: list[Nudge] = self._ledger().nudges("2024-01-09T12:00:00+00:00")
+        assert [n.commitment_id for n in nudges] == ["c_over", "c_soon"]
+
+    def test_messages_cite_description_and_due(self):
+        nudges = self._ledger().nudges("2024-01-09T12:00:00+00:00")
+        over = next(n for n in nudges if n.commitment_id == "c_over")
+        assert "ship report" in over.message
+        assert over.due_date == "2024-01-01T00:00:00+00:00"
+        assert over.owed_by == "alice"
+
+    def test_grace_window_suppresses_nudge(self):
+        ledger = CommitmentLedger()
+        ledger.add(
+            Commitment("g1", "a", "b", "task", "2024-01-01T00:00:00+00:00", grace_hours=72.0)
+        )
+        # inside grace: not overdue, and past-due items are never "upcoming"
+        assert ledger.nudges("2024-01-02T00:00:00+00:00", ahead_days=2.0) == []
+
+    def test_empty_ledger_no_nudges(self):
+        assert CommitmentLedger().nudges("2024-01-09T12:00:00+00:00") == []
