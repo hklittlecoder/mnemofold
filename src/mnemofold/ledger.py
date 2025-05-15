@@ -297,3 +297,34 @@ class CommitmentLedger:
             )
         out.sort(key=lambda n: (n.due_date, n.commitment_id))
         return out
+
+    @classmethod
+    def from_json(cls, text: str) -> CommitmentLedger:
+        """Rebuild a ledger from :meth:`to_json` output (both directions).
+
+        History entries are restored verbatim and no new ``created``
+        entries are appended, so export -> import -> export is stable.
+        Unknown statuses raise, keeping imports as strict as exports.
+        """
+        data = json.loads(text)
+        ledger = cls()
+        for entry in data.get("commitments", []):
+            commitment = Commitment(
+                commitment_id=entry["commitment_id"],
+                owed_by=entry["owed_by"],
+                owed_to=entry["owed_to"],
+                description=entry["description"],
+                due_date=entry["due_date"],
+                status=CommitmentStatus(entry["status"]),
+                priority=entry.get("priority", 0.5),
+                created_at=entry.get("created_at", ""),
+                updated_at=entry.get("updated_at", ""),
+                source_event_ids=list(entry.get("source_event_ids", [])),
+                depends_on=list(entry.get("depends_on", [])),
+                tags=set(entry.get("tags", [])),
+                metadata=dict(entry.get("metadata", {})),
+                grace_hours=entry.get("grace_hours", 0.0),
+            )
+            ledger._commitments[commitment.commitment_id] = commitment
+        ledger._history = [dict(entry) for entry in data.get("history", [])]
+        return ledger

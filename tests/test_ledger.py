@@ -236,3 +236,69 @@ class TestNudges:
 
     def test_empty_ledger_no_nudges(self):
         assert CommitmentLedger().nudges("2024-01-09T12:00:00+00:00") == []
+
+
+class TestLedgerJsonRoundtrip:
+    def _ledger(self) -> CommitmentLedger:
+        ledger = CommitmentLedger()
+        ledger.add(
+            Commitment(
+                "c1",
+                "alice",
+                "bob",
+                "ship parser",
+                "2024-02-01T00:00:00+00:00",
+                priority=0.8,
+                created_at="2024-01-01T00:00:00+00:00",
+                tags={"alpha"},
+                grace_hours=12.0,
+                source_event_ids=["evt_1"],
+                depends_on=["c0"],
+                metadata={"project": "alpha"},
+            )
+        )
+        ledger.add(Commitment("c2", "carol", "dave", "review design", "2024-02-10T00:00:00+00:00"))
+        ledger.transition("c2", CommitmentStatus.IN_PROGRESS, "2024-01-15T00:00:00+00:00")
+        return ledger
+
+    def test_export_import_export_is_stable(self):
+        original = self._ledger()
+        restored = CommitmentLedger.from_json(original.to_json())
+        assert restored.to_json() == original.to_json()
+
+    def test_roundtrip_preserves_every_field(self):
+        restored = CommitmentLedger.from_json(self._ledger().to_json())
+        c1 = restored.get("c1")
+        assert c1 is not None
+        assert c1.owed_by == "alice"
+        assert c1.owed_to == "bob"
+        assert c1.priority == 0.8
+        assert c1.grace_hours == 12.0
+        assert c1.tags == {"alpha"}
+        assert c1.source_event_ids == ["evt_1"]
+        assert c1.depends_on == ["c0"]
+        assert c1.metadata == {"project": "alpha"}
+        c2 = restored.get("c2")
+        assert c2 is not None
+        assert c2.status == CommitmentStatus.IN_PROGRESS
+
+    def test_history_restored_without_duplicates(self):
+        original = self._ledger()
+        restored = CommitmentLedger.from_json(original.to_json())
+        assert restored.transition_history() == original.transition_history()
+
+    def test_empty_ledger_roundtrip(self):
+        empty = CommitmentLedger()
+        restored = CommitmentLedger.from_json(empty.to_json())
+        assert restored.total_count() == 0
+        assert restored.transition_history() == []
+
+    def test_unknown_status_is_rejected(self):
+        payload = json.loads(self._ledger().to_json())
+        payload["commitments"][0]["status"] = "exploded"
+        with pytest.raises(ValueError):
+            CommitmentLedger.from_json(json.dumps(payload))
+
+    def test_invalid_json_raises(self):
+        with pytest.raises(json.JSONDecodeError):
+            CommitmentLedger.from_json("{not json")
