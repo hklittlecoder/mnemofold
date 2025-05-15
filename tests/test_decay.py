@@ -335,3 +335,78 @@ class TestRetentionSnapshot:
 
     def test_empty_store_snapshot(self):
         assert DecayEngine().snapshot(MemoryStore(), self.NOW) == []
+
+
+class TestDecaySimulation:
+    START = "2025-01-01T00:00:00+00:00"
+
+    def _aging_store(self) -> MemoryStore:
+        store = MemoryStore()
+        # low-salience working item: should demote quickly (working half-life 1d)
+        store.add(
+            MemoryItem("w", MemoryTier.WORKING, "scratch", salience=0.05, created_at=self.START)
+        )
+        # protected item: should never move
+        store.add(
+            MemoryItem(
+                "p", MemoryTier.WORKING, "held", salience=0.05, created_at=self.START, pinned=True
+            )
+        )
+        return store
+
+    def test_simulate_produces_one_row_per_day(self):
+        engine = DecayEngine()
+        results = engine.simulate(self._aging_store(), self.START, days=10)
+        assert len(results) == 10
+        assert [r["day"] for r in results] == list(range(10))
+
+    def test_unprotected_item_demotes_over_time(self):
+        engine = DecayEngine()
+        store = self._aging_store()
+        engine.simulate(store, self.START, days=10)
+        assert store._items["w"].tier != MemoryTier.WORKING
+
+    def test_protected_item_never_moves(self):
+        engine = DecayEngine()
+        store = self._aging_store()
+        engine.simulate(store, self.START, days=30)
+        assert store._items["p"].tier == MemoryTier.WORKING
+
+    def test_total_items_never_increases(self):
+        engine = DecayEngine()
+        results = engine.simulate(self._aging_store(), self.START, days=20)
+        totals = [r["total_items"] for r in results]
+        assert all(later <= earlier for earlier, later in zip(totals, totals[1:], strict=False))
+
+    def test_invalid_start_returns_empty(self):
+        assert DecayEngine().simulate(self._aging_store(), "not-a-date", days=5) == []
+
+    def test_procedural_item_reaches_tombstone_then_purge(self):
+        engine = DecayEngine()
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                "proc",
+                MemoryTier.PROCEDURAL,
+                "old",
+                salience=0.0,
+                created_at="2020-01-01T00:00:00+00:00",
+            )
+        )
+        # grace for procedural is 14 days; simulate past it
+        engine.apply_decay(store, self.START)  # ACTIVE -> GRACE
+        assert "proc" in store._items
+        results = engine.simulate(store, self.START, days=20)
+        purged = [r for r in results if r["purged"] > 0]
+        assert purged, "procedural item should eventually purge"
+        assert "proc" not in store._items
+
+    def test_simulation_is_deterministic(self):
+        first = DecayEngine().simulate(self._aging_store(), self.START, days=15)
+        second = DecayEngine().simulate(self._aging_store(), self.START, days=15)
+        assert first == second
+
+    def test_property_holds_across_whole_simulation(self):
+        engine = DecayEngine()
+        store = self._aging_store()
+        assert engine.property_protected_never_deleted(store, "2025-02-01T00:00:00+00:00")
