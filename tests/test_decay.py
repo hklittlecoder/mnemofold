@@ -262,3 +262,76 @@ class TestLegalHolds:
         engine.place_hold("x", reason="first")
         engine.place_hold("x", reason="second")
         assert engine.holds() == {"x": "second"}
+
+
+class TestRetentionSnapshot:
+    NOW = "2025-06-01T00:00:00+00:00"
+
+    def _store(self) -> MemoryStore:
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                "b_item",
+                MemoryTier.EPISODIC,
+                "ten day old episode",
+                salience=0.8,
+                created_at="2025-05-22T00:00:00+00:00",
+            )
+        )
+        store.add(
+            MemoryItem(
+                "a_item",
+                MemoryTier.WORKING,
+                "pinned working note",
+                salience=0.5,
+                created_at="2025-05-31T00:00:00+00:00",
+                pinned=True,
+            )
+        )
+        return store
+
+    def test_rows_sorted_and_typed(self):
+        engine = DecayEngine()
+        rows = engine.snapshot(self._store(), self.NOW)
+        assert [row["item_id"] for row in rows] == ["a_item", "b_item"]
+        assert rows[0]["tier"] == "working"
+        assert rows[1]["tier"] == "episodic"
+
+    def test_age_and_decay_are_quantized(self):
+        engine = DecayEngine()
+        rows = engine.snapshot(self._store(), self.NOW)
+        b_row = rows[1]
+        assert b_row["age_days"] == 10.0
+        policy = DEFAULT_POLICIES[MemoryTier.EPISODIC]
+        expected = 0.8 * policy.decay_factor(10.0)
+        assert b_row["decayed_salience"] == round(expected, 6)
+
+    def test_protection_flags(self):
+        engine = DecayEngine()
+        engine.place_hold("b_item", reason="audit")
+        rows = engine.snapshot(self._store(), self.NOW)
+        assert rows[0]["protected"] is True  # pinned
+        assert rows[1]["protected"] is True  # held
+
+    def test_state_reflects_grace_after_tombstone(self):
+        engine = DecayEngine()
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                "proc",
+                MemoryTier.PROCEDURAL,
+                "old procedure",
+                salience=0.0,
+                created_at="2020-01-01T00:00:00+00:00",
+            )
+        )
+        engine.apply_decay(store, self.NOW)
+        rows = engine.snapshot(store, self.NOW)
+        assert rows[0]["state"] == "grace"
+
+    def test_snapshot_is_deterministic(self):
+        engine = DecayEngine()
+        assert engine.snapshot(self._store(), self.NOW) == engine.snapshot(self._store(), self.NOW)
+
+    def test_empty_store_snapshot(self):
+        assert DecayEngine().snapshot(MemoryStore(), self.NOW) == []

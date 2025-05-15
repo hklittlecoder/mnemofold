@@ -185,6 +185,30 @@ class DecayEngine:
         """All active holds as {item_id: reason}, sorted by item id."""
         return dict(sorted(self._holds.items()))
 
+    def snapshot(self, store: MemoryStore, now: str) -> list[dict[str, Any]]:
+        """Per-item retention state for audits and reports.
+
+        Rows are sorted by item id and floats are quantized at this
+        production point, so equal inputs produce byte-identical
+        snapshots across runs and platforms.
+        """
+        rows: list[dict[str, Any]] = []
+        for item_id in sorted(store._items):
+            item = store._items[item_id]
+            policy = self.policies.get(item.tier)
+            decayed = policy.decayed_salience(item, now) if policy is not None else item.salience
+            rows.append(
+                {
+                    "item_id": item_id,
+                    "tier": str(item.tier),
+                    "age_days": round(_age_days(item, now), 6),
+                    "decayed_salience": round(decayed, 6),
+                    "protected": self.is_protected(item),
+                    "state": str(self._tombstones.get(item_id, TombstoneState.ACTIVE)),
+                }
+            )
+        return rows
+
 
 def _days_between(a: str, b: str) -> float:
     try:
