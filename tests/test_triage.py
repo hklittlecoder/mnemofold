@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import pytest
 
+from mnemofold.graph import Edge, EdgeType, Node, NodeType, WorkstreamGraph
 from mnemofold.triage import (
     TriageItem,
     TriagePriority,
     TriageResult,
     TriageScorer,
+    attach_graph_importance,
     precision_at_k,
+    sender_degrees,
 )
 
 
@@ -217,3 +220,80 @@ class TestQuietHoursReclassification:
         for r in modified:
             assert r.priority == scorer._classify(r.score)
         assert modified[0].item_id == "a"  # re-sorted by reduced score
+
+
+class TestGraphSenderImportance:
+    def _graph(self) -> WorkstreamGraph:
+        graph = WorkstreamGraph()
+        graph.add_node(Node(node_id="alice", node_type=NodeType.PERSON, label="Alice"))
+        graph.add_node(Node(node_id="bob", node_type=NodeType.PERSON, label="Bob"))
+        graph.add_node(Node(node_id="carol", node_type=NodeType.PERSON, label="Carol"))
+        graph.add_node(Node(node_id="p1", node_type=NodeType.PROJECT, label="P1"))
+        graph.add_node(Node(node_id="p2", node_type=NodeType.PROJECT, label="P2"))
+        graph.add_edge(
+            Edge(edge_id="e1", edge_type=EdgeType.OWNS, source_id="alice", target_id="p1")
+        )
+        graph.add_edge(
+            Edge(edge_id="e2", edge_type=EdgeType.OWNS, source_id="alice", target_id="p2")
+        )
+        graph.add_edge(
+            Edge(
+                edge_id="e3",
+                edge_type=EdgeType.PARTICIPATES,
+                source_id="alice",
+                target_id="bob",
+            )
+        )
+        graph.add_edge(Edge(edge_id="e4", edge_type=EdgeType.OWNS, source_id="bob", target_id="p1"))
+        return graph
+
+    def _item(self, sender: str) -> TriageItem:
+        return TriageItem(
+            item_id=f"m-{sender}",
+            title="t",
+            sender=sender,
+            received_at="2025-03-10T09:00:00+00:00",
+        )
+
+    def test_degrees_count_both_directions(self):
+        degrees = sender_degrees(self._graph())
+        assert degrees["alice"] == 3
+        assert degrees["bob"] == 2
+        assert degrees["carol"] == 0
+
+    def test_importance_is_relative_to_hub(self):
+        items = [self._item("alice"), self._item("bob"), self._item("carol")]
+        attach_graph_importance(items, self._graph())
+        assert items[0].sender_importance == 1.0
+        assert items[1].sender_importance == round(0.2 + 0.8 * 2 / 3, 6)
+        assert items[2].sender_importance == 0.2
+
+    def test_unknown_sender_keeps_default(self):
+        items = [self._item("dave")]
+        attach_graph_importance(items, self._graph())
+        assert items[0].sender_importance == 0.5
+
+    def test_empty_graph_changes_nothing(self):
+        items = [self._item("alice")]
+        attach_graph_importance(items, WorkstreamGraph())
+        assert items[0].sender_importance == 0.5
+
+    def test_deactivated_edges_do_not_count(self):
+        graph = self._graph()
+        graph.deactivate_edge("e1")
+        degrees = sender_degrees(graph)
+        assert degrees["alice"] == 2
+
+    def test_hub_sender_scores_higher_end_to_end(self):
+        items = [self._item("alice"), self._item("carol")]
+        attach_graph_importance(items, self._graph())
+        scorer = TriageScorer()
+        results = scorer.batch_score(items, "2025-03-10T09:00:00+00:00")
+        assert results[0].item_id == "m-alice"
+
+    def test_importance_is_deterministic(self):
+        first = [self._item("alice"), self._item("bob")]
+        second = [self._item("alice"), self._item("bob")]
+        attach_graph_importance(first, self._graph())
+        attach_graph_importance(second, self._graph())
+        assert [i.sender_importance for i in first] == [i.sender_importance for i in second]

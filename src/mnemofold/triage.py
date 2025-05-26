@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from mnemofold.graph import WorkstreamGraph
+
 
 class TriagePriority(StrEnum):
     """Priority levels for triaged items."""
@@ -208,3 +210,32 @@ def precision_at_k(results: list[TriageResult], labels: dict[str, bool], k: int)
     top_k = results[:k]
     relevant = sum(1 for r in top_k if labels.get(r.item_id, False))
     return relevant / len(top_k)
+
+
+# --- Graph-derived sender importance -------------------------------------------
+
+
+def sender_degrees(graph: WorkstreamGraph) -> dict[str, int]:
+    """Active-edge degree per node id, counting both directions."""
+    degrees: dict[str, int] = {}
+    for node_id in sorted(graph.nodes):
+        degrees[node_id] = len(graph.outgoing_edges(node_id)) + len(graph.incoming_edges(node_id))
+    return degrees
+
+
+def attach_graph_importance(items: list[TriageItem], graph: WorkstreamGraph) -> None:
+    """Set sender_importance in place from relative graph connectivity.
+
+    ``importance = 0.2 + 0.8 * degree / max_degree``, quantized to six
+    decimals. Senders absent from the graph keep their current value (the
+    neutral default), so unknown people are neither boosted nor punished.
+    Deterministic for identical graphs and item lists.
+    """
+    degrees = sender_degrees(graph)
+    max_degree = max(degrees.values()) if degrees else 0
+    if max_degree <= 0:
+        return
+    for item in items:
+        degree = degrees.get(item.sender)
+        if degree is not None:
+            item.sender_importance = round(0.2 + 0.8 * degree / max_degree, 6)
