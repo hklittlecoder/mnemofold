@@ -7,6 +7,7 @@ reasons, batch and quiet-hour rules, and precision@k against planted labels.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -149,8 +150,6 @@ class TriageScorer:
         if hours_left <= 0:
             return 1.0  # overdue = max priority
         # Exponential: 1.0 at 0h, ~0.5 at 24h, ~0.1 at 72h
-        import math
-
         return float(math.exp(-hours_left / 24.0))
 
     def batch_score(self, items: list[TriageItem], now: str) -> list[TriageResult]:

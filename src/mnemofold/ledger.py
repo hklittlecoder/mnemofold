@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -88,8 +88,6 @@ class Commitment:
         }:
             return False
         try:
-            from datetime import timedelta
-
             t_due = datetime.fromisoformat(self.due_date)
             t_now = datetime.fromisoformat(now)
             if t_due.tzinfo is None:
