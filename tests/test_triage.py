@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from mnemofold.triage import (
     TriageItem,
     TriagePriority,
+    TriageResult,
     TriageScorer,
     precision_at_k,
 )
@@ -165,3 +168,52 @@ class TestPrecisionAtK:
     def test_zero_k(self):
 
         assert precision_at_k([], {}, 0) == 0.0
+
+
+class TestQuietHoursReclassification:
+    NIGHT = "2024-01-15T22:00:00+00:00"
+    DAY = "2024-01-15T10:00:00+00:00"
+
+    def _result(self, item_id: str, score: float, priority: TriagePriority) -> TriageResult:
+        return TriageResult(item_id=item_id, score=score, priority=priority)
+
+    def test_reduced_high_becomes_normal(self):
+        modified = TriageScorer().apply_quiet_hours(
+            [self._result("h", 0.7, TriagePriority.HIGH)], now=self.NIGHT
+        )
+        assert modified[0].score == pytest.approx(0.4)
+        assert modified[0].priority == TriagePriority.NORMAL
+
+    def test_reduced_normal_becomes_low(self):
+        modified = TriageScorer().apply_quiet_hours(
+            [self._result("n", 0.4, TriagePriority.NORMAL)], now=self.NIGHT
+        )
+        assert modified[0].priority == TriagePriority.LOW
+
+    def test_urgent_passes_through_untouched(self):
+        modified = TriageScorer().apply_quiet_hours(
+            [self._result("u", 0.9, TriagePriority.URGENT)], now=self.NIGHT
+        )
+        assert modified[0].score == 0.9
+        assert modified[0].priority == TriagePriority.URGENT
+        assert modified[0].reasons == []
+
+    def test_daytime_leaves_results_alone(self):
+        modified = TriageScorer().apply_quiet_hours(
+            [self._result("h", 0.7, TriagePriority.HIGH)], now=self.DAY
+        )
+        assert modified[0].priority == TriagePriority.HIGH
+        assert modified[0].reasons == []
+
+    def test_score_and_band_always_consistent_at_night(self):
+        scorer = TriageScorer()
+        results = [
+            self._result("a", 0.95, TriagePriority.HIGH),
+            self._result("b", 0.7, TriagePriority.HIGH),
+            self._result("c", 0.62, TriagePriority.NORMAL),
+            self._result("d", 0.3, TriagePriority.NORMAL),
+        ]
+        modified = scorer.apply_quiet_hours(results, now=self.NIGHT)
+        for r in modified:
+            assert r.priority == scorer._classify(r.score)
+        assert modified[0].item_id == "a"  # re-sorted by reduced score

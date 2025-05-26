@@ -127,17 +127,19 @@ class TriageScorer:
             score = score / total_weight
         score = max(0.0, min(1.0, score))
 
-        # Determine priority level
-        if score >= self.urgency_threshold:
-            priority = TriagePriority.URGENT
-        elif score >= self.high_threshold:
-            priority = TriagePriority.HIGH
-        elif score <= self.low_threshold:
-            priority = TriagePriority.LOW
-        else:
-            priority = TriagePriority.NORMAL
+        priority = self._classify(score)
 
         return TriageResult(item_id=item.item_id, score=score, priority=priority, reasons=reasons)
+
+    def _classify(self, score: float) -> TriagePriority:
+        """Map a score to a priority band with the configured thresholds."""
+        if score >= self.urgency_threshold:
+            return TriagePriority.URGENT
+        if score >= self.high_threshold:
+            return TriagePriority.HIGH
+        if score <= self.low_threshold:
+            return TriagePriority.LOW
+        return TriagePriority.NORMAL
 
     def _deadline_score(self, item: TriageItem, now: str) -> float:
         if not item.has_deadline or not item.deadline:
@@ -180,11 +182,15 @@ class TriageScorer:
             if r.priority == TriagePriority.URGENT:
                 modified.append(r)
                 continue
+            # Recompute the band from the reduced score: keeping the old
+            # priority left score and band inconsistent (a 0.4 score
+            # labeled HIGH), which distorted downstream batching.
+            reduced = max(0.0, r.score - 0.3)
             new_r = TriageResult(
                 item_id=r.item_id,
-                score=max(0.0, r.score - 0.3),
-                priority=TriagePriority.LOW if r.score - 0.3 < self.low_threshold else r.priority,
-                reasons=r.reasons + ["quiet_hours_reduced"],
+                score=reduced,
+                priority=self._classify(reduced),
+                reasons=[*r.reasons, "quiet_hours_reduced"],
             )
             modified.append(new_r)
         modified.sort(key=lambda r: r.score, reverse=True)
