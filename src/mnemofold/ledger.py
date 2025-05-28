@@ -119,7 +119,7 @@ class Nudge:
 
     commitment_id: str
     owed_by: str
-    kind: str  # upcoming | overdue
+    kind: str  # upcoming | overdue | blocked
     due_date: str
     message: str
 
@@ -261,9 +261,10 @@ class CommitmentLedger:
         """Reminder suggestions for active commitments, deterministically ordered.
 
         Kinds: ``overdue`` (past due including the commitment's own grace
-        window) and ``upcoming`` (due within ``ahead_days`` from now).
-        Items inside their grace window are not nudged. Sorted by
-        (due_date, commitment_id).
+        window), ``blocked`` (an unfinished dependency stands between the
+        commitment and its due window), and ``upcoming`` (due within
+        ``ahead_days``). Items inside their grace window are not nudged
+        unless they are blocked. Sorted by (due_date, commitment_id).
         """
         closed = {
             CommitmentStatus.DONE,
@@ -275,15 +276,23 @@ class CommitmentLedger:
             c = self._commitments[commitment_id]
             if c.status in closed:
                 continue
+            blocking = self.open_dependencies(c.commitment_id)
+            days_left = c.days_until_due(now)
             if c.is_overdue(now):
                 kind = "overdue"
                 message = f"Overdue: {c.description} (was due {c.due_date})"
-            else:
-                days_left = c.days_until_due(now)
-                if days_left is None or days_left < 0 or days_left > ahead_days:
-                    continue
+                if blocking:
+                    message += f"; blocked by {', '.join(blocking)}"
+            elif blocking and days_left is not None and days_left <= ahead_days:
+                kind = "blocked"
+                message = (
+                    f"Blocked: {c.description} waits on {', '.join(blocking)} (due {c.due_date})"
+                )
+            elif days_left is not None and 0 <= days_left <= ahead_days:
                 kind = "upcoming"
                 message = f"Due soon: {c.description} (due {c.due_date})"
+            else:
+                continue
             out.append(
                 Nudge(
                     commitment_id=c.commitment_id,
@@ -326,3 +335,33 @@ class CommitmentLedger:
             ledger._commitments[commitment.commitment_id] = commitment
         ledger._history = [dict(entry) for entry in data.get("history", [])]
         return ledger
+
+    def open_dependencies(self, commitment_id: str) -> list[str]:
+        """Dependency ids that are not finished yet, in depends_on order.
+
+        Unknown dependency ids count as blocking: a reference we cannot
+        verify is not a green light.
+        """
+        c = self._commitments.get(commitment_id)
+        if c is None:
+            return []
+        finished = {
+            CommitmentStatus.DONE,
+            CommitmentStatus.CANCELLED,
+            CommitmentStatus.SUPERSEDED,
+        }
+        blocking: list[str] = []
+        for dep in c.depends_on:
+            dep_item = self._commitments.get(dep)
+            if dep_item is None or dep_item.status not in finished:
+                blocking.append(dep)
+        return blocking
+
+    def blocked_commitments(self) -> list[Commitment]:
+        """Active commitments with at least one unfinished dependency."""
+        active = {CommitmentStatus.OPEN, CommitmentStatus.IN_PROGRESS}
+        return [
+            self._commitments[cid]
+            for cid in sorted(self._commitments)
+            if self._commitments[cid].status in active and self.open_dependencies(cid)
+        ]

@@ -302,3 +302,69 @@ class TestLedgerJsonRoundtrip:
     def test_invalid_json_raises(self):
         with pytest.raises(json.JSONDecodeError):
             CommitmentLedger.from_json("{not json")
+
+
+class TestBlockedDependencies:
+    def _ledger(self) -> CommitmentLedger:
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("dep1", "alice", "bob", "draft spec", "2024-01-20T00:00:00+00:00"))
+        ledger.add(
+            Commitment(
+                "main",
+                "carol",
+                "dave",
+                "build feature",
+                "2024-01-25T00:00:00+00:00",
+                depends_on=["dep1", "missing"],
+            )
+        )
+        return ledger
+
+    def test_open_dependencies_lists_unfinished_in_order(self):
+        ledger = self._ledger()
+        assert ledger.open_dependencies("main") == ["dep1", "missing"]
+        ledger.transition("dep1", CommitmentStatus.DONE, "2024-01-19T00:00:00+00:00")
+        # unknown dependency ids stay blocking (conservative)
+        assert ledger.open_dependencies("main") == ["missing"]
+
+    def test_no_dependencies_no_blocking(self):
+        assert self._ledger().open_dependencies("dep1") == []
+
+    def test_unknown_commitment_has_no_dependencies(self):
+        assert self._ledger().open_dependencies("nope") == []
+
+    def test_blocked_commitments_listing(self):
+        ledger = self._ledger()
+        assert [c.commitment_id for c in ledger.blocked_commitments()] == ["main"]
+        ledger.transition("main", CommitmentStatus.DONE, "2024-01-24T00:00:00+00:00")
+        assert ledger.blocked_commitments() == []
+
+    def test_blocked_nudge_kind_and_message(self):
+        ledger = self._ledger()
+        nudges = ledger.nudges("2024-01-24T00:00:00+00:00", ahead_days=2.0)
+        by_id = {n.commitment_id: n for n in nudges}
+        assert by_id["dep1"].kind == "overdue"
+        assert by_id["main"].kind == "blocked"
+        assert "dep1" in by_id["main"].message
+        assert "missing" in by_id["main"].message
+
+    def test_overdue_nudge_mentions_blockers(self):
+        ledger = self._ledger()
+        nudges = ledger.nudges("2024-01-26T00:00:00+00:00")
+        main = next(n for n in nudges if n.commitment_id == "main")
+        assert main.kind == "overdue"
+        assert "blocked by dep1, missing" in main.message
+
+    def test_far_blocked_commitment_not_nudged(self):
+        ledger = CommitmentLedger()
+        ledger.add(
+            Commitment(
+                "later",
+                "a",
+                "b",
+                "far task",
+                "2024-06-01T00:00:00+00:00",
+                depends_on=["missing"],
+            )
+        )
+        assert ledger.nudges("2024-01-24T00:00:00+00:00", ahead_days=2.0) == []
