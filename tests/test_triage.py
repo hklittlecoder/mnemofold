@@ -6,6 +6,8 @@ import pytest
 
 from mnemofold.graph import Edge, EdgeType, Node, NodeType, WorkstreamGraph
 from mnemofold.triage import (
+    BatchPlan,
+    TriageBatcher,
     TriageItem,
     TriagePriority,
     TriageResult,
@@ -297,3 +299,62 @@ class TestGraphSenderImportance:
         attach_graph_importance(first, self._graph())
         attach_graph_importance(second, self._graph())
         assert [i.sender_importance for i in first] == [i.sender_importance for i in second]
+
+
+class TestTriageBatcher:
+    def _result(self, item_id: str, priority: TriagePriority, score: float = 0.5) -> TriageResult:
+        return TriageResult(item_id=item_id, score=score, priority=priority)
+
+    def test_buckets_by_priority(self):
+        results = [
+            self._result("u1", TriagePriority.URGENT, 0.9),
+            self._result("h1", TriagePriority.HIGH, 0.7),
+            self._result("n1", TriagePriority.NORMAL, 0.4),
+            self._result("l1", TriagePriority.LOW, 0.1),
+        ]
+        plan: BatchPlan = TriageBatcher().batch(results)
+        assert [r.item_id for r in plan.act_now] == ["u1"]
+        assert [r.item_id for r in plan.review] == ["h1", "n1"]
+        assert [r.item_id for r in plan.defer] == ["l1"]
+        assert plan.total() == 4
+
+    def test_urgent_overflow_moves_to_review_with_reason(self):
+        results = [self._result(f"u{i}", TriagePriority.URGENT, 0.9 - i * 0.01) for i in range(5)]
+        plan = TriageBatcher(max_act_now=3).batch(results)
+        assert [r.item_id for r in plan.act_now] == ["u0", "u1", "u2"]
+        assert [r.item_id for r in plan.review] == ["u3", "u4"]
+        assert "batch_overflow" in plan.review[0].reasons
+        assert plan.total() == 5
+
+    def test_review_overflow_moves_to_defer(self):
+        results = [self._result(f"n{i}", TriagePriority.NORMAL, 0.4) for i in range(4)]
+        plan = TriageBatcher(max_review=2).batch(results)
+        assert [r.item_id for r in plan.review] == ["n0", "n1"]
+        assert [r.item_id for r in plan.defer] == ["n2", "n3"]
+        assert all("batch_overflow" in r.reasons for r in plan.defer)
+
+    def test_input_order_preserved_within_buckets(self):
+        results = [
+            self._result("b", TriagePriority.NORMAL, 0.5),
+            self._result("a", TriagePriority.NORMAL, 0.45),
+        ]
+        plan = TriageBatcher().batch(results)
+        assert [r.item_id for r in plan.review] == ["b", "a"]
+
+    def test_empty_input_yields_empty_plan(self):
+        plan = TriageBatcher().batch([])
+        assert plan.total() == 0
+        assert plan.act_now == []
+        assert plan.review == []
+        assert plan.defer == []
+
+    def test_no_items_are_lost_under_tight_caps(self):
+        results = (
+            [self._result(f"u{i}", TriagePriority.URGENT, 0.9) for i in range(4)]
+            + [self._result(f"h{i}", TriagePriority.HIGH, 0.7) for i in range(12)]
+            + [self._result("low", TriagePriority.LOW, 0.1)]
+        )
+        plan = TriageBatcher(max_act_now=2, max_review=5).batch(results)
+        assert plan.total() == len(results)
+        assert len(plan.act_now) == 2
+        assert len(plan.review) == 5

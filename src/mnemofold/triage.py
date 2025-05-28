@@ -239,3 +239,64 @@ def attach_graph_importance(items: list[TriageItem], graph: WorkstreamGraph) -> 
         degree = degrees.get(item.sender)
         if degree is not None:
             item.sender_importance = round(0.2 + 0.8 * degree / max_degree, 6)
+
+
+# --- Batching rules -------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class BatchPlan:
+    """Bucketed triage output after applying caps.
+
+    Every scored result lands in exactly one bucket, so
+    ``total() == len(input)`` always holds — batching re-routes items,
+    it never drops them.
+    """
+
+    act_now: list[TriageResult] = field(default_factory=list)
+    review: list[TriageResult] = field(default_factory=list)
+    defer: list[TriageResult] = field(default_factory=list)
+
+    def total(self) -> int:
+        return len(self.act_now) + len(self.review) + len(self.defer)
+
+
+@dataclass
+class TriageBatcher:
+    """Deterministic batching rules on top of scored results.
+
+    * ``act_now``: URGENT results up to ``max_act_now``; overflow keeps
+      its score but moves to ``review`` and gains a ``batch_overflow``
+      reason;
+    * ``review``: URGENT overflow plus HIGH/NORMAL results up to
+      ``max_review``; overflow moves to ``defer`` (also marked);
+    * ``defer``: LOW results and any overflow.
+
+    Input order is preserved inside each bucket, so callers should pass
+    score-sorted results (e.g. from :meth:`TriageScorer.batch_score`).
+    """
+
+    max_act_now: int = 3
+    max_review: int = 10
+
+    def batch(self, results: list[TriageResult]) -> BatchPlan:
+        plan = BatchPlan()
+        for result in results:
+            if result.priority == TriagePriority.URGENT and len(plan.act_now) < self.max_act_now:
+                plan.act_now.append(result)
+                continue
+            if result.priority in (
+                TriagePriority.URGENT,
+                TriagePriority.HIGH,
+                TriagePriority.NORMAL,
+            ):
+                if len(plan.review) < self.max_review:
+                    if result.priority == TriagePriority.URGENT:
+                        result.reasons.append("batch_overflow")
+                    plan.review.append(result)
+                else:
+                    result.reasons.append("batch_overflow")
+                    plan.defer.append(result)
+                continue
+            plan.defer.append(result)
+        return plan
