@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from mnemofold.events import EventType
+from mnemofold.factory import WorkHistoryFactory
 from mnemofold.graph import Edge, EdgeType, Node, NodeType, WorkstreamGraph
+from mnemofold.ingest import CommitmentExtractor
 from mnemofold.triage import (
     BatchPlan,
     TriageBatcher,
@@ -358,3 +361,79 @@ class TestTriageBatcher:
         assert plan.total() == len(results)
         assert len(plan.act_now) == 2
         assert len(plan.review) == 5
+
+
+class TestPrecisionAtKOnFactory:
+    """Measured triage quality on the synthetic factory corpus.
+
+    Every number here comes from the seeded synthetic history (seed 9,
+    30 days) with planted commitment mails as ground truth — not from a
+    real corpus, a real inbox, or a live model. Commitment flags are
+    derived by running the commitment extractor over event text, so the
+    scorer is not fed the labels directly. Values are exact because all
+    inputs are deterministic; they are pinned so scoring changes show up
+    as deliberate diffs.
+    """
+
+    NOW = "2025-01-31T00:00:00+00:00"
+
+    def _corpus(self):
+        factory = WorkHistoryFactory(seed=9, days=30)
+        events, _ = factory.generate()
+        extractor = CommitmentExtractor()
+        planted_refs = {p.item_id for p in factory.planted_items() if p.kind == "commitment"}
+        items: list[TriageItem] = []
+        labels: dict[str, bool] = {}
+        for synthetic in events:
+            event = synthetic.to_event()
+            if event.event_type not in (
+                EventType.MAIL_RECEIVED,
+                EventType.MAIL_SENT,
+                EventType.CHAT_MESSAGE,
+            ):
+                continue
+            content = event.content
+            mentions = extractor.extract(event)
+            due = next((m.due for m in mentions if m.due), None)
+            items.append(
+                TriageItem(
+                    item_id=event.event_id,
+                    title=str(content.get("subject", content.get("channel", ""))),
+                    sender=str(content.get("sender", content.get("persona_id", ""))),
+                    received_at=event.timestamp.isoformat(),
+                    content=str(content.get("body", content.get("text", ""))),
+                    mentions_commitment=bool(mentions),
+                    has_deadline=due is not None,
+                    deadline=f"{due}T00:00:00+00:00" if due else "",
+                )
+            )
+            ref = content.get("commitment_ref")
+            labels[event.event_id] = isinstance(ref, str) and ref in planted_refs
+        return items, labels
+
+    def test_top_of_inbox_is_a_planted_commitment(self):
+        items, labels = self._corpus()
+        results = TriageScorer().batch_score(items, self.NOW)
+        assert precision_at_k(results, labels, 1) == 1.0
+
+    def test_precision_at_k_measured_on_synthetic_corpus(self):
+        items, labels = self._corpus()
+        k = sum(1 for value in labels.values() if value)
+        assert k == 3  # this seed plants exactly three commitment mails
+        results = TriageScorer().batch_score(items, self.NOW)
+        # measured: two of the three planted mails land in the top three
+        assert precision_at_k(results, labels, k) == 2 / 3
+        # measured: still two planted mails inside the top five
+        assert precision_at_k(results, labels, 5) == 2 / 5
+
+    def test_reversed_ranking_scores_baseline_zero(self):
+        items, labels = self._corpus()
+        results = TriageScorer().batch_score(items, self.NOW)
+        k = sum(1 for value in labels.values() if value)
+        assert precision_at_k(list(reversed(results)), labels, k) == 0.0
+
+    def test_ranking_is_deterministic(self):
+        items, _ = self._corpus()
+        first = [r.item_id for r in TriageScorer().batch_score(items, self.NOW)]
+        second = [r.item_id for r in TriageScorer().batch_score(items, self.NOW)]
+        assert first == second
