@@ -8,8 +8,18 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 from mnemofold.ledger import CommitmentLedger, CommitmentStatus
+
+
+def _parse_instant(value: str) -> datetime | None:
+    """Parse an ISO instant; naive values are read as UTC. None if invalid."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 @dataclass(slots=True)
@@ -110,6 +120,86 @@ def render_standup_html(data: StandupData) -> str:
     parts.append(f"<p><em>Citations: {len(data.citations)}</em></p>")
     parts.append("</body></html>")
     return "\n".join(parts)
+
+
+@dataclass(slots=True)
+class WeeklyReview:
+    """A one-week roll-up of ledger activity, with citations."""
+
+    week_start: str
+    week_end: str
+    completed: list[str] = field(default_factory=list)
+    overdue: list[str] = field(default_factory=list)
+    still_open: list[str] = field(default_factory=list)
+    due_next_week: list[str] = field(default_factory=list)
+    risks: list[str] = field(default_factory=list)
+    citations: list[str] = field(default_factory=list)
+
+
+@dataclass
+class WeeklyReviewGenerator:
+    """Builds a weekly review from the ledger's transition history.
+
+    ``completed`` is derived from status-change history entries whose
+    timestamp lands inside ``[week_start, week_end)``, so the report
+    reflects what actually changed during the week rather than the
+    end-state alone. Overdue and open lists are evaluated as of
+    ``week_end``. Every line cites its commitment id.
+    """
+
+    ledger: CommitmentLedger
+
+    def generate(self, week_start: str, week_end: str) -> WeeklyReview:
+        review = WeeklyReview(week_start=week_start, week_end=week_end)
+        start = _parse_instant(week_start)
+        end = _parse_instant(week_end)
+
+        if start is not None and end is not None:
+            for entry in self.ledger.transition_history():
+                if entry.get("to_status") != str(CommitmentStatus.DONE):
+                    continue
+                moment = _parse_instant(str(entry.get("timestamp", "")))
+                if moment is not None and start <= moment < end:
+                    cid = entry.get("commitment_id", "")
+                    commitment = self.ledger.get(cid)
+                    label = commitment.description if commitment else cid
+                    review.completed.append(f"{label} [{cid}]")
+                    review.citations.append(cid)
+
+        overdue = sorted(self.ledger.overdue(week_end), key=lambda c: c.due_date)
+        review.overdue = [
+            f"{c.description} (due {c.due_date}) [{c.commitment_id}]" for c in overdue
+        ]
+        review.citations.extend(c.commitment_id for c in overdue)
+
+        active = sorted(
+            self.ledger.by_status(CommitmentStatus.OPEN)
+            + self.ledger.by_status(CommitmentStatus.IN_PROGRESS),
+            key=lambda c: (c.due_date, c.commitment_id),
+        )
+        review.still_open = [f"{c.description} [{c.commitment_id}]" for c in active]
+        review.citations.extend(c.commitment_id for c in active)
+
+        upcoming = [
+            c for c in self.ledger.upcoming(week_end, days=7.0) if not c.is_overdue(week_end)
+        ]
+        review.due_next_week = [
+            f"{c.description} (due {c.due_date}) [{c.commitment_id}]" for c in upcoming
+        ]
+        review.citations.extend(c.commitment_id for c in upcoming)
+
+        # Risks: overdue items are surfaced again as the week's top risk,
+        # plus any open commitment already within a day of its deadline.
+        review.risks = list(review.overdue)
+        soon = _parse_instant(week_end)
+        if soon is not None:
+            for c in active:
+                due = _parse_instant(c.due_date)
+                if due is not None and timedelta(0) <= (due - soon) <= timedelta(days=1):
+                    line = f"{c.description} is due within a day [{c.commitment_id}]"
+                    if line not in review.risks:
+                        review.risks.append(line)
+        return review
 
 
 def render_work_strip_svg(counts: list[int], width: int = 600, height: int = 40) -> str:
