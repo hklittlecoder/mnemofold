@@ -436,3 +436,42 @@ class TestTransitionMatrix:
         ledger = self._ledger_with(CommitmentStatus.OPEN)
         assert len(ledger.by_status("open")) == 1
         assert ledger.by_status("done") == []
+
+
+class TestLedgerEdges:
+    def test_days_until_due_negative_and_invalid(self):
+        c = Commitment("c1", "a", "b", "d", "2024-01-01T00:00:00+00:00")
+        assert c.days_until_due("2024-01-11T00:00:00+00:00") == -10.0
+        assert c.days_until_due("garbage") is None
+        bad = Commitment("c2", "a", "b", "d", "not-a-date")
+        assert bad.days_until_due("2024-01-01T00:00:00+00:00") is None
+        assert bad.is_overdue("2024-01-01T00:00:00+00:00") is False
+
+    def test_upcoming_includes_past_due_and_window_edge(self):
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("past", "a", "b", "d", "2024-01-01T00:00:00+00:00"))
+        ledger.add(Commitment("edge", "a", "b", "d", "2024-01-08T00:00:00+00:00"))
+        ledger.add(Commitment("outside", "a", "b", "d", "2024-02-01T00:00:00+00:00"))
+        ids = [c.commitment_id for c in ledger.upcoming("2024-01-01T00:00:00+00:00", days=7.0)]
+        assert ids == ["past", "edge"]
+
+    def test_upcoming_skips_closed_statuses(self):
+        ledger = CommitmentLedger()
+        ledger.add(
+            Commitment(
+                "done",
+                "a",
+                "b",
+                "d",
+                "2024-01-02T00:00:00+00:00",
+                status=CommitmentStatus.DONE,
+            )
+        )
+        assert ledger.upcoming("2024-01-01T00:00:00+00:00") == []
+
+    def test_mixed_offset_due_dates_compare_as_instants(self):
+        ledger = CommitmentLedger()
+        # due 2024-01-01T20:00-08:00 == 2024-01-02T04:00Z: overdue at 05:00Z
+        ledger.add(Commitment("tz", "a", "b", "d", "2024-01-01T20:00:00-08:00"))
+        assert len(ledger.overdue("2024-01-02T05:00:00+00:00")) == 1
+        assert ledger.overdue("2024-01-02T03:00:00+00:00") == []

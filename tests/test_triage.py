@@ -437,3 +437,75 @@ class TestPrecisionAtKOnFactory:
         first = [r.item_id for r in TriageScorer().batch_score(items, self.NOW)]
         second = [r.item_id for r in TriageScorer().batch_score(items, self.NOW)]
         assert first == second
+
+
+class TestTriageEdges:
+    def test_zero_weights_yield_low_priority(self):
+        scorer = TriageScorer(
+            deadline_weight=0.0,
+            sender_weight=0.0,
+            ask_weight=0.0,
+            commitment_weight=0.0,
+            staleness_weight=0.0,
+            thread_weight=0.0,
+        )
+        item = TriageItem("x", "t", "s", "2024-01-01T00:00:00+00:00", has_explicit_ask=True)
+        result = scorer.score(item, "2024-01-01T00:00:00+00:00")
+        assert result.score == 0.0
+        assert result.priority == TriagePriority.LOW
+
+    def test_invalid_deadline_contributes_nothing(self):
+        item = TriageItem(
+            "x",
+            "t",
+            "s",
+            "2024-01-01T00:00:00+00:00",
+            has_deadline=True,
+            deadline="not-a-date",
+        )
+        result = TriageScorer().score(item, "2024-01-01T00:00:00+00:00")
+        assert not any("deadline_proximity" in reason for reason in result.reasons)
+
+    def test_invalid_now_treats_deadline_as_absent(self):
+        item = TriageItem(
+            "x",
+            "t",
+            "s",
+            "2024-01-01T00:00:00+00:00",
+            has_deadline=True,
+            deadline="2024-01-02T00:00:00+00:00",
+        )
+        result = TriageScorer().score(item, "garbage")
+        assert not any("deadline_proximity" in reason for reason in result.reasons)
+
+    def test_past_deadline_scores_maximum_proximity(self):
+        item = TriageItem(
+            "x",
+            "t",
+            "s",
+            "2024-01-01T00:00:00+00:00",
+            has_deadline=True,
+            deadline="2023-12-01T00:00:00+00:00",
+        )
+        result = TriageScorer().score(item, "2024-01-01T00:00:00+00:00")
+        assert any(reason.startswith("deadline_proximity=1.00") for reason in result.reasons)
+
+    def test_precision_at_k_edges(self):
+        results = [TriageResult("a", 0.9, TriagePriority.URGENT)]
+        assert precision_at_k(results, {"a": True}, 0) == 0.0
+        assert precision_at_k([], {"a": True}, 5) == 0.0
+        assert precision_at_k(results, {"a": True}, 5) == 1.0
+        assert precision_at_k(results, {}, 1) == 0.0
+
+    def test_staleness_fresh_thread_scores_above_stale(self):
+        fresh = TriageItem(
+            "fresh", "t", "s", "2024-01-01T00:00:00+00:00", thread_staleness_hours=0.0
+        )
+        stale = TriageItem(
+            "stale", "t", "s", "2024-01-01T00:00:00+00:00", thread_staleness_hours=96.0
+        )
+        scorer = TriageScorer()
+        assert (
+            scorer.score(fresh, "2024-01-01T00:00:00+00:00").score
+            > scorer.score(stale, "2024-01-01T00:00:00+00:00").score
+        )
