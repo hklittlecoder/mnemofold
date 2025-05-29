@@ -368,3 +368,71 @@ class TestBlockedDependencies:
             )
         )
         assert ledger.nudges("2024-01-24T00:00:00+00:00", ahead_days=2.0) == []
+
+
+class TestTransitionMatrix:
+    ALL = list(CommitmentStatus)
+    TS = "2024-01-02T00:00:00+00:00"
+
+    def _ledger_with(self, status: CommitmentStatus) -> CommitmentLedger:
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("c1", "a", "b", "d", "2024-01-01T00:00:00+00:00", status=status))
+        return ledger
+
+    def test_every_pair_matches_transition_table(self):
+        for start in self.ALL:
+            for target in self.ALL:
+                ledger = self._ledger_with(start)
+                expected = target in VALID_TRANSITIONS[start]
+                result = ledger.transition("c1", target, self.TS)
+                assert result is expected, f"{start} -> {target}"
+                assert ledger.get("c1").status == (target if expected else start)
+
+    def test_terminal_states_have_no_exits(self):
+        for terminal in (
+            CommitmentStatus.DONE,
+            CommitmentStatus.CANCELLED,
+            CommitmentStatus.SUPERSEDED,
+        ):
+            assert VALID_TRANSITIONS[terminal] == set()
+
+    def test_failed_transition_leaves_timestamps_untouched(self):
+        ledger = self._ledger_with(CommitmentStatus.DONE)
+        assert ledger.transition("c1", CommitmentStatus.OPEN, self.TS) is False
+        assert ledger.get("c1").updated_at != self.TS
+
+    def test_history_records_only_successful_transitions(self):
+        ledger = self._ledger_with(CommitmentStatus.OPEN)
+        ledger.transition("c1", CommitmentStatus.DONE, self.TS)
+        ledger.transition("c1", CommitmentStatus.OPEN, "2024-01-03T00:00:00+00:00")
+        history = ledger.transition_history()
+        assert len(history) == 2  # created + one successful change
+        assert history[-1] == {
+            "commitment_id": "c1",
+            "action": "status_change",
+            "from_status": "open",
+            "to_status": "done",
+            "timestamp": self.TS,
+        }
+
+    def test_unknown_commitment_transition_fails(self):
+        ledger = CommitmentLedger()
+        assert ledger.transition("nope", CommitmentStatus.DONE, self.TS) is False
+
+    def test_string_status_argument_accepted(self):
+        ledger = self._ledger_with(CommitmentStatus.OPEN)
+        assert ledger.transition("c1", "done", self.TS) is True
+        assert ledger.get("c1").status == CommitmentStatus.DONE
+
+    def test_markdown_export_is_stable_and_ordered(self):
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("b", "x", "y", "second task", "2024-02-01T00:00:00+00:00"))
+        ledger.add(Commitment("a", "x", "y", "first task", "2024-01-01T00:00:00+00:00"))
+        first = ledger.to_markdown()
+        assert first == ledger.to_markdown()
+        assert first.index("first task") < first.index("second task")
+
+    def test_by_status_accepts_string(self):
+        ledger = self._ledger_with(CommitmentStatus.OPEN)
+        assert len(ledger.by_status("open")) == 1
+        assert ledger.by_status("done") == []
