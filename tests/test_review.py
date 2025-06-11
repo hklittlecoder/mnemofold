@@ -178,3 +178,62 @@ class TestWeeklyRendering:
     def test_rendering_is_deterministic(self):
         assert render_weekly_markdown(self._review()) == render_weekly_markdown(self._review())
         assert render_weekly_html(self._review()) == render_weekly_html(self._review())
+
+
+class TestWeeklyWindowEdges:
+    WINDOW = ("2024-01-15T00:00:00+00:00", "2024-01-22T00:00:00+00:00")
+
+    def _ledger_with_done_at(self, ts: str) -> CommitmentLedger:
+        ledger = CommitmentLedger()
+        ledger.add(
+            Commitment(
+                "c1",
+                "a",
+                "b",
+                "task",
+                "2024-01-18T00:00:00+00:00",
+                created_at="2024-01-10T00:00:00+00:00",
+            )
+        )
+        ledger.transition("c1", CommitmentStatus.DONE, ts)
+        return ledger
+
+    def test_start_boundary_inclusive(self):
+        review = WeeklyReviewGenerator(
+            self._ledger_with_done_at("2024-01-15T00:00:00+00:00")
+        ).generate(*self.WINDOW)
+        assert len(review.completed) == 1
+
+    def test_end_boundary_exclusive(self):
+        review = WeeklyReviewGenerator(
+            self._ledger_with_done_at("2024-01-22T00:00:00+00:00")
+        ).generate(*self.WINDOW)
+        assert review.completed == []
+
+    def test_naive_timestamps_read_as_utc(self):
+        review = WeeklyReviewGenerator(self._ledger_with_done_at("2024-01-17T00:00:00")).generate(
+            *self.WINDOW
+        )
+        assert len(review.completed) == 1
+
+    def test_in_progress_counts_as_open(self):
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("w1", "a", "b", "wip task", "2024-02-01T00:00:00+00:00"))
+        ledger.transition("w1", CommitmentStatus.IN_PROGRESS, "2024-01-16T00:00:00+00:00")
+        review = WeeklyReviewGenerator(ledger).generate(*self.WINDOW)
+        assert any("w1" in line for line in review.still_open)
+
+    def test_due_next_week_boundary(self):
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("in7", "a", "b", "task", "2024-01-29T00:00:00+00:00"))
+        ledger.add(Commitment("out8", "a", "b", "task", "2024-01-30T00:00:00+00:00"))
+        review = WeeklyReviewGenerator(ledger).generate(*self.WINDOW)
+        joined = " ".join(review.due_next_week)
+        assert "in7" in joined
+        assert "out8" not in joined
+
+    def test_risk_line_for_imminent_deadline(self):
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("soon", "a", "b", "tight task", "2024-01-22T12:00:00+00:00"))
+        review = WeeklyReviewGenerator(ledger).generate(*self.WINDOW)
+        assert any("due within a day" in line and "soon" in line for line in review.risks)
