@@ -9,6 +9,8 @@ from mnemofold.review import (
     WeeklyReviewGenerator,
     render_standup_html,
     render_standup_markdown,
+    render_weekly_html,
+    render_weekly_markdown,
     render_work_strip_svg,
 )
 
@@ -135,3 +137,44 @@ class TestWeeklyReviewGenerator:
         assert first.completed == second.completed
         assert first.overdue == second.overdue
         assert first.citations == second.citations
+
+
+class TestWeeklyRendering:
+    def _review(self) -> WeeklyReview:
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("c1", "a", "b", "Ship report", "2024-01-18T00:00:00+00:00"))
+        ledger.transition("c1", CommitmentStatus.DONE, "2024-01-17T09:00:00+00:00")
+        ledger.add(Commitment("c2", "a", "b", "Pay invoice", "2024-01-10T00:00:00+00:00"))
+        return WeeklyReviewGenerator(ledger).generate(
+            "2024-01-15T00:00:00+00:00", "2024-01-22T00:00:00+00:00"
+        )
+
+    def test_markdown_has_all_sections(self):
+        markdown = render_weekly_markdown(self._review())
+        assert markdown.startswith("# Weekly Review")
+        for heading in (
+            "## Completed",
+            "## Overdue",
+            "## Still open",
+            "## Due next week",
+            "## Risks",
+        ):
+            assert heading in markdown
+
+    def test_markdown_shows_counts_and_none(self):
+        markdown = render_weekly_markdown(self._review())
+        assert "## Completed (1)" in markdown
+        assert "## Due next week (0)" in markdown
+        assert "_None_" in markdown
+
+    def test_html_is_self_contained_and_escaped(self):
+        review = self._review()
+        review.completed.append("<script>alert(1)</script> [evil]")
+        page = render_weekly_html(review)
+        assert page.startswith("<!DOCTYPE html>")
+        assert "<script>alert" not in page
+        assert "&lt;script&gt;" in page
+
+    def test_rendering_is_deterministic(self):
+        assert render_weekly_markdown(self._review()) == render_weekly_markdown(self._review())
+        assert render_weekly_html(self._review()) == render_weekly_html(self._review())

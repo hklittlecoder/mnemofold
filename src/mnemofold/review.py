@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from mnemofold.ledger import CommitmentLedger, CommitmentStatus
+from mnemofold.reports import wrap_html
 
 
 def _parse_instant(value: str) -> datetime | None:
@@ -218,3 +219,46 @@ def render_work_strip_svg(counts: list[int], width: int = 600, height: int = 40)
         parts.append(f'<rect x="{x}" y="0" width="{w}" height="{height}" fill="rgb({r},{g},{b})"/>')
     parts.append("</svg>")
     return "".join(parts)
+
+
+# --- Weekly review rendering ----------------------------------------------------
+
+_WEEKLY_SECTIONS = (
+    ("Completed", "completed"),
+    ("Overdue", "overdue"),
+    ("Still open", "still_open"),
+    ("Due next week", "due_next_week"),
+    ("Risks", "risks"),
+)
+
+
+def render_weekly_markdown(review: WeeklyReview) -> str:
+    """Deterministic Markdown for a weekly review."""
+    lines = [f"# Weekly Review — {review.week_start} → {review.week_end}", ""]
+    for title, attribute in _WEEKLY_SECTIONS:
+        items: list[str] = getattr(review, attribute)
+        lines.append(f"## {title} ({len(items)})")
+        lines.append("")
+        if items:
+            for item in items:
+                lines.append(f"- {item}")
+        else:
+            lines.append("_None_")
+        lines.append("")
+    lines.append("---")
+    lines.append(f"*Citations: {len(review.citations)}*")
+    return "\n".join(lines)
+
+
+def render_weekly_html(review: WeeklyReview) -> str:
+    """Self-contained HTML page for a weekly review; all text escaped."""
+    sections: list[tuple[str, str]] = []
+    for title, attribute in _WEEKLY_SECTIONS:
+        items: list[str] = getattr(review, attribute)
+        if items:
+            body = "<ul>" + "".join(f"<li>{html.escape(i)}</li>" for i in items) + "</ul>"
+        else:
+            body = "<p><em>None</em></p>"
+        sections.append((f"{title} ({len(items)})", body))
+    sections.append(("Citations", f"<p><em>{len(review.citations)} memory ids cited</em></p>"))
+    return wrap_html(f"Weekly Review {review.week_start} → {review.week_end}", sections)
