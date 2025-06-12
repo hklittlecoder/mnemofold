@@ -218,3 +218,35 @@ class MeetingPrepper:
 def verify_citations(prep: MeetingPrep, store: MemoryStore) -> bool:
     """Property: all cited sources exist in the store."""
     return all(store.get(cid) is not None for cid in prep.cited_sources)
+
+
+@dataclass(slots=True)
+class CoverageReport:
+    """How completely a packet covers a set of expected (planted) facts."""
+
+    expected: int
+    covered: int
+    missing: list[str] = field(default_factory=list)
+
+    @property
+    def ratio(self) -> float:
+        return round(self.covered / self.expected, 6) if self.expected else 1.0
+
+
+def measure_coverage(prep: MeetingPrep, expected_ids: list[str]) -> CoverageReport:
+    """Measure how many expected source ids a packet actually cites.
+
+    ``expected_ids`` is the planted ground truth for a synthetic meeting:
+    the memory ids a correct packet should surface. Coverage is the count
+    of expected ids present in the packet's cited sources; missing ids are
+    reported so shortfalls are visible, never averaged away. An empty
+    expectation yields ratio 1.0 (nothing required, nothing missed).
+    """
+    cited = set(prep.cited_sources)
+    unique_expected = sorted(set(expected_ids))
+    missing = [eid for eid in unique_expected if eid not in cited]
+    return CoverageReport(
+        expected=len(unique_expected),
+        covered=len(unique_expected) - len(missing),
+        missing=missing,
+    )

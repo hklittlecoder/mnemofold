@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
-from mnemofold.prep import MeetingPrepper, verify_citations
+from mnemofold.prep import MeetingPrepper, measure_coverage, verify_citations
 
 
 class TestMeetingPrepper:
@@ -158,3 +158,61 @@ class TestEvidenceAgenda:
         first = MeetingPrepper(store=self._store()).prepare("m", "Alpha budget sync", ["alice"])
         second = MeetingPrepper(store=self._store()).prepare("m", "Alpha budget sync", ["alice"])
         assert first.agenda_items == second.agenda_items
+
+
+class TestPrepCoverage:
+    def _store(self) -> MemoryStore:
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                item_id="alice",
+                tier=MemoryTier.SEMANTIC,
+                content="Alice leads the alpha project",
+                title="Alice",
+                tags={"person"},
+            )
+        )
+        store.add(
+            MemoryItem(
+                item_id="commit1",
+                tier=MemoryTier.SEMANTIC,
+                content="Alice owes the alpha status update",
+                title="Status promise",
+                tags={"commitment"},
+            )
+        )
+        store.add(
+            MemoryItem(
+                item_id="noise",
+                tier=MemoryTier.SEMANTIC,
+                content="unrelated chatter about the weather",
+                title="Noise",
+            )
+        )
+        return store
+
+    def test_full_coverage(self):
+        prep = MeetingPrepper(store=self._store()).prepare("m", "alpha sync", ["alice"])
+        report = measure_coverage(prep, ["alice", "commit1"])
+        assert report.covered == 2
+        assert report.missing == []
+        assert report.ratio == 1.0
+
+    def test_partial_coverage_lists_missing(self):
+        prep = MeetingPrepper(store=self._store()).prepare("m", "alpha sync", ["alice"])
+        report = measure_coverage(prep, ["alice", "never_surfaced"])
+        assert report.covered == 1
+        assert report.missing == ["never_surfaced"]
+        assert report.ratio == 0.5
+
+    def test_empty_expectation_is_ratio_one(self):
+        prep = MeetingPrepper(store=self._store()).prepare("m", "alpha sync", ["alice"])
+        report = measure_coverage(prep, [])
+        assert report.expected == 0
+        assert report.ratio == 1.0
+
+    def test_duplicate_expectations_counted_once(self):
+        prep = MeetingPrepper(store=self._store()).prepare("m", "alpha sync", ["alice"])
+        report = measure_coverage(prep, ["alice", "alice", "commit1"])
+        assert report.expected == 2
+        assert report.covered == 2
