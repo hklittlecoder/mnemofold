@@ -23,6 +23,15 @@ def _parse_instant(value: str) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
+def _day_window(today: str) -> tuple[datetime, datetime]:
+    """[midnight, next midnight) around the given instant, in its own zone."""
+    moment = _parse_instant(today)
+    if moment is None:
+        raise ValueError(f"invalid standup date: {today!r}")
+    start = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
 @dataclass(slots=True)
 class StandupData:
     date: str
@@ -40,8 +49,24 @@ class StandupData:
 class StandupGenerator:
     ledger: CommitmentLedger
 
-    def generate(self, today: str) -> StandupData:
+    def generate(self, today: str, pending_decisions: list[str] | None = None) -> StandupData:
+        """Build the standup snapshot for ``today``.
+
+        ``completed`` lists commitments transitioned to done on the same
+        local day as ``today`` (read from the ledger's history); callers
+        that track decisions elsewhere can pass ``pending_decisions`` to
+        have them carried into the report.
+        """
         data = StandupData(date=today)
+        data.pending_decisions = list(pending_decisions or [])
+        day_start, day_end = _day_window(today)
+        for c in self.ledger.all_commitments():
+            if c.status != CommitmentStatus.DONE:
+                continue
+            done_at = _parse_instant(c.updated_at)
+            if done_at is not None and day_start <= done_at < day_end:
+                data.completed.append(f"{c.description} [{c.commitment_id}]")
+                data.citations.append(c.commitment_id)
         overdue = self.ledger.overdue(today)
         data.overdue = [
             f"{c.description} [{c.commitment_id}]"

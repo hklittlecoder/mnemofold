@@ -206,6 +206,10 @@ class CommitmentLedger:
     def total_count(self) -> int:
         return len(self._commitments)
 
+    def all_commitments(self) -> list[Commitment]:
+        """All commitments ordered by (due_date, commitment_id)."""
+        return sorted(self._commitments.values(), key=lambda c: (c.due_date, c.commitment_id))
+
     def transition_history(self) -> list[dict[str, Any]]:
         """Return the full transition history."""
         return list(self._history)

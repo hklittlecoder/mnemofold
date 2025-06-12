@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from mnemofold.ledger import Commitment, CommitmentLedger, CommitmentStatus
 from mnemofold.review import (
     StandupGenerator,
@@ -237,3 +239,42 @@ class TestWeeklyWindowEdges:
         ledger.add(Commitment("soon", "a", "b", "tight task", "2024-01-22T12:00:00+00:00"))
         review = WeeklyReviewGenerator(ledger).generate(*self.WINDOW)
         assert any("due within a day" in line and "soon" in line for line in review.risks)
+
+
+class TestStandupCompleted:
+    def _ledger(self) -> CommitmentLedger:
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("d1", "a", "b", "done today", "2024-01-14T00:00:00+00:00"))
+        ledger.transition("d1", CommitmentStatus.DONE, "2024-01-15T09:30:00+00:00")
+        ledger.add(Commitment("d2", "a", "b", "done earlier", "2024-01-10T00:00:00+00:00"))
+        ledger.transition("d2", CommitmentStatus.DONE, "2024-01-12T09:30:00+00:00")
+        return ledger
+
+    def test_completed_lists_same_day_transitions(self):
+        data = StandupGenerator(self._ledger()).generate("2024-01-15T18:00:00+00:00")
+        assert any("d1" in line for line in data.completed)
+        assert not any("d2" in line for line in data.completed)
+        assert "d1" in data.citations
+
+    def test_pending_decisions_passthrough(self):
+        data = StandupGenerator(self._ledger()).generate(
+            "2024-01-15T18:00:00+00:00", pending_decisions=["pick vendor [dec1]"]
+        )
+        assert data.pending_decisions == ["pick vendor [dec1]"]
+
+    def test_invalid_today_raises(self):
+        with pytest.raises(ValueError, match="invalid standup date"):
+            StandupGenerator(self._ledger()).generate("garbage")
+
+    def test_day_window_follows_local_zone_not_utc(self):
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("early", "a", "b", "morning task", "2024-01-14T00:00:00+00:00"))
+        ledger.transition("early", CommitmentStatus.DONE, "2024-01-15T06:00:00+00:00")
+        ledger.add(Commitment("late", "a", "b", "next utc day task", "2024-01-14T00:00:00+00:00"))
+        ledger.transition("late", CommitmentStatus.DONE, "2024-01-16T06:00:00+00:00")
+        # 23:30 at -05:00: the local day is 2024-01-15 and spans
+        # [2024-01-15T05:00Z, 2024-01-16T05:00Z)
+        data = StandupGenerator(ledger).generate("2024-01-15T23:30:00-05:00")
+        completed = " ".join(data.completed)
+        assert "early" in completed
+        assert "late" not in completed
