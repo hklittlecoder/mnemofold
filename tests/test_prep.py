@@ -216,3 +216,83 @@ class TestPrepCoverage:
         report = measure_coverage(prep, ["alice", "alice", "commit1"])
         assert report.expected == 2
         assert report.covered == 2
+
+
+class TestPrepPacketProperties:
+    def _store(self, n: int = 6) -> MemoryStore:
+        store = MemoryStore()
+        for i in range(n):
+            store.add(
+                MemoryItem(
+                    item_id=f"m{i}",
+                    tier=MemoryTier.EPISODIC,
+                    content=f"budget planning notes variant {i}",
+                    title=f"Note {i}",
+                    tags={"note"},
+                )
+            )
+        return store
+
+    def test_max_items_cap_respected(self):
+        prep = MeetingPrepper(store=self._store(), max_items=3).prepare(
+            "mtg", "budget planning", []
+        )
+        assert prep.total_items == 3
+        assert len(prep.items) == 3
+
+    def test_counts_are_consistent(self):
+        prep = MeetingPrepper(store=self._store()).prepare("mtg", "budget planning", [])
+        assert prep.total_items == len(prep.items) == len(prep.cited_sources)
+
+    def test_citations_resolve_both_directions(self):
+        store = self._store()
+        prep = MeetingPrepper(store=store).prepare("mtg", "budget planning", [])
+        assert verify_citations(prep, store)
+        store.remove(prep.cited_sources[0])
+        assert not verify_citations(prep, store)
+
+    def test_html_packet_escapes_hostile_text(self):
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                item_id="x",
+                tier=MemoryTier.SEMANTIC,
+                content="<script>alert(1)</script> budget",
+                title="<img onerror=budget>",
+                tags={"note"},
+            )
+        )
+        prep = MeetingPrepper(store=store).prepare("mtg", "budget", [])
+        page = prep.to_html()
+        assert "<script>" not in page
+        assert "&lt;script&gt;" in page
+        assert "<img" not in page
+
+    def test_markdown_packet_structure(self):
+        prep = MeetingPrepper(store=self._store(2)).prepare("mtg", "budget planning", [])
+        markdown = prep.to_markdown()
+        assert markdown.startswith("# Meeting Prep: budget planning")
+        assert "## Agenda" in markdown
+        assert "## Background (2 items)" in markdown
+        assert "*Sources cited: 2*" in markdown
+
+    def test_long_summaries_are_truncated(self):
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                item_id="long",
+                tier=MemoryTier.SEMANTIC,
+                content="budget " * 100,
+                title="Long",
+                tags={"note"},
+            )
+        )
+        prep = MeetingPrepper(store=store).prepare("mtg", "budget", [])
+        assert prep.items[0].summary.endswith("...")
+        assert len(prep.items[0].summary) == 203
+
+    def test_prepare_is_deterministic(self):
+        first = MeetingPrepper(store=self._store()).prepare("mtg", "budget planning", [])
+        second = MeetingPrepper(store=self._store()).prepare("mtg", "budget planning", [])
+        assert first.to_markdown() == second.to_markdown()
+        assert first.to_html() == second.to_html()
