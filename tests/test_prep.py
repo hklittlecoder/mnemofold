@@ -110,3 +110,51 @@ class TestMeetingPrepper:
         prepper = MeetingPrepper(store, max_items=10)
         prep = prepper.prepare("m1", "project", ["Alice"])
         assert prep.total_items <= 10
+
+
+class TestEvidenceAgenda:
+    def _store(self) -> MemoryStore:
+        store = MemoryStore()
+        entries = [
+            ("cm1", "Alice owes the budget numbers to Bob", "Budget promise", {"commitment"}),
+            ("dc1", "Decision pending on the budget storage vendor", "Vendor choice", {"decision"}),
+            ("pr1", "Alice profile and team background", "Alice", {"person"}),
+            ("nt1", "Notes about the alpha rollout plan", "Rollout notes", {"note"}),
+        ]
+        for item_id, content, title, tags in entries:
+            store.add(
+                MemoryItem(
+                    item_id=item_id,
+                    tier=MemoryTier.SEMANTIC,
+                    content=content,
+                    title=title,
+                    tags=set(tags),
+                )
+            )
+        return store
+
+    def test_agenda_sections_ordered_commitments_first(self):
+        prep = MeetingPrepper(store=self._store()).prepare("mtg1", "Alpha budget sync", ["alice"])
+        assert prep.agenda_items
+        assert prep.agenda_items[0].startswith("Review open commitments")
+        assert prep.agenda_items[1].startswith("Confirm pending decisions")
+        assert prep.agenda_items[-2:] == ["Open discussion", "Action items"]
+
+    def test_every_evidence_line_cites_ids(self):
+        prep = MeetingPrepper(store=self._store()).prepare("mtg1", "Alpha budget sync", ["alice"])
+        evidence_lines = [a for a in prep.agenda_items if "cites" in a]
+        assert evidence_lines
+        for line in evidence_lines:
+            cited = line.split("cites")[1].strip()
+            assert cited
+            for cid in cited.split(", "):
+                assert cid in {i.item_id for i in prep.items}
+
+    def test_empty_packet_keeps_closing_slots(self):
+        prep = MeetingPrepper(store=MemoryStore()).prepare("mtg1", "Nothing sync", [])
+        assert prep.agenda_items == ["Open discussion", "Action items"]
+
+    def test_agenda_is_deterministic(self):
+        first = MeetingPrepper(store=self._store()).prepare("m", "Alpha budget sync", ["alice"])
+        second = MeetingPrepper(store=self._store()).prepare("m", "Alpha budget sync", ["alice"])
+        assert first.agenda_items == second.agenda_items

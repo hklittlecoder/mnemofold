@@ -159,12 +159,38 @@ class MeetingPrepper:
             prep.cited_sources.append(item.item_id)
 
         prep.total_items = len(prep.items)
-
-        # Derive agenda from top items
-        top_titles = [it.title for it in prep.items[:5] if it.title]
-        prep.agenda_items = top_titles + ["Open discussion", "Action items"]
+        prep.agenda_items = self._build_agenda(prep.items)
 
         return prep
+
+    def _build_agenda(self, items: list[PrepItem]) -> list[str]:
+        """Evidence-based agenda assembled from the packet's own items.
+
+        Commitments come first, then decisions, then one focus entry per
+        remaining category (highest-priority item, id as tie-break), and
+        the standard discussion/action slots close the agenda. Every
+        evidence-derived line cites the memory ids it was built from, so
+        the agenda never contains claims the packet cannot source.
+        """
+        agenda: list[str] = []
+        by_cat: dict[str, list[PrepItem]] = {}
+        for entry in items:
+            by_cat.setdefault(entry.category, []).append(entry)
+        commitments = by_cat.get("commitment", [])
+        if commitments:
+            cites = ", ".join(c.item_id for c in commitments[:3])
+            agenda.append(f"Review open commitments ({len(commitments)}) - cites {cites}")
+        decisions = by_cat.get("decision", [])
+        if decisions:
+            cites = ", ".join(d.item_id for d in decisions[:3])
+            agenda.append(f"Confirm pending decisions ({len(decisions)}) - cites {cites}")
+        for cat in sorted(by_cat):
+            if cat in ("commitment", "decision"):
+                continue
+            top = max(by_cat[cat], key=lambda e: (e.priority, e.item_id))
+            agenda.append(f"{cat.title()} focus: {top.title} - cites {top.item_id}")
+        agenda.extend(["Open discussion", "Action items"])
+        return agenda
 
     def _relevance_score(self, item: MemoryItem, keywords: set[str]) -> float:
         text = f"{item.title} {item.content}".lower()
