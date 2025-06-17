@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pytest
 
+from mnemofold.factory import WorkHistoryFactory
 from mnemofold.ledger import Commitment, CommitmentLedger, CommitmentStatus
+from mnemofold.reports import TimelineItem, assemble_report_page
 from mnemofold.review import (
     StandupGenerator,
     WeeklyReview,
@@ -278,3 +282,85 @@ class TestStandupCompleted:
         completed = " ".join(data.completed)
         assert "early" in completed
         assert "late" not in completed
+
+
+class TestFactoryDrivenReports:
+    """Reports driven by the synthetic factory's planted commitments.
+
+    Every number here is measured on seeded synthetic data (seed 42,
+    60 days) — expectations are computed from the same ledger, never
+    copied from implementation internals.
+    """
+
+    NOW = "2025-02-15T00:00:00+00:00"
+
+    def _ledger(self) -> tuple[CommitmentLedger, int]:
+        factory = WorkHistoryFactory(seed=42, days=60)
+        factory.generate()
+        ledger = CommitmentLedger()
+        planted = [p for p in factory.planted_items() if p.kind == "commitment"]
+        for p in planted:
+            data = p.data
+            ledger.add(
+                Commitment(
+                    p.item_id,
+                    data["owed_by"],
+                    data["owed_to"],
+                    data["description"],
+                    data["due_date"],
+                )
+            )
+        return ledger, len(planted)
+
+    def test_standup_overdue_matches_direct_computation(self):
+        ledger, planted = self._ledger()
+        assert planted >= 2
+        data = StandupGenerator(ledger).generate(self.NOW)
+        expected = [c for c in ledger.all_commitments() if c.is_overdue(self.NOW)]
+        assert len(data.overdue) == len(expected)
+        for c in expected:
+            assert any(c.commitment_id in line for line in data.overdue)
+
+    def test_weekly_review_covers_all_planted_commitments(self):
+        ledger, planted = self._ledger()
+        review = WeeklyReviewGenerator(ledger).generate(
+            "2024-12-31T00:00:00+00:00", "2025-03-02T00:00:00+00:00"
+        )
+        # nothing transitioned to done, so completed is empty and every
+        # planted commitment is still open
+        assert review.completed == []
+        assert len(review.still_open) == planted
+        cited = set(review.citations)
+        assert {c.commitment_id for c in ledger.all_commitments()} <= cited
+
+    def test_rendered_reports_are_deterministic(self):
+        ledger, _ = self._ledger()
+        data = StandupGenerator(ledger).generate(self.NOW)
+        assert render_standup_markdown(data) == render_standup_markdown(data)
+        assert render_standup_html(data) == render_standup_html(data)
+        review = WeeklyReviewGenerator(ledger).generate(
+            "2025-02-01T00:00:00+00:00", "2025-02-08T00:00:00+00:00"
+        )
+        assert render_weekly_markdown(review) == render_weekly_markdown(review)
+        assert render_weekly_html(review) == render_weekly_html(review)
+
+    def test_assembled_page_from_ledger_timeline(self):
+        ledger, _ = self._ledger()
+        items = []
+        for c in ledger.all_commitments():
+            due = date.fromisoformat(c.due_date[:10])
+            status = "overdue" if c.is_overdue(self.NOW) else "open"
+            items.append(
+                TimelineItem(
+                    label=c.description, start=due - timedelta(days=7), end=due, status=status
+                )
+            )
+        page = assemble_report_page(
+            "Commitment timeline",
+            timeline_items=items,
+            run_metadata={"seed": "42", "days": "60"},
+        )
+        assert page.startswith("<!DOCTYPE html>")
+        assert "<svg" in page
+        assert "Run metadata" in page
+        assert ">seed<" in page
