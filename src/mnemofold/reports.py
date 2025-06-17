@@ -94,10 +94,14 @@ def render_timeline_svg(
     items: list[TimelineItem],
     width: int = 600,
     row_height: int = 24,
+    legend: bool = False,
 ) -> str:
     """Render an SVG timeline (Gantt-style) of commitment items.
 
-    Color-coded by status.  All text is HTML-escaped.
+    Color-coded by status.  All text is HTML-escaped.  With
+    ``legend=True`` a row of status chips (only for statuses actually
+    present) is drawn above the axis labels; the default keeps the
+    legacy output byte-identical.
     """
     if not items:
         return ""
@@ -117,7 +121,7 @@ def render_timeline_svg(
 
     label_width = 180
     chart_width = width - label_width
-    height = row_height * len(items) + 30
+    height = row_height * len(items) + 30 + (22 if legend else 0)
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
@@ -141,6 +145,14 @@ def render_timeline_svg(
     # Axis labels
     parts.append(_svg_text(label_width, height - 8, min_date.isoformat(), size=9, fill="#666"))
     parts.append(_svg_text(width - 80, height - 8, max_date.isoformat(), size=9, fill="#666"))
+
+    if legend:
+        used = [s for s in status_colors if any(it.status == s for it in items)]
+        x = label_width
+        for status_name in used:
+            parts.append(_svg_rect(x, height - 28, 10, 10, fill=status_colors[status_name]))
+            parts.append(_svg_text(x + 14, height - 19, status_name, size=9, fill="#444"))
+            x += 26 + 7 * len(status_name) + 10
     parts.append("</svg>")
     return "\n".join(parts)
 

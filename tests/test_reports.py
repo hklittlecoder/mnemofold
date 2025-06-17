@@ -180,3 +180,38 @@ def test_render_metric_table_escapes_names():
     html_out = render_metric_table([("<evil>", 0.5, "pass")])
     assert "&lt;evil&gt;" in html_out
     assert "<evil>" not in html_out
+
+
+def test_timeline_legend_off_by_default():
+    items = [TimelineItem("A", date(2026, 1, 1), date(2026, 1, 2), "open")]
+    svg = render_timeline_svg(items)
+    assert svg.count("<rect") == 1  # the bar only
+
+
+def test_timeline_legend_adds_chips_for_used_statuses():
+    items = [
+        TimelineItem("A", date(2026, 1, 1), date(2026, 1, 2), "open"),
+        TimelineItem("B", date(2026, 1, 1), date(2026, 1, 2), "done"),
+    ]
+    svg = render_timeline_svg(items, legend=True)
+    assert svg.count("<rect") == 4  # 2 bars + 2 legend chips
+    assert ">open</text>" in svg
+    assert ">done</text>" in svg
+    assert ">overdue</text>" not in svg  # unused statuses are not drawn
+
+
+def test_timeline_legend_grows_canvas():
+    items = [TimelineItem("A", date(2026, 1, 1), date(2026, 1, 2), "open")]
+    plain = render_timeline_svg(items)
+    with_legend = render_timeline_svg(items, legend=True)
+    assert len(with_legend) > len(plain)
+    assert 'height="54"' in plain
+    assert 'height="76"' in with_legend
+
+
+def test_timeline_legend_is_deterministic():
+    items = [
+        TimelineItem("A", date(2026, 1, 1), date(2026, 1, 3), "overdue"),
+        TimelineItem("B", date(2026, 1, 2), date(2026, 1, 4), "open"),
+    ]
+    assert render_timeline_svg(items, legend=True) == render_timeline_svg(items, legend=True)
