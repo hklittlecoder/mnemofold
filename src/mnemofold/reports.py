@@ -264,3 +264,42 @@ def render_metric_table(metrics: list[tuple[str, float, str]]) -> str:
         f"<tbody>{rows_html}</tbody>"
         "</table>"
     )
+
+
+def assemble_report_page(
+    title: str,
+    *,
+    timeline_items: list[TimelineItem] | None = None,
+    fold_items: list[FoldSummaryItem] | None = None,
+    day_counts: list[int] | None = None,
+    metrics: list[tuple[str, float, str]] | None = None,
+    run_metadata: dict[str, str] | None = None,
+) -> str:
+    """Assemble one self-contained HTML page from the report components.
+
+    Sections with no data are omitted entirely. ``run_metadata`` (seed,
+    version, window, ...) renders as a sorted footer table so every
+    published report carries its reproduction context. The page embeds
+    only inline SVG and CSS — no scripts, no external assets.
+    """
+    sections: list[tuple[str, str]] = []
+    if timeline_items:
+        sections.append(("Commitment timeline", render_timeline_svg(timeline_items, legend=True)))
+    if fold_items:
+        sections.append(("Folding summary", render_fold_summary_svg(fold_items)))
+    if day_counts:
+        sections.append(("Workload", render_workload_strip(day_counts)))
+    if metrics:
+        sections.append(("Metrics", render_metric_table(metrics)))
+    page = wrap_html(title, sections)
+    if run_metadata:
+        meta_rows = "".join(
+            f"<tr><td>{escape_text(key)}</td><td>{escape_text(str(value))}</td></tr>"
+            for key, value in sorted(run_metadata.items())
+        )
+        footer = (
+            '<footer class="run-metadata"><h2>Run metadata</h2>'
+            f"<table><tbody>{meta_rows}</tbody></table></footer>"
+        )
+        page = page.replace("</body>", f"{footer}\n</body>")
+    return page

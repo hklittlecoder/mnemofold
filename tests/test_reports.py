@@ -3,6 +3,7 @@ from datetime import date
 from mnemofold.reports import (
     FoldSummaryItem,
     TimelineItem,
+    assemble_report_page,
     escape_text,
     render_fold_summary_svg,
     render_markdown_heading,
@@ -215,3 +216,55 @@ def test_timeline_legend_is_deterministic():
         TimelineItem("B", date(2026, 1, 2), date(2026, 1, 4), "open"),
     ]
     assert render_timeline_svg(items, legend=True) == render_timeline_svg(items, legend=True)
+
+
+def test_report_page_contains_all_given_sections():
+    page = assemble_report_page(
+        "Weekly",
+        timeline_items=[TimelineItem("A", date(2026, 1, 1), date(2026, 1, 2), "open")],
+        fold_items=[FoldSummaryItem("semantic", 5, 2)],
+        day_counts=[1, 2, 3],
+        metrics=[("precision", 0.75, "ok")],
+        run_metadata={"seed": "9", "version": "0.1.0"},
+    )
+    assert page.startswith("<!DOCTYPE html>")
+    assert "Commitment timeline" in page
+    assert "Folding summary" in page
+    assert "Workload" in page
+    assert "Metrics" in page
+    assert "Run metadata" in page
+    assert "<svg" in page
+    assert "precision" in page
+    assert "0.1.0" in page
+
+
+def test_report_page_omits_absent_sections():
+    page = assemble_report_page("Weekly", day_counts=[1, 2])
+    assert "Commitment timeline" not in page
+    assert "Folding summary" not in page
+    assert "Metrics" not in page
+    assert "Workload" in page
+    assert "Run metadata" not in page
+
+
+def test_report_page_escapes_metadata_values():
+    page = assemble_report_page("T", run_metadata={"note": "<script>x</script>"})
+    assert "<script>x" not in page
+    assert "&lt;script&gt;" in page
+
+
+def test_report_page_metadata_rows_sorted():
+    page = assemble_report_page("T", run_metadata={"zeta": "1", "alpha": "2"})
+    assert page.index(">alpha<") < page.index(">zeta<")
+
+
+def test_report_page_has_no_scripts_and_is_deterministic():
+    args = {
+        "timeline_items": [TimelineItem("A", date(2026, 1, 1), date(2026, 1, 2), "done")],
+        "day_counts": [2, 4],
+        "run_metadata": {"seed": "1"},
+    }
+    first = assemble_report_page("T", **args)
+    second = assemble_report_page("T", **args)
+    assert first == second
+    assert "<script" not in first
