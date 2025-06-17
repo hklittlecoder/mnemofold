@@ -94,6 +94,37 @@ class PlaybookLibrary:
         pb.metadata["deprecation_reason"] = reason
         return True
 
+    def activate(self, pid: str) -> bool:
+        """APPROVED -> ACTIVE. Only approved playbooks can go live."""
+        pb = self._playbooks.get(pid)
+        if pb is None or pb.status != PlaybookStatus.APPROVED:
+            return False
+        pb.status = PlaybookStatus.ACTIVE
+        return True
+
+    def revoke(self, pid: str, reason: str) -> bool:
+        """Retire a playbook permanently.
+
+        Revoked playbooks never run again and never surface in
+        suggestions; revocation is one-way (unlike deprecation, which
+        only closes the suggestion ranking, revocation marks the
+        procedure as unsafe or obsolete).
+        """
+        pb = self._playbooks.get(pid)
+        if pb is None or pb.status == PlaybookStatus.REVOKED:
+            return False
+        pb.status = PlaybookStatus.REVOKED
+        pb.metadata["revocation_reason"] = reason
+        return True
+
+    def record_run(self, pid: str) -> bool:
+        """Count one execution; only runnable playbooks may be recorded."""
+        pb = self._playbooks.get(pid)
+        if pb is None or not pb.can_run():
+            return False
+        pb.run_count += 1
+        return True
+
     def create_revision(self, pid: str, new_steps: list[PlaybookStep]) -> Playbook | None:
         old = self._playbooks.get(pid)
         if old is None:
