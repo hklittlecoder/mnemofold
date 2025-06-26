@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from mnemofold.playbooks import (
     Playbook,
     PlaybookLibrary,
@@ -136,3 +138,71 @@ class TestPlaybookLifecycle:
         library.deprecate("dep", "stale")
         suggested = library.suggest({"release"})
         assert [pb.playbook_id for pb in suggested] == ["ok"]
+
+
+class TestPlaybookSerialization:
+    def _playbook(self) -> Playbook:
+        return Playbook(
+            playbook_id="pb1",
+            name="Release checklist",
+            description="Ship it safely",
+            status=PlaybookStatus.APPROVED,
+            tags={"release", "ops"},
+            confidence=0.75,
+            run_count=2,
+            steps=[
+                PlaybookStep(
+                    step_id="s1",
+                    title="Run tests",
+                    tool="echo",
+                    inputs={"message": "test"},
+                    preconditions=["ci_green"],
+                ),
+                PlaybookStep(step_id="s2", title="Tag release", tool="noop"),
+            ],
+            metadata={"approved_by": "alice"},
+        )
+
+    def test_roundtrip_equality(self):
+        pb = self._playbook()
+        assert Playbook.from_dict(pb.to_dict()) == pb
+
+    def test_roundtrip_preserves_steps(self):
+        pb = self._playbook()
+        restored = Playbook.from_dict(pb.to_dict())
+        assert restored.steps == pb.steps
+        assert restored.steps[0].preconditions == ["ci_green"]
+
+    def test_digest_stable_and_sensitive(self):
+        pb = self._playbook()
+        assert pb.digest() == self._playbook().digest()
+        pb.run_count += 1
+        assert pb.digest() != self._playbook().digest()
+
+    def test_revision_lineage_accumulates(self):
+        library = PlaybookLibrary()
+        library.add(self._playbook())
+        v2 = library.create_revision("pb1", [PlaybookStep(step_id="s1", title="Only step")])
+        assert v2 is not None
+        assert v2.version == 2
+        assert v2.derived_from == ["pb1"]
+        v3 = library.create_revision(v2.playbook_id, [PlaybookStep(step_id="s1", title="Again")])
+        assert v3 is not None
+        assert v3.previous_versions == ["pb1", v2.playbook_id]
+        assert v3.confidence == pytest.approx(0.75 * 0.9 * 0.9)
+
+    def test_revision_starts_as_draft_and_not_runnable(self):
+        library = PlaybookLibrary()
+        library.add(self._playbook())
+        v2 = library.create_revision("pb1", [])
+        assert v2 is not None
+        assert v2.status == PlaybookStatus.DRAFT
+        assert not v2.can_run()
+
+    def test_revision_digest_differs_from_original(self):
+        library = PlaybookLibrary()
+        original = self._playbook()
+        library.add(original)
+        v2 = library.create_revision("pb1", [PlaybookStep(step_id="s1", title="Only step")])
+        assert v2 is not None
+        assert v2.digest() != original.digest()

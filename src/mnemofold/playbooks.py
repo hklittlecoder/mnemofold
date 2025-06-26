@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -53,6 +55,71 @@ class Playbook:
 
     def can_run(self) -> bool:
         return self.status in {PlaybookStatus.APPROVED, PlaybookStatus.ACTIVE}
+
+    def to_dict(self) -> dict[str, Any]:
+        """Deterministic dict form; tags sorted, confidence quantized."""
+        return {
+            "playbook_id": self.playbook_id,
+            "name": self.name,
+            "description": self.description,
+            "status": str(self.status),
+            "version": self.version,
+            "steps": [
+                {
+                    "step_id": s.step_id,
+                    "title": s.title,
+                    "description": s.description,
+                    "tool": s.tool,
+                    "inputs": dict(s.inputs),
+                    "preconditions": list(s.preconditions),
+                    "timeout_seconds": s.timeout_seconds,
+                }
+                for s in self.steps
+            ],
+            "tags": sorted(self.tags),
+            "confidence": round(self.confidence, 6),
+            "run_count": self.run_count,
+            "previous_versions": list(self.previous_versions),
+            "derived_from": list(self.derived_from),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Playbook:
+        """Rebuild a playbook exactly as :meth:`to_dict` wrote it."""
+        steps = [
+            PlaybookStep(
+                step_id=sd["step_id"],
+                title=sd["title"],
+                description=sd.get("description", ""),
+                tool=sd.get("tool", ""),
+                inputs=dict(sd.get("inputs", {})),
+                preconditions=list(sd.get("preconditions", [])),
+                timeout_seconds=sd.get("timeout_seconds", 300),
+            )
+            for sd in data.get("steps", [])
+        ]
+        return cls(
+            playbook_id=data["playbook_id"],
+            name=data["name"],
+            description=data.get("description", ""),
+            status=PlaybookStatus(data.get("status", PlaybookStatus.PROPOSED)),
+            version=data.get("version", 1),
+            steps=steps,
+            tags=set(data.get("tags", [])),
+            confidence=data.get("confidence", 0.0),
+            run_count=data.get("run_count", 0),
+            previous_versions=list(data.get("previous_versions", [])),
+            derived_from=list(data.get("derived_from", [])),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+    def digest(self) -> str:
+        """SHA-256 over the canonical JSON form (stable across runs)."""
+        canonical = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass
