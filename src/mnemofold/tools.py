@@ -29,6 +29,7 @@ class ToolSpec:
     timeout_seconds: int = 30
     max_retries: int = 0
     idempotent: bool = False
+    capabilities: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if isinstance(self.side_effect, str):
@@ -37,6 +38,50 @@ class ToolSpec:
 
 class ToolValidationError(ValueError):
     pass
+
+
+class ToolPolicyError(RuntimeError):
+    """Raised when a tool invocation violates the active policy."""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolPolicy:
+    """Declarative gate applied before any tool execution.
+
+    * ``allowed_capabilities``: when non-empty, the tool must declare at
+      least one of them;
+    * ``denied_side_effects``: tools in these classes are refused;
+    * ``require_idempotent_for``: side-effect classes whose tools must be
+      marked idempotent so replays stay safe.
+
+    Defaults refuse destructive and spend-class tools outright: an
+    assistant should need an explicit policy change to reach them.
+    """
+
+    allowed_capabilities: frozenset[str] = frozenset()
+    denied_side_effects: frozenset[str] = frozenset(
+        {SideEffectClass.DESTRUCTIVE.value, SideEffectClass.SPEND.value}
+    )
+    require_idempotent_for: frozenset[str] = frozenset(
+        {
+            SideEffectClass.WRITE.value,
+            SideEffectClass.SPEND.value,
+            SideEffectClass.DESTRUCTIVE.value,
+        }
+    )
+
+    def violations(self, spec: ToolSpec) -> list[str]:
+        """All policy violations for a spec, in a stable order."""
+        found: list[str] = []
+        if spec.side_effect.value in self.denied_side_effects:
+            found.append(f"side effect '{spec.side_effect.value}' is denied by policy")
+        if self.allowed_capabilities and not (
+            set(spec.capabilities) & set(self.allowed_capabilities)
+        ):
+            found.append(f"tool lacks required capabilities: {sorted(self.allowed_capabilities)}")
+        if spec.side_effect.value in self.require_idempotent_for and not spec.idempotent:
+            found.append(f"tool with side effect '{spec.side_effect.value}' must be idempotent")
+        return found
 
 
 @dataclass(slots=True)
@@ -78,6 +123,7 @@ def _retry_delay(attempt: int, base: float = 0.01, cap: float = 1.0) -> float:
 class ToolRegistry:
     _specs: dict[str, ToolSpec] = field(default_factory=dict)
     _impls: dict[str, Callable[..., Any]] = field(default_factory=dict)
+    policy: ToolPolicy | None = None
 
     def register(self, spec: ToolSpec, impl: Callable[..., Any]) -> None:
         self._specs[spec.name] = spec
@@ -107,6 +153,10 @@ class ToolRegistry:
         spec = self._specs.get(name)
         if spec is None:
             return ToolResult(tool_name=name, success=False, error=f"unknown tool: {name}")
+        if self.policy is not None:
+            violations = self.policy.violations(spec)
+            if violations:
+                raise ToolPolicyError("; ".join(violations))
         errors = self.validate_args(name, args)
         if errors:
             raise ToolValidationError("; ".join(errors))
