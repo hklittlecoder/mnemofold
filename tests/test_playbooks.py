@@ -206,3 +206,78 @@ class TestPlaybookSerialization:
         v2 = library.create_revision("pb1", [PlaybookStep(step_id="s1", title="Only step")])
         assert v2 is not None
         assert v2.digest() != original.digest()
+
+
+class TestPlaybookSuggestion:
+    def _library(self) -> PlaybookLibrary:
+        library = PlaybookLibrary()
+        library.add(
+            Playbook(
+                "low",
+                "Low conf",
+                status=PlaybookStatus.APPROVED,
+                tags={"release", "ops"},
+                confidence=0.2,
+            )
+        )
+        library.add(
+            Playbook(
+                "high",
+                "High conf",
+                status=PlaybookStatus.APPROVED,
+                tags={"release"},
+                confidence=0.9,
+            )
+        )
+        library.add(
+            Playbook(
+                "unrelated",
+                "Other domain",
+                status=PlaybookStatus.APPROVED,
+                tags={"hiring"},
+                confidence=1.0,
+            )
+        )
+        return library
+
+    def test_score_is_overlap_times_confidence(self):
+        suggested = self._library().suggest({"release", "ops"})
+        # low: 2 tags * 0.2 = 0.4; high: 1 tag * 0.9 = 0.9
+        assert [pb.playbook_id for pb in suggested] == ["high", "low"]
+
+    def test_no_tag_overlap_suggests_nothing(self):
+        assert self._library().suggest(set()) == []
+        assert self._library().suggest({"finance"}) == []
+
+    def test_top_k_caps_results(self):
+        library = PlaybookLibrary()
+        for i in range(6):
+            library.add(
+                Playbook(
+                    f"pb{i}",
+                    f"Playbook {i}",
+                    status=PlaybookStatus.APPROVED,
+                    tags={"release"},
+                    confidence=0.1 * (i + 1),
+                )
+            )
+        suggested = library.suggest({"release"}, top_k=2)
+        assert [pb.playbook_id for pb in suggested] == ["pb5", "pb4"]
+
+    def test_proposed_playbooks_are_suggestable(self):
+        library = PlaybookLibrary()
+        library.add(
+            Playbook(
+                "draft_pb",
+                "Draft",
+                status=PlaybookStatus.PROPOSED,
+                tags={"release"},
+                confidence=0.5,
+            )
+        )
+        assert [pb.playbook_id for pb in library.suggest({"release"})] == ["draft_pb"]
+
+    def test_suggestions_are_deterministic(self):
+        first = [pb.playbook_id for pb in self._library().suggest({"release", "ops"})]
+        second = [pb.playbook_id for pb in self._library().suggest({"release", "ops"})]
+        assert first == second
