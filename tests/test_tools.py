@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import random
+import time
+
 import pytest
 
 from mnemofold.tools import (
@@ -12,6 +15,7 @@ from mnemofold.tools import (
     ToolRegistry,
     ToolSpec,
     ToolValidationError,
+    _retry_delay,
     build_default_registry,
 )
 
@@ -218,3 +222,49 @@ class TestIdempotencyCache:
         registry.invoke("write", {"key": "a"})
         assert len(registry.idempotency) == 1
         assert registry.invoke("write", {"key": "a"}).idempotency_key in registry.idempotency
+
+
+def _flaky_tool(registry: ToolRegistry, state: dict, fail_times: int) -> None:
+    def impl() -> str:
+        state["n"] += 1
+        if state["n"] <= fail_times:
+            raise RuntimeError("transient failure")
+        return "ok"
+
+    registry.register(ToolSpec(name="flaky", description="", max_retries=3), impl)
+
+
+class TestRetryDeterminism:
+    def test_seeded_delay_sequences_match(self):
+        first = [_retry_delay(a, rng=random.Random(7)) for a in (1, 2, 3)]
+        second = [_retry_delay(a, rng=random.Random(7)) for a in (1, 2, 3)]
+        assert first == second
+
+    def test_delay_stays_within_jitter_bounds(self):
+        rng = random.Random(3)
+        for attempt in range(1, 6):
+            exp = min(0.01 * (2 ** (attempt - 1)), 1.0)
+            delay = _retry_delay(attempt, rng=rng)
+            assert exp <= delay <= exp * 1.5 + 1e-12
+
+    def test_same_seed_registries_sleep_identically(self, monkeypatch):
+        sleeps_a: list[float] = []
+        sleeps_b: list[float] = []
+
+        monkeypatch.setattr(time, "sleep", sleeps_a.append)
+        registry_a = ToolRegistry(rng_seed=11)
+        _flaky_tool(registry_a, {"n": 0}, fail_times=2)
+        assert registry_a.invoke("flaky", {}).success
+
+        monkeypatch.setattr(time, "sleep", sleeps_b.append)
+        registry_b = ToolRegistry(rng_seed=11)
+        _flaky_tool(registry_b, {"n": 0}, fail_times=2)
+        assert registry_b.invoke("flaky", {}).success
+
+        assert sleeps_a == sleeps_b
+        assert len(sleeps_a) == 2
+
+    def test_different_seeds_usually_differ(self):
+        a = [_retry_delay(i, rng=random.Random(1)) for i in (1, 2, 3, 4)]
+        b = [_retry_delay(i, rng=random.Random(2)) for i in (1, 2, 3, 4)]
+        assert a != b

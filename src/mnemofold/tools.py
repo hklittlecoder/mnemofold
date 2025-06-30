@@ -140,9 +140,18 @@ def _check_type(value: Any, type_name: str) -> bool:
     return isinstance(value, expected)
 
 
-def _retry_delay(attempt: int, base: float = 0.01, cap: float = 1.0) -> float:
+def _retry_delay(
+    attempt: int, base: float = 0.01, cap: float = 1.0, rng: random.Random | None = None
+) -> float:
+    """Exponential backoff with bounded jitter inside [exp, exp * 1.5].
+
+    ``rng`` makes the jitter deterministic; without it the module-level
+    Random is used. Registries pass their own seeded RNG so retries are
+    reproducible across runs and machines.
+    """
     exp = min(base * (2 ** (attempt - 1)), cap)
-    return exp + random.uniform(0, exp * 0.5)
+    source = rng if rng is not None else random
+    return exp + source.uniform(0, exp * 0.5)
 
 
 @dataclass
@@ -151,6 +160,12 @@ class ToolRegistry:
     _impls: dict[str, Callable[..., Any]] = field(default_factory=dict)
     policy: ToolPolicy | None = None
     idempotency: IdempotencyStore | None = None
+    rng_seed: int = 0
+    _rng: random.Random = field(default_factory=random.Random)
+
+    def __post_init__(self) -> None:
+        # Reseed from rng_seed so retry jitter is reproducible.
+        self._rng = random.Random(self.rng_seed)
 
     def register(self, spec: ToolSpec, impl: Callable[..., Any]) -> None:
         self._specs[spec.name] = spec
@@ -238,7 +253,7 @@ class ToolRegistry:
                         retries=retries,
                     )
                 retries += 1
-                time.sleep(_retry_delay(retries))
+                time.sleep(_retry_delay(retries, rng=self._rng))
 
     def _idem_key(self, name: str, args: dict[str, Any]) -> str:
         payload = {"tool": name, "args": dict(sorted(args.items()))}
