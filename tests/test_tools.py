@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from mnemofold.tools import (
+    IdempotencyStore,
     SideEffectClass,
     ToolPolicy,
     ToolPolicyError,
@@ -149,3 +150,71 @@ class TestToolPolicy:
         # missing required args AND denied side effect: policy fires first
         with pytest.raises(ToolPolicyError):
             registry.invoke("delete_all", {"unexpected": 1})
+
+
+class TestIdempotencyCache:
+    def _registry(self, with_store: bool = True):
+        calls: list[str] = []
+
+        def write_impl(key: str) -> str:
+            calls.append(key)
+            return f"wrote {key}"
+
+        registry = ToolRegistry(idempotency=IdempotencyStore() if with_store else None)
+        registry.register(
+            ToolSpec(
+                name="write",
+                description="write",
+                side_effect=SideEffectClass.WRITE,
+                parameters={"key": {"type": "string"}},
+                required=["key"],
+                idempotent=True,
+            ),
+            write_impl,
+        )
+        registry.register(
+            ToolSpec(
+                name="read",
+                description="read",
+                side_effect=SideEffectClass.READ,
+                parameters={"key": {"type": "string"}},
+                required=["key"],
+                idempotent=True,
+            ),
+            lambda key: f"read {key}",
+        )
+        return registry, calls
+
+    def test_second_write_hits_cache(self):
+        registry, calls = self._registry()
+        first = registry.invoke("write", {"key": "a"})
+        second = registry.invoke("write", {"key": "a"})
+        assert first.cached is False
+        assert second.cached is True
+        assert second.output == first.output
+        assert calls == ["a"]  # impl ran once
+        assert first.idempotency_key == second.idempotency_key
+
+    def test_different_args_do_not_collide(self):
+        registry, calls = self._registry()
+        registry.invoke("write", {"key": "a"})
+        registry.invoke("write", {"key": "b"})
+        assert calls == ["a", "b"]
+
+    def test_reads_are_not_cached(self):
+        registry, _ = self._registry()
+        first = registry.invoke("read", {"key": "a"})
+        second = registry.invoke("read", {"key": "a"})
+        assert first.cached is False and second.cached is False
+
+    def test_without_store_everything_executes(self):
+        registry, calls = self._registry(with_store=False)
+        registry.invoke("write", {"key": "a"})
+        registry.invoke("write", {"key": "a"})
+        assert calls == ["a", "a"]
+
+    def test_store_tracks_entries(self):
+        registry, _ = self._registry()
+        registry.invoke("write", {"key": "a"})
+        assert len(registry.idempotency) == 1
+        assert registry.invoke("write", {"key": "a"}).idempotency_key in registry.idempotency

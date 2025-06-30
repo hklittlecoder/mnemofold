@@ -93,6 +93,32 @@ class ToolResult:
     execution_time_ms: float = 0.0
     idempotency_key: str = ""
     retries: int = 0
+    cached: bool = False
+
+
+@dataclass
+class IdempotencyStore:
+    """Result cache keyed by idempotency key.
+
+    Side-effecting tools that declare ``idempotent=True`` promise that a
+    replay is safe; caching their successful results makes replay return
+    the original outcome instead of executing the effect a second time.
+    Failed results are never cached.
+    """
+
+    _results: dict[str, ToolResult] = field(default_factory=dict)
+
+    def get(self, key: str) -> ToolResult | None:
+        return self._results.get(key)
+
+    def put(self, key: str, result: ToolResult) -> None:
+        self._results[key] = result
+
+    def __len__(self) -> int:
+        return len(self._results)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._results
 
 
 _TYPE_MAP: dict[str, type | tuple[type, ...]] = {
@@ -124,6 +150,7 @@ class ToolRegistry:
     _specs: dict[str, ToolSpec] = field(default_factory=dict)
     _impls: dict[str, Callable[..., Any]] = field(default_factory=dict)
     policy: ToolPolicy | None = None
+    idempotency: IdempotencyStore | None = None
 
     def register(self, spec: ToolSpec, impl: Callable[..., Any]) -> None:
         self._specs[spec.name] = spec
@@ -162,13 +189,33 @@ class ToolRegistry:
             raise ToolValidationError("; ".join(errors))
         impl = self._impls[name]
         idem_key = self._idem_key(name, args)
+        store = self.idempotency
+        cacheable = (
+            store is not None
+            and spec.idempotent
+            and spec.side_effect
+            in (SideEffectClass.WRITE, SideEffectClass.SPEND, SideEffectClass.DESTRUCTIVE)
+        )
+        if cacheable and store is not None:
+            hit = store.get(idem_key)
+            if hit is not None:
+                return ToolResult(
+                    tool_name=hit.tool_name,
+                    success=hit.success,
+                    output=hit.output,
+                    error=hit.error,
+                    execution_time_ms=hit.execution_time_ms,
+                    idempotency_key=hit.idempotency_key,
+                    retries=hit.retries,
+                    cached=True,
+                )
         retries = 0
         start = time.monotonic()
         while True:
             try:
                 output = impl(**args)
                 elapsed = (time.monotonic() - start) * 1000
-                return ToolResult(
+                result = ToolResult(
                     tool_name=name,
                     success=True,
                     output=output,
@@ -176,6 +223,9 @@ class ToolRegistry:
                     idempotency_key=idem_key,
                     retries=retries,
                 )
+                if cacheable and store is not None:
+                    store.put(idem_key, result)
+                return result
             except Exception as e:
                 if retries >= spec.max_retries:
                     elapsed = (time.monotonic() - start) * 1000
