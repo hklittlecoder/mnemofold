@@ -111,10 +111,21 @@ class PlanValidationResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def validate_plan(plan: Plan) -> PlanValidationResult:
-    """Validate a plan: check DAG, dangling refs, budget.
+def _reference_parts(value: Any) -> tuple[str, str] | None:
+    """Split a ``$step_id.output`` reference; None for plain literals."""
+    if not isinstance(value, str) or not value.startswith("$"):
+        return None
+    body = value[1:]
+    step_id, _, output = body.partition(".")
+    return step_id, output
 
-    Checks for cycles, dangling depends_on references, and budget sanity.
+
+def validate_plan(plan: Plan) -> PlanValidationResult:
+    """Validate a plan: DAG shape, references, and budget sanity.
+
+    Checks for cycles, dangling depends_on references, malformed typed
+    input references (``$step.output`` must name a known step and one of
+    its declared outputs), and budget sanity.
     """
     result = PlanValidationResult(valid=True)
 
@@ -128,6 +139,32 @@ def validate_plan(plan: Plan) -> PlanValidationResult:
                 result.valid = False
             if dep == step.step_id:
                 result.errors.append(f"step '{step.step_id}': depends on itself")
+                result.valid = False
+
+    # Check typed input references ($step.output)
+    outputs_by_step = {s.step_id: set(s.outputs) for s in plan.steps}
+    for step in plan.steps:
+        for input_name, value in step.inputs.items():
+            ref = _reference_parts(value)
+            if ref is None:
+                continue
+            ref_step, ref_output = ref
+            if ref_step == step.step_id:
+                result.errors.append(
+                    f"step '{step.step_id}': input '{input_name}' references itself"
+                )
+                result.valid = False
+            elif ref_step not in step_ids:
+                result.errors.append(
+                    f"step '{step.step_id}': input '{input_name}' references "
+                    f"unknown step '{ref_step}'"
+                )
+                result.valid = False
+            elif ref_output not in outputs_by_step.get(ref_step, set()):
+                result.errors.append(
+                    f"step '{step.step_id}': input '{input_name}' references "
+                    f"undeclared output '{ref_output}' of step '{ref_step}'"
+                )
                 result.valid = False
 
     # Check for cycles via DFS

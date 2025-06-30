@@ -208,3 +208,64 @@ def test_plan_loop_max_iterations():
     plan = Plan(plan_id="p", name="iters")
     loop = PlanLoop(plan=plan, iteration=100, max_iterations=100)
     assert loop.can_continue() is False
+
+
+class TestPlanInputReferences:
+    def _plan(self, inputs: dict) -> Plan:
+        return Plan(
+            plan_id="p1",
+            name="refs",
+            steps=[
+                PlanStep(
+                    step_id="a",
+                    name="produce",
+                    tool="echo",
+                    inputs={"message": "seed"},
+                    outputs=["text"],
+                ),
+                PlanStep(step_id="b", name="consume", tool="echo", inputs=inputs, depends_on=["a"]),
+            ],
+        )
+
+    def test_valid_reference_passes(self):
+        result = validate_plan(self._plan({"message": "$a.text"}))
+        assert result.valid
+        assert result.errors == []
+
+    def test_unknown_step_reference_rejected(self):
+        result = validate_plan(self._plan({"message": "$ghost.text"}))
+        assert not result.valid
+        assert any("unknown step 'ghost'" in e for e in result.errors)
+
+    def test_undeclared_output_reference_rejected(self):
+        result = validate_plan(self._plan({"message": "$a.missing"}))
+        assert not result.valid
+        assert any("undeclared output 'missing'" in e for e in result.errors)
+
+    def test_self_reference_rejected(self):
+        plan = Plan(
+            plan_id="p",
+            name="self",
+            steps=[
+                PlanStep(
+                    step_id="a",
+                    name="loop",
+                    tool="echo",
+                    inputs={"message": "$a.text"},
+                    outputs=["text"],
+                ),
+            ],
+        )
+        result = validate_plan(plan)
+        assert not result.valid
+        assert any("references itself" in e for e in result.errors)
+
+    def test_literal_values_are_untouched(self):
+        result = validate_plan(self._plan({"message": "plain text", "count": 3}))
+        assert result.valid
+
+    def test_dollar_without_dot_is_a_step_only_reference_error(self):
+        # "$a" names a step but no output; partition yields ("a", "")
+        result = validate_plan(self._plan({"message": "$a"}))
+        assert not result.valid
+        assert any("undeclared output ''" in e for e in result.errors)
