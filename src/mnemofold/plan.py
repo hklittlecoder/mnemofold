@@ -248,3 +248,71 @@ class PlanLoop:
 
     def steps_failed(self) -> int:
         return sum(1 for s in self.plan.steps if s.status == "failed")
+
+
+# --- Plan diffing --------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class StepChange:
+    """Field-level changes to one step shared by two plan revisions."""
+
+    step_id: str
+    fields: dict[str, tuple[Any, Any]]  # field name -> (old, new)
+
+
+@dataclass(slots=True)
+class PlanDiff:
+    """Deterministic diff between two plan revisions."""
+
+    added: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    changed: list[StepChange] = field(default_factory=list)
+    budget_changed: bool = False
+    name_changed: bool = False
+
+    def is_empty(self) -> bool:
+        return not (
+            self.added or self.removed or self.changed or self.budget_changed or self.name_changed
+        )
+
+
+_DIFF_FIELDS = (
+    "name",
+    "tool",
+    "inputs",
+    "outputs",
+    "preconditions",
+    "effects",
+    "depends_on",
+    "budget_tokens",
+)
+
+
+def diff_plans(old: Plan, new: Plan) -> PlanDiff:
+    """Compare two plans step by step.
+
+    Step identity is ``step_id``. Added/removed ids are sorted; changed
+    steps are reported in id order with per-field (old, new) pairs so a
+    reviewer sees exactly what moved. Plan-level budget and name changes
+    are flagged separately.
+    """
+    old_steps = {s.step_id: s for s in old.steps}
+    new_steps = {s.step_id: s for s in new.steps}
+    diff = PlanDiff(
+        added=sorted(set(new_steps) - set(old_steps)),
+        removed=sorted(set(old_steps) - set(new_steps)),
+        budget_changed=old.total_budget_tokens != new.total_budget_tokens,
+        name_changed=old.name != new.name,
+    )
+    for step_id in sorted(set(old_steps) & set(new_steps)):
+        before, after = old_steps[step_id], new_steps[step_id]
+        fields: dict[str, tuple[Any, Any]] = {}
+        for name in _DIFF_FIELDS:
+            old_value = getattr(before, name)
+            new_value = getattr(after, name)
+            if old_value != new_value:
+                fields[name] = (old_value, new_value)
+        if fields:
+            diff.changed.append(StepChange(step_id=step_id, fields=fields))
+    return diff

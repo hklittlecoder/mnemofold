@@ -1,9 +1,11 @@
 from mnemofold.plan import (
     Plan,
+    PlanDiff,
     PlanLoop,
     PlanStatus,
     PlanStep,
     PlanValidationResult,
+    diff_plans,
     topological_order,
     validate_plan,
 )
@@ -269,3 +271,45 @@ class TestPlanInputReferences:
         result = validate_plan(self._plan({"message": "$a"}))
         assert not result.valid
         assert any("undeclared output ''" in e for e in result.errors)
+
+
+class TestPlanDiff:
+    def _plan(self, steps: list[PlanStep], name: str = "p", budget: int = 1000) -> Plan:
+        return Plan(plan_id="p1", name=name, total_budget_tokens=budget, steps=steps)
+
+    def test_identical_plans_diff_empty(self):
+        steps = [PlanStep(step_id="a", name="A", tool="echo")]
+        diff: PlanDiff = diff_plans(self._plan(list(steps)), self._plan(list(steps)))
+        assert diff.is_empty()
+
+    def test_added_and_removed_steps(self):
+        old = self._plan([PlanStep(step_id="a", name="A"), PlanStep(step_id="b", name="B")])
+        new = self._plan([PlanStep(step_id="b", name="B"), PlanStep(step_id="c", name="C")])
+        diff = diff_plans(old, new)
+        assert diff.added == ["c"]
+        assert diff.removed == ["a"]
+        assert diff.changed == []
+
+    def test_changed_fields_captured_with_old_new(self):
+        old = self._plan([PlanStep(step_id="a", name="A", tool="echo", budget_tokens=10)])
+        new = self._plan([PlanStep(step_id="a", name="A", tool="noop", budget_tokens=20)])
+        diff = diff_plans(old, new)
+        assert len(diff.changed) == 1
+        change = diff.changed[0]
+        assert change.step_id == "a"
+        assert change.fields["tool"] == ("echo", "noop")
+        assert change.fields["budget_tokens"] == (10, 20)
+
+    def test_plan_level_flags(self):
+        old = self._plan([PlanStep(step_id="a", name="A")], name="old", budget=100)
+        new = self._plan([PlanStep(step_id="a", name="A")], name="new", budget=200)
+        diff = diff_plans(old, new)
+        assert diff.name_changed
+        assert diff.budget_changed
+        assert diff.added == [] and diff.removed == [] and diff.changed == []
+
+    def test_changed_steps_sorted_by_id(self):
+        old = self._plan([PlanStep(step_id="z", name="Z"), PlanStep(step_id="m", name="M")])
+        new = self._plan([PlanStep(step_id="z", name="Z2"), PlanStep(step_id="m", name="M2")])
+        diff = diff_plans(old, new)
+        assert [c.step_id for c in diff.changed] == ["m", "z"]
