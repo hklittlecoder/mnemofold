@@ -268,3 +268,75 @@ class TestRetryDeterminism:
         a = [_retry_delay(i, rng=random.Random(1)) for i in (1, 2, 3, 4)]
         b = [_retry_delay(i, rng=random.Random(2)) for i in (1, 2, 3, 4)]
         assert a != b
+
+
+class TestToolInvocationEdges:
+    def test_unknown_tool_returns_failed_result(self):
+        result = ToolRegistry().invoke("ghost", {})
+        assert result.success is False
+        assert "unknown tool" in result.error
+
+    def test_validate_args_reports_missing_and_unknown(self):
+        registry = build_default_registry()
+        assert registry.validate_args("echo", {}) == ["missing required parameter: message"]
+        assert registry.validate_args("ghost", {}) == ["unknown tool: ghost"]
+
+    def test_type_validation_rejects_bool_as_integer(self):
+        registry = ToolRegistry()
+        registry.register(
+            ToolSpec(
+                name="n",
+                description="",
+                parameters={"count": {"type": "integer"}},
+                required=["count"],
+            ),
+            lambda count: count,
+        )
+        errors = registry.validate_args("n", {"count": True})
+        assert errors and "expected integer" in errors[0]
+        assert registry.validate_args("n", {"count": 3}) == []
+
+    def test_invoke_raises_validation_error(self):
+        registry = build_default_registry()
+        with pytest.raises(ToolValidationError):
+            registry.invoke("echo", {})
+
+    def test_retries_then_succeeds(self):
+        registry = ToolRegistry(rng_seed=5)
+        state = {"n": 0}
+        _flaky_tool(registry, state, fail_times=2)
+        result = registry.invoke("flaky", {})
+        assert result.success is True
+        assert result.retries == 2
+        assert result.output == "ok"
+
+    def test_exhausted_retries_report_failure(self):
+        registry = ToolRegistry(rng_seed=5)
+        state = {"n": 0}
+        _flaky_tool(registry, state, fail_times=99)
+        result = registry.invoke("flaky", {})
+        assert result.success is False
+        assert "transient failure" in result.error
+        assert result.retries == 3  # max_retries
+
+    def test_idempotency_key_ignores_arg_order(self):
+        registry = ToolRegistry()
+        registry.register(
+            ToolSpec(
+                name="pair",
+                description="",
+                parameters={"a": {"type": "string"}, "b": {"type": "string"}},
+            ),
+            lambda a, b: a + b,
+        )
+        first = registry.invoke("pair", {"a": "x", "b": "y"})
+        second = registry.invoke("pair", {"b": "y", "a": "x"})
+        assert first.idempotency_key == second.idempotency_key
+
+    def test_list_tools_sorted_by_name(self):
+        registry = build_default_registry()
+        assert [spec.name for spec in registry.list_tools()] == ["echo", "noop"]
+
+    def test_default_registry_echo_roundtrip(self):
+        result = build_default_registry().invoke("echo", {"message": "hello"})
+        assert result.success and result.output == "hello"
