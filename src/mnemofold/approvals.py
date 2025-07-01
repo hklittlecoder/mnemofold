@@ -8,6 +8,8 @@ approver times out, and audit metrics track decisions in simulated time.
 
 from __future__ import annotations
 
+import hashlib
+import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -46,6 +48,7 @@ class ApprovalRequest:
     decision_note: str = ""
     escalated_from: str | None = None
     escalation_chain: list[str] = field(default_factory=list)
+    escalation_count: int = 0
     expires_after: timedelta | None = None
 
     def is_open(self) -> bool:
@@ -118,9 +121,11 @@ class ApprovalQueue:
                 return None
             r.escalated_from = r.approver
             r.approver = chain[idx + 1]
-            r.status = ApprovalStatus.ESCALATED
-            # Reset to pending under new approver (keep ESCALATED status brief)
-            r.status = ApprovalStatus.PENDING
+            r.escalation_count += 1
+            # The request stays PENDING under the new approver; the audit
+            # trail lives in escalated_from/escalation_count, so metrics
+            # can count escalations without a transient status flip that
+            # used to overwrite itself before anything could observe it.
             r.created_at = now
             return r
         return None
@@ -134,10 +139,10 @@ class ApprovalQueue:
 
         AUTO_APPROVE always approves; AUTO_DENY always denies; ASK never
         auto-resolves; RANDOM flips a coin using an RNG seeded from
-        ``rng_seed`` combined with the request id.
+        ``rng_seed`` combined with a stable digest of the request id
+        (the built-in hash is salted per process, which made decisions
+        differ between runs).
         """
-        import random
-
         resolved: list[ApprovalRequest] = []
         for r in list(self.pending()):
             approver = self.approvers.get(r.approver)
@@ -151,17 +156,19 @@ class ApprovalQueue:
             elif persona == ApproverPersona.AUTO_DENY:
                 self.decide(r.request_id, False, now, note="auto-denied")
             elif persona == ApproverPersona.RANDOM:
-                seed = (rng_seed or 0) + hash(r.request_id)
-                rng = random.Random(seed)
-                self.decide(r.request_id, rng.random() < 0.5, now, note="random")
+                digest = hashlib.sha256(r.request_id.encode("utf-8")).hexdigest()
+                seed = (rng_seed or 0) + int(digest[:8], 16)
+                persona_rng = random.Random(seed)
+                self.decide(r.request_id, persona_rng.random() < 0.5, now, note="random")
             else:
                 continue
             resolved.append(r)
         return resolved
 
     def audit_metrics(self) -> dict[str, int]:
-        """Count of requests by status, for dashboards."""
+        """Count of requests by status plus total escalations, for dashboards."""
         counts: dict[str, int] = {}
         for r in self.requests:
             counts[r.status.value] = counts.get(r.status.value, 0) + 1
+        counts["escalations"] = sum(r.escalation_count for r in self.requests)
         return counts

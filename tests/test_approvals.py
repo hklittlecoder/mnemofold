@@ -176,3 +176,92 @@ def test_audit_metrics():
     metrics = q.audit_metrics()
     assert metrics["approved"] == 1
     assert metrics["pending"] == 1
+
+
+def _ask_queue() -> ApprovalQueue:
+    q = ApprovalQueue()
+    q.add_approver(Approver(name="alice", persona=ApproverPersona.ASK))
+    q.add_approver(Approver(name="bob", persona=ApproverPersona.ASK))
+    q.submit(
+        ApprovalRequest(
+            request_id="r1",
+            item_id="i1",
+            item_kind="tool",
+            summary="deploy",
+            requester="carol",
+            approver="alice",
+            escalation_chain=["alice", "bob"],
+            created_at=NOW,
+        )
+    )
+    return q
+
+
+class TestEscalationAuditTrail:
+    def test_escalation_count_increments_and_status_stays_pending(self):
+        q = _ask_queue()
+        r = q.escalate("r1", NOW + timedelta(hours=3))
+        assert r is not None
+        assert r.escalation_count == 1
+        assert r.approver == "bob"
+        assert r.escalated_from == "alice"
+        assert r.status == ApprovalStatus.PENDING
+        assert r.is_open()
+
+    def test_repeated_escalations_accumulate(self):
+        q = _ask_queue()
+        q.requests[0].escalation_chain = ["alice", "bob", "carol"]
+        q.add_approver(Approver(name="carol", persona=ApproverPersona.ASK))
+        q.escalate("r1", NOW + timedelta(hours=1))
+        r = q.escalate("r1", NOW + timedelta(hours=2))
+        assert r is not None
+        assert r.escalation_count == 2
+        assert r.approver == "carol"
+
+    def test_audit_metrics_reports_escalations(self):
+        q = _ask_queue()
+        q.escalate("r1", NOW + timedelta(hours=3))
+        metrics = q.audit_metrics()
+        assert metrics["pending"] == 1
+        assert metrics["escalations"] == 1
+        assert "escalated" not in metrics  # no transient status anymore
+
+
+class TestRandomPersonaDeterminism:
+    def _queue(self) -> ApprovalQueue:
+        q = ApprovalQueue()
+        q.add_approver(
+            Approver(
+                name="rand",
+                persona=ApproverPersona.RANDOM,
+                decision_latency=timedelta(),
+            )
+        )
+        for i in range(10):
+            q.submit(
+                ApprovalRequest(
+                    request_id=f"r{i}",
+                    item_id=f"i{i}",
+                    item_kind="tool",
+                    summary="s",
+                    requester="x",
+                    approver="rand",
+                    created_at=NOW,
+                )
+            )
+        return q
+
+    def test_same_seed_same_decisions(self):
+        first = self._queue()
+        first.auto_resolve(NOW + timedelta(seconds=1), rng_seed=42)
+        second = self._queue()
+        second.auto_resolve(NOW + timedelta(seconds=1), rng_seed=42)
+        decisions_a = [(r.request_id, r.status) for r in first.requests]
+        decisions_b = [(r.request_id, r.status) for r in second.requests]
+        assert decisions_a == decisions_b
+
+    def test_decisions_are_decided_not_pending(self):
+        q = self._queue()
+        q.auto_resolve(NOW + timedelta(seconds=1), rng_seed=7)
+        assert q.pending() == []
+        assert all(r.status in (ApprovalStatus.APPROVED, ApprovalStatus.DENIED) for r in q.requests)
