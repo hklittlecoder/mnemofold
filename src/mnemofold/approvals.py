@@ -65,6 +65,18 @@ class Approver:
     decision_latency: timedelta = timedelta(hours=2)
 
 
+@dataclass(slots=True)
+class TickReport:
+    """What one :meth:`ApprovalQueue.tick` changed."""
+
+    expired: list[ApprovalRequest] = field(default_factory=list)
+    resolved: list[ApprovalRequest] = field(default_factory=list)
+    escalated: list[ApprovalRequest] = field(default_factory=list)
+
+    def total_touched(self) -> int:
+        return len(self.expired) + len(self.resolved) + len(self.escalated)
+
+
 @dataclass
 class ApprovalQueue:
     """Queue of pending approvals with persona-driven resolution."""
@@ -164,6 +176,48 @@ class ApprovalQueue:
                 continue
             resolved.append(r)
         return resolved
+
+    def due_for_escalation(self, now: datetime) -> list[ApprovalRequest]:
+        """Pending requests whose approver is past latency and has a successor.
+
+        A request is due for escalation when it is still open, its current
+        approver's ``decision_latency`` has elapsed since ``created_at``,
+        and the escalation chain has a next approver after the current one.
+        Returned in submission order for determinism.
+        """
+        due: list[ApprovalRequest] = []
+        for r in self.requests:
+            if not r.is_open() or r.created_at is None:
+                continue
+            approver = self.approvers.get(r.approver)
+            if approver is None:
+                continue
+            if now < r.created_at + approver.decision_latency:
+                continue
+            chain = r.escalation_chain
+            if r.approver in chain and chain.index(r.approver) + 1 < len(chain):
+                due.append(r)
+        return due
+
+    def tick(self, now: datetime, rng_seed: int | None = None) -> TickReport:
+        """Advance simulated time by one step, in a fixed order.
+
+        Order (deterministic, so a replayed timeline matches byte-for-byte):
+        1. expire overdue requests;
+        2. let scripted personas resolve requests that are due;
+        3. escalate still-pending requests whose approver timed out.
+
+        Escalation runs last so a request the personas just resolved is
+        not also escalated in the same tick.
+        """
+        expired = self.tick_expirations(now)
+        resolved = self.auto_resolve(now, rng_seed=rng_seed)
+        escalated: list[ApprovalRequest] = []
+        for r in self.due_for_escalation(now):
+            moved = self.escalate(r.request_id, now)
+            if moved is not None:
+                escalated.append(moved)
+        return TickReport(expired=expired, resolved=resolved, escalated=escalated)
 
     def audit_metrics(self) -> dict[str, int]:
         """Count of requests by status plus total escalations, for dashboards."""

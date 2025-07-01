@@ -265,3 +265,114 @@ class TestRandomPersonaDeterminism:
         q.auto_resolve(NOW + timedelta(seconds=1), rng_seed=7)
         assert q.pending() == []
         assert all(r.status in (ApprovalStatus.APPROVED, ApprovalStatus.DENIED) for r in q.requests)
+
+
+class TestApprovalTick:
+    def _queue_with_ask_chain(self) -> ApprovalQueue:
+        q = ApprovalQueue()
+        q.add_approver(
+            Approver(name="alice", persona=ApproverPersona.ASK, decision_latency=timedelta(hours=1))
+        )
+        q.add_approver(Approver(name="bob", persona=ApproverPersona.ASK))
+        q.submit(
+            ApprovalRequest(
+                request_id="r1",
+                item_id="i1",
+                item_kind="tool",
+                summary="deploy",
+                requester="carol",
+                approver="alice",
+                escalation_chain=["alice", "bob"],
+                created_at=NOW,
+            )
+        )
+        return q
+
+    def test_tick_escalates_after_latency(self):
+        q = self._queue_with_ask_chain()
+        report = q.tick(NOW + timedelta(hours=2))
+        assert [r.request_id for r in report.escalated] == ["r1"]
+        assert q.requests[0].approver == "bob"
+        assert report.expired == [] and report.resolved == []
+
+    def test_tick_before_latency_does_nothing(self):
+        q = self._queue_with_ask_chain()
+        report = q.tick(NOW + timedelta(minutes=30))
+        assert report.total_touched() == 0
+        assert q.requests[0].approver == "alice"
+
+    def test_tick_resolves_auto_approve_before_escalation(self):
+        q = ApprovalQueue()
+        q.add_approver(
+            Approver(
+                name="dave",
+                persona=ApproverPersona.AUTO_APPROVE,
+                decision_latency=timedelta(hours=1),
+                escalation_to="erin",
+            )
+        )
+        q.add_approver(Approver(name="erin", persona=ApproverPersona.ASK))
+        q.submit(
+            ApprovalRequest(
+                request_id="r1",
+                item_id="i1",
+                item_kind="tool",
+                summary="s",
+                requester="x",
+                approver="dave",
+                escalation_chain=["dave", "erin"],
+                created_at=NOW,
+            )
+        )
+        report = q.tick(NOW + timedelta(hours=2))
+        assert [r.request_id for r in report.resolved] == ["r1"]
+        assert report.escalated == []  # resolved, so not escalated
+        assert q.requests[0].status == ApprovalStatus.APPROVED
+
+    def test_tick_expires_first(self):
+        q = ApprovalQueue()
+        q.add_approver(
+            Approver(name="alice", persona=ApproverPersona.ASK, decision_latency=timedelta(hours=1))
+        )
+        q.submit(
+            ApprovalRequest(
+                request_id="r1",
+                item_id="i1",
+                item_kind="tool",
+                summary="s",
+                requester="x",
+                approver="alice",
+                escalation_chain=["alice", "bob"],
+                created_at=NOW,
+                expires_after=timedelta(minutes=30),
+            )
+        )
+        report = q.tick(NOW + timedelta(hours=2))
+        assert [r.request_id for r in report.expired] == ["r1"]
+        assert report.escalated == []  # expired requests are not open
+        assert q.requests[0].status == ApprovalStatus.EXPIRED
+
+    def test_due_for_escalation_needs_successor(self):
+        q = ApprovalQueue()
+        q.add_approver(
+            Approver(name="solo", persona=ApproverPersona.ASK, decision_latency=timedelta())
+        )
+        q.submit(
+            ApprovalRequest(
+                request_id="r1",
+                item_id="i1",
+                item_kind="tool",
+                summary="s",
+                requester="x",
+                approver="solo",
+                escalation_chain=["solo"],
+                created_at=NOW,
+            )
+        )
+        # solo is last in the chain -> nowhere to escalate
+        assert q.due_for_escalation(NOW + timedelta(hours=1)) == []
+
+    def test_tick_is_deterministic(self):
+        first = self._queue_with_ask_chain().tick(NOW + timedelta(hours=2))
+        second = self._queue_with_ask_chain().tick(NOW + timedelta(hours=2))
+        assert [r.request_id for r in first.escalated] == [r.request_id for r in second.escalated]
