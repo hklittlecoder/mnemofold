@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from mnemofold.tools import ToolPolicyError, ToolRegistry, ToolValidationError
+
 
 class PlanStatus(StrEnum):
     DRAFT = "draft"
@@ -223,14 +225,38 @@ def topological_order(plan: Plan) -> list[str]:
     return result
 
 
+@dataclass(slots=True)
+class StepOutcome:
+    """Result of executing one plan step."""
+
+    step_id: str
+    status: str  # completed | failed | skipped
+    output: Any = None
+    error: str = ""
+    tokens_spent: int = 0
+
+
 @dataclass
 class PlanLoop:
-    """Perceive-plan-act-observe loop with step and token budgets."""
+    """Perceive-plan-act-observe loop with step and token budgets.
+
+    Execution rules (all deterministic):
+
+    * the next runnable step is the first ``pending`` step in declaration
+      order whose dependencies all completed;
+    * a step whose ``budget_tokens`` would exceed the remaining plan
+      budget is marked ``skipped`` and costs nothing;
+    * tool failures and validation/policy errors mark the step (and the
+      plan) failed and stop the loop;
+    * successful outputs are bound to the step's declared ``outputs``
+      names so later steps can reference them via ``$step.output``.
+    """
 
     plan: Plan
     current_step_index: int = 0
     iteration: int = 0
     max_iterations: int = 100
+    _outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def can_continue(self) -> bool:
         if self.plan.token_used >= self.plan.total_budget_tokens:
@@ -248,6 +274,97 @@ class PlanLoop:
 
     def steps_failed(self) -> int:
         return sum(1 for s in self.plan.steps if s.status == "failed")
+
+    def next_runnable(self) -> PlanStep | None:
+        completed = {s.step_id for s in self.plan.steps if s.status == "completed"}
+        for step in self.plan.steps:
+            if step.status != "pending":
+                continue
+            if all(dep in completed for dep in step.depends_on):
+                return step
+        return None
+
+    def output_of(self, step_id: str, output_name: str) -> Any:
+        """A previously bound step output (None when absent)."""
+        return self._outputs.get(step_id, {}).get(output_name)
+
+    def _resolve_inputs(self, step: PlanStep) -> dict[str, Any]:
+        resolved: dict[str, Any] = {}
+        for name, value in step.inputs.items():
+            ref = _reference_parts(value)
+            if ref is None:
+                resolved[name] = value
+            else:
+                ref_step, ref_output = ref
+                resolved[name] = self._outputs.get(ref_step, {}).get(ref_output)
+        return resolved
+
+    def _bind_outputs(self, step: PlanStep, output: Any) -> None:
+        bound: dict[str, Any] = {}
+        if (
+            isinstance(output, dict)
+            and step.outputs
+            and all(name in output for name in step.outputs)
+        ):
+            for name in step.outputs:
+                bound[name] = output[name]
+        elif step.outputs:
+            bound[step.outputs[0]] = output
+        self._outputs[step.step_id] = bound
+
+    def run_step(self, registry: ToolRegistry) -> StepOutcome | None:
+        step = self.next_runnable()
+        if step is None:
+            return None
+        self.iteration += 1
+        cost = max(0, step.budget_tokens)
+        if self.plan.token_used + cost > self.plan.total_budget_tokens:
+            step.status = "skipped"
+            return StepOutcome(
+                step_id=step.step_id, status="skipped", error="token budget exhausted"
+            )
+        if not step.tool:
+            step.status = "completed"
+            self.plan.token_used += cost
+            return StepOutcome(step_id=step.step_id, status="completed", tokens_spent=cost)
+        try:
+            result = registry.invoke(step.tool, self._resolve_inputs(step))
+        except (ToolValidationError, ToolPolicyError) as exc:
+            step.status = "failed"
+            self.plan.status = PlanStatus.FAILED
+            self.plan.token_used += cost
+            return StepOutcome(
+                step_id=step.step_id, status="failed", error=str(exc), tokens_spent=cost
+            )
+        self.plan.token_used += cost
+        if result.success:
+            step.status = "completed"
+            self._bind_outputs(step, result.output)
+            return StepOutcome(
+                step_id=step.step_id,
+                status="completed",
+                output=result.output,
+                tokens_spent=cost,
+            )
+        step.status = "failed"
+        self.plan.status = PlanStatus.FAILED
+        return StepOutcome(
+            step_id=step.step_id, status="failed", error=result.error, tokens_spent=cost
+        )
+
+    def run_to_completion(self, registry: ToolRegistry) -> list[StepOutcome]:
+        if self.plan.status in {PlanStatus.DRAFT, PlanStatus.VALID}:
+            self.plan.status = PlanStatus.RUNNING
+        outcomes: list[StepOutcome] = []
+        while self.can_continue():
+            outcome = self.run_step(registry)
+            if outcome is None:
+                break
+            outcomes.append(outcome)
+        if self.plan.status not in {PlanStatus.FAILED, PlanStatus.CANCELLED}:
+            unfinished = [s for s in self.plan.steps if s.status in ("pending", "skipped")]
+            self.plan.status = PlanStatus.FAILED if unfinished else PlanStatus.COMPLETED
+        return outcomes
 
 
 # --- Plan diffing --------------------------------------------------------------

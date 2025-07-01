@@ -9,6 +9,7 @@ from mnemofold.plan import (
     topological_order,
     validate_plan,
 )
+from mnemofold.tools import ToolRegistry, ToolSpec, build_default_registry
 
 
 def test_plan_status_enum():
@@ -313,3 +314,124 @@ class TestPlanDiff:
         new = self._plan([PlanStep(step_id="z", name="Z2"), PlanStep(step_id="m", name="M2")])
         diff = diff_plans(old, new)
         assert [c.step_id for c in diff.changed] == ["m", "z"]
+
+
+def _echo_registry() -> ToolRegistry:
+    registry = build_default_registry()  # echo(message) + noop()
+    registry.register(
+        ToolSpec(name="boom", description="always fails", max_retries=0),
+        lambda: (_ for _ in ()).throw(RuntimeError("kaboom")),
+    )
+    return registry
+
+
+class TestPlanLoopExecution:
+    def test_runs_steps_in_dependency_order(self):
+        plan = Plan(
+            plan_id="p",
+            name="chain",
+            steps=[
+                PlanStep(
+                    step_id="a",
+                    name="A",
+                    tool="echo",
+                    inputs={"message": "hello"},
+                    outputs=["text"],
+                    budget_tokens=10,
+                ),
+                PlanStep(
+                    step_id="b",
+                    name="B",
+                    tool="echo",
+                    inputs={"message": "$a.text"},
+                    outputs=["text"],
+                    depends_on=["a"],
+                    budget_tokens=10,
+                ),
+            ],
+        )
+        loop = PlanLoop(plan=plan)
+        outcomes = loop.run_to_completion(_echo_registry())
+        assert [o.step_id for o in outcomes] == ["a", "b"]
+        assert all(o.status == "completed" for o in outcomes)
+        # b echoed a's output through the $a.text reference
+        assert outcomes[1].output == "hello"
+        assert plan.status == PlanStatus.COMPLETED
+
+    def test_token_budget_accumulates(self):
+        plan = Plan(
+            plan_id="p",
+            name="b",
+            total_budget_tokens=1000,
+            steps=[
+                PlanStep(step_id="a", name="A", tool="noop", budget_tokens=100),
+                PlanStep(step_id="b", name="B", tool="noop", budget_tokens=250),
+            ],
+        )
+        PlanLoop(plan=plan).run_to_completion(_echo_registry())
+        assert plan.token_used == 350
+
+    def test_step_exceeding_budget_is_skipped(self):
+        plan = Plan(
+            plan_id="p",
+            name="tight",
+            total_budget_tokens=150,
+            steps=[
+                PlanStep(step_id="a", name="A", tool="noop", budget_tokens=100),
+                PlanStep(step_id="big", name="Big", tool="noop", budget_tokens=100),
+            ],
+        )
+        outcomes = PlanLoop(plan=plan).run_to_completion(_echo_registry())
+        statuses = {o.step_id: o.status for o in outcomes}
+        assert statuses["a"] == "completed"
+        assert statuses["big"] == "skipped"
+        assert plan.token_used == 100  # skipped step spends nothing
+
+    def test_failing_tool_fails_plan(self):
+        plan = Plan(
+            plan_id="p",
+            name="fail",
+            steps=[
+                PlanStep(step_id="a", name="A", tool="boom"),
+                PlanStep(step_id="b", name="B", tool="noop", depends_on=["a"]),
+            ],
+        )
+        loop = PlanLoop(plan=plan)
+        outcomes = loop.run_to_completion(_echo_registry())
+        assert outcomes[0].status == "failed"
+        assert "kaboom" in outcomes[0].error
+        assert plan.status == PlanStatus.FAILED
+        # b never ran because its dependency failed
+        assert loop.steps_completed() == 0
+
+    def test_validation_error_fails_step(self):
+        plan = Plan(
+            plan_id="p",
+            name="bad",
+            steps=[PlanStep(step_id="a", name="A", tool="echo", inputs={})],  # missing message
+        )
+        outcomes = PlanLoop(plan=plan).run_to_completion(_echo_registry())
+        assert outcomes[0].status == "failed"
+        assert "message" in outcomes[0].error
+
+    def test_max_iterations_caps_loop(self):
+        plan = Plan(
+            plan_id="p",
+            name="many",
+            steps=[PlanStep(step_id=f"s{i}", name=f"S{i}", tool="noop") for i in range(10)],
+        )
+        loop = PlanLoop(plan=plan, max_iterations=3)
+        outcomes = loop.run_to_completion(_echo_registry())
+        assert len(outcomes) == 3
+        assert loop.iteration == 3
+
+    def test_completed_plan_cannot_continue(self):
+        plan = Plan(plan_id="p", name="x", status=PlanStatus.COMPLETED, steps=[])
+        loop = PlanLoop(plan=plan)
+        assert loop.can_continue() is False
+
+    def test_empty_plan_completes(self):
+        plan = Plan(plan_id="p", name="empty", steps=[])
+        outcomes = PlanLoop(plan=plan).run_to_completion(_echo_registry())
+        assert outcomes == []
+        assert plan.status == PlanStatus.COMPLETED
