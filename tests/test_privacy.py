@@ -277,3 +277,49 @@ class TestRedactionVault:
         token = vault.known_tokens()[0]
         assert token in first and token in second
         assert vault.unseal(second) == "pong alice@example.com"
+
+
+class TestNameDetection:
+    def test_salutation_cue(self):
+        matches = detect_pii("Please contact Dr. Alice Zhang by Friday")
+        names = [m for m in matches if m.kind == PiiKind.NAME]
+        assert len(names) == 1
+        assert names[0].value == "Alice Zhang"
+
+    def test_all_salutations(self):
+        for cue in ("Mr.", "Ms.", "Mrs.", "Dr.", "Prof."):
+            matches = detect_pii(f"{cue} Bob Li replied")
+            assert any(m.value == "Bob Li" for m in matches), cue
+
+    def test_signature_block(self):
+        text = "See attached draft.\nRegards,\nCarol Wu\n"
+        matches = detect_pii(text)
+        names = [m for m in matches if m.kind == PiiKind.NAME]
+        assert [m.value for m in names] == ["Carol Wu"]
+
+    def test_no_cue_no_name(self):
+        matches = detect_pii("Alice went to the meeting with Bob")
+        assert not [m for m in matches if m.kind == PiiKind.NAME]
+
+    def test_name_span_points_at_name_only(self):
+        text = "Ask Dr. Alice Zhang today"
+        match = next(m for m in detect_pii(text) if m.kind == PiiKind.NAME)
+        assert text[match.start : match.end] == "Alice Zhang"
+
+    def test_names_are_masked_and_sealed(self):
+        text = "cc Dr. Alice Zhang"
+        masked = redact(text, detect_pii(text), mode=RedactionMode.MASK)
+        # the span covers the name only; the salutation stays visible
+        assert masked == "cc Dr. [name]"
+        vault = RedactionVault(salt="s")
+        sealed = vault.seal(text)
+        assert "<sealed:name:" in sealed
+        assert vault.unseal(sealed) == text
+
+    def test_matches_stay_sorted_with_names_included(self):
+        text = "Mail alice@example.com, thanks.\nRegards,\nBob Li\n"
+        matches = detect_pii(text)
+        starts = [m.start for m in matches]
+        assert starts == sorted(starts)
+        kinds = {m.kind for m in matches}
+        assert PiiKind.EMAIL in kinds and PiiKind.NAME in kinds

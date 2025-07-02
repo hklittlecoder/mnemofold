@@ -58,6 +58,16 @@ _ADDRESS_RE = re.compile(
     r"\b\d+\s+[A-Za-z][A-Za-z0-9\s\-]{0,40}\s+(?:street|st\.?|avenue|ave\.?|road|rd\.?|boulevard|blvd\.?|drive|dr\.?|lane|ln\.?|court|ct\.?|place|pl\.?|way|parkway|pkwy\.?)\b",
     re.IGNORECASE,
 )
+# Names are only detected behind explicit cues (a salutation or a
+# signature line) so ordinary sentence-initial capitals never match.
+_SALUTATION_RE = re.compile(
+    r"\b(?:Mr\.|Ms\.|Mrs\.|Dr\.|Prof\.)\s+"
+    r"(?P<name>[A-Z][A-Za-z'\-]*(?:\s+[A-Z][A-Za-z'\-]*){0,2})"
+)
+_SIGNATURE_RE = re.compile(
+    r"(?:^|\n)[ \t]*(?:--|Regards,|Best,|Signed,|Thanks,)[ \t]*\n[ \t]*"
+    r"(?P<name>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})[ \t]*(?:\n|$)"
+)
 
 
 def _luhn_valid(number: str) -> bool:
@@ -98,6 +108,12 @@ def detect_pii(text: str) -> list[PiiMatch]:
 
     for m in _ADDRESS_RE.finditer(text):
         matches.append(PiiMatch(PiiKind.ADDRESS, m.start(), m.end(), m.group().strip()))
+
+    for regex in (_SALUTATION_RE, _SIGNATURE_RE):
+        for m in regex.finditer(text):
+            name = m.group("name").strip()
+            start = m.start("name")
+            matches.append(PiiMatch(PiiKind.NAME, start, start + len(name), name))
 
     matches.sort(key=lambda x: (x.start, x.end))
     return matches
