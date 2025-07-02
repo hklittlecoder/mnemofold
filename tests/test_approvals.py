@@ -376,3 +376,97 @@ class TestApprovalTick:
         first = self._queue_with_ask_chain().tick(NOW + timedelta(hours=2))
         second = self._queue_with_ask_chain().tick(NOW + timedelta(hours=2))
         assert [r.request_id for r in first.escalated] == [r.request_id for r in second.escalated]
+
+
+class TestApprovalQueueEdges:
+    def _request(self, rid: str, **kwargs) -> ApprovalRequest:
+        base = {
+            "request_id": rid,
+            "item_id": f"i-{rid}",
+            "item_kind": "tool",
+            "summary": "s",
+            "requester": "req",
+            "approver": "app",
+            "created_at": NOW,
+        }
+        base.update(kwargs)
+        return ApprovalRequest(**base)
+
+    def test_decide_unknown_request_returns_none(self):
+        assert ApprovalQueue().decide("ghost", True, NOW) is None
+
+    def test_decide_twice_second_is_noop(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r1"))
+        assert q.decide("r1", True, NOW) is not None
+        assert q.decide("r1", False, NOW) is None  # already decided
+        assert q.requests[0].status == ApprovalStatus.APPROVED
+
+    def test_pending_excludes_decided(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r1"))
+        q.submit(self._request("r2"))
+        q.decide("r1", True, NOW)
+        assert [r.request_id for r in q.pending()] == ["r2"]
+
+    def test_expire_boundary_is_inclusive(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r1", expires_after=timedelta(hours=1)))
+        # exactly at the deadline -> expired (>=)
+        expired = q.tick_expirations(NOW + timedelta(hours=1))
+        assert [r.request_id for r in expired] == ["r1"]
+
+    def test_no_expiry_never_expires(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r1"))
+        assert q.tick_expirations(NOW + timedelta(days=365)) == []
+
+    def test_escalation_without_chain_returns_none(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r1"))
+        assert q.escalate("r1", NOW) is None
+
+    def test_auto_resolve_skips_unknown_approver(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r1", approver="nobody"))
+        assert q.auto_resolve(NOW + timedelta(hours=1)) == []
+
+    def test_auto_deny_persona(self):
+        q = ApprovalQueue()
+        q.add_approver(
+            Approver(name="app", persona=ApproverPersona.AUTO_DENY, decision_latency=timedelta())
+        )
+        q.submit(self._request("r1"))
+        q.auto_resolve(NOW + timedelta(seconds=1))
+        assert q.requests[0].status == ApprovalStatus.DENIED
+
+    def test_ask_persona_never_auto_resolves(self):
+        q = ApprovalQueue()
+        q.add_approver(
+            Approver(name="app", persona=ApproverPersona.ASK, decision_latency=timedelta())
+        )
+        q.submit(self._request("r1"))
+        assert q.auto_resolve(NOW + timedelta(hours=100)) == []
+        assert q.requests[0].status == ApprovalStatus.PENDING
+
+    def test_audit_metrics_counts_every_status(self):
+        q = ApprovalQueue()
+        q.submit(self._request("a"))
+        q.submit(self._request("b"))
+        q.submit(self._request("c", expires_after=timedelta(seconds=1)))
+        q.decide("a", True, NOW)
+        q.decide("b", False, NOW)
+        q.tick_expirations(NOW + timedelta(seconds=2))
+        metrics = q.audit_metrics()
+        assert metrics["approved"] == 1
+        assert metrics["denied"] == 1
+        assert metrics["expired"] == 1
+        assert metrics["escalations"] == 0
+
+    def test_decision_note_recorded(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r1"))
+        r = q.decide("r1", True, NOW, note="looks safe")
+        assert r is not None
+        assert r.decision_note == "looks safe"
+        assert r.decided_at == NOW
