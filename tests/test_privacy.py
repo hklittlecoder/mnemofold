@@ -9,6 +9,7 @@ from mnemofold.privacy import (
     PolicyRule,
     PrivacyTier,
     RedactionMode,
+    RedactionVault,
     can_read,
     detect_pii,
     redact,
@@ -224,3 +225,55 @@ def test_access_log_count_by_principal():
     counts = log.count_by_principal()
     assert counts["alice"] == 2
     assert counts["bob"] == 1
+
+
+class TestRedactionVault:
+    TEXT = "Mail alice@example.com or call 555-123-4567 about the invoice."
+
+    def test_seal_unseal_roundtrip(self):
+        vault = RedactionVault(salt="s1")
+        sealed = vault.seal(self.TEXT)
+        assert "alice@example.com" not in sealed
+        assert "555-123-4567" not in sealed
+        assert vault.unseal(sealed) == self.TEXT
+
+    def test_sealed_text_keeps_context(self):
+        vault = RedactionVault(salt="s1")
+        sealed = vault.seal(self.TEXT)
+        assert "about the invoice" in sealed
+        assert "<sealed:email:" in sealed
+        assert "<sealed:phone:" in sealed
+
+    def test_same_value_seals_to_one_token(self):
+        vault = RedactionVault(salt="s1")
+        sealed = vault.seal("a@b.com and again a@b.com")
+        assert sealed.count("<sealed:email:") == 2
+        assert vault.sealed_count() == 1  # one distinct value
+
+    def test_salt_changes_tokens(self):
+        one = RedactionVault(salt="one")
+        two = RedactionVault(salt="two")
+        assert one.seal(self.TEXT) != two.seal(self.TEXT)
+
+    def test_seal_is_deterministic(self):
+        assert RedactionVault(salt="s").seal(self.TEXT) == RedactionVault(salt="s").seal(self.TEXT)
+
+    def test_text_without_pii_is_unchanged(self):
+        vault = RedactionVault()
+        plain = "nothing sensitive here"
+        assert vault.seal(plain) == plain
+        assert vault.sealed_count() == 0
+
+    def test_unseal_ignores_unknown_tokens(self):
+        vault = RedactionVault(salt="s")
+        sealed = vault.seal(self.TEXT)
+        other = RedactionVault(salt="s")
+        assert other.unseal(sealed) == sealed  # other vault lacks the mapping
+
+    def test_seal_unseal_multiple_documents_share_tokens(self):
+        vault = RedactionVault(salt="s")
+        first = vault.seal("ping alice@example.com")
+        second = vault.seal("pong alice@example.com")
+        token = vault.known_tokens()[0]
+        assert token in first and token in second
+        assert vault.unseal(second) == "pong alice@example.com"

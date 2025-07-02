@@ -253,3 +253,60 @@ def can_read(consumer_tier: PrivacyTier, resource_tier: PrivacyTier) -> bool:
     always allowed.
     """
     return _TIER_ORDER[consumer_tier] >= _TIER_ORDER[resource_tier]
+
+
+def _select_non_overlapping(matches: list[PiiMatch]) -> list[PiiMatch]:
+    """Greedily keep leftmost-longest matches, dropping overlaps.
+
+    Reversible sealing rewrites spans in place, so overlapping matches
+    would corrupt offsets. This yields a disjoint set in document order.
+    """
+    chosen: list[PiiMatch] = []
+    for m in sorted(matches, key=lambda x: (x.start, -(x.end - x.start))):
+        if chosen and m.start < chosen[-1].end:
+            continue
+        chosen.append(m)
+    return chosen
+
+
+@dataclass(slots=True)
+class RedactionVault:
+    """Reversible redaction: seals PII into tokens, unseals back to originals.
+
+    ``seal`` replaces each detected PII span with a stable token
+    ``<sealed:kind:digest>`` derived from ``salt + value`` (so the same
+    value maps to one token across a document, keeping cross-references
+    consistent without leaking the value). The vault remembers
+    token -> original; ``unseal`` restores it. A vault is the only holder
+    of the mapping, so sealed text can be shared while the vault stays
+    private. Deterministic for a fixed salt.
+    """
+
+    salt: str = ""
+    _token_to_value: dict[str, str] = field(default_factory=dict)
+
+    def _token(self, kind: str, value: str) -> str:
+        digest = hashlib.sha256((self.salt + value).encode()).hexdigest()[:16]
+        token = f"<sealed:{kind}:{digest}>"
+        self._token_to_value[token] = value
+        return token
+
+    def seal(self, text: str) -> str:
+        matches = _select_non_overlapping(detect_pii(text))
+        result = text
+        for m in reversed(matches):  # reverse keeps earlier offsets valid
+            token = self._token(m.kind.value, m.value)
+            result = result[: m.start] + token + result[m.end :]
+        return result
+
+    def unseal(self, text: str) -> str:
+        result = text
+        for token in sorted(self._token_to_value, key=len, reverse=True):
+            result = result.replace(token, self._token_to_value[token])
+        return result
+
+    def sealed_count(self) -> int:
+        return len(self._token_to_value)
+
+    def known_tokens(self) -> list[str]:
+        return sorted(self._token_to_value)
