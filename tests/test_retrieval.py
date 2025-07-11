@@ -938,3 +938,92 @@ class TestDeletionWiring:
         report = forget(deletion, "ghost", DeletionReason.FORGET, FORGET_NOW)
         assert report.total_deleted == 0
         assert any("ghost" in err for err in report.errors)
+
+
+class TestNoResurrection:
+    """Deleted memories must never reappear through any query path."""
+
+    def _engine(self) -> RetrievalEngine:
+        store = MemoryStore()
+        graph = WorkstreamGraph()
+        graph.add_node(Node(node_id="alice", node_type=NodeType.PERSON, label="Alice"))
+        graph.add_node(Node(node_id="alpha", node_type=NodeType.PROJECT, label="Alpha"))
+        graph.add_edge(
+            Edge(edge_id="e1", edge_type=EdgeType.OWNS, source_id="alice", target_id="alpha")
+        )
+        engine = RetrievalEngine(store=store, graph=graph)
+        items = [
+            MemoryItem(
+                item_id="secret",
+                tier=MemoryTier.SEMANTIC,
+                content="alpha budget secret numbers",
+                tags={"finance"},
+                created_at="2025-01-01T00:00:00+00:00",
+                metadata={"entity_ids": ["alice"], "cascade": ["shadow"]},
+            ),
+            MemoryItem(
+                item_id="shadow",
+                tier=MemoryTier.SEMANTIC,
+                content="alpha budget shadow copy",
+                metadata={"entity_ids": ["alpha"]},
+            ),
+            MemoryItem(
+                item_id="keeper",
+                tier=MemoryTier.SEMANTIC,
+                content="alpha release plan",
+                tags={"finance"},
+                created_at="2025-01-01T00:00:00+00:00",
+                metadata={"entity_ids": ["alice"]},
+            ),
+        ]
+        for item in items:
+            store.add(item)
+            engine.index_item(item)
+        return engine
+
+    def test_no_path_resurfaces_deleted_content(self):
+        engine = self._engine()
+        deletion = build_deletion_engine(engine)
+        forget(deletion, "secret", DeletionReason.FORGET, FORGET_NOW)
+        gone = {"secret", "shadow"}
+
+        free_text = {r.item_id for r in engine.search("alpha budget")}
+        assert not (free_text & gone)
+
+        filtered = {r.item_id for r in engine.search_parsed(parse_query("budget tag:finance"))}
+        assert not (filtered & gone)
+
+        expanded = {r.item_id for r in engine.search("alpha budget", expand_graph=True)}
+        assert not (expanded & gone)
+
+        asof = {r.item_id for r in engine.search("alpha budget", as_of="2025-06-01T00:00:00+00:00")}
+        assert not (asof & gone)
+
+        # the survivor is still findable
+        assert "keeper" in free_text
+
+    def test_deleted_ids_absent_from_index_listing(self):
+        engine = self._engine()
+        deletion = build_deletion_engine(engine)
+        forget(deletion, "secret", DeletionReason.FORGET, FORGET_NOW)
+        ids = set(engine.index.ids())
+        assert "secret" not in ids and "shadow" not in ids
+        assert "keeper" in ids
+
+    def test_reingestion_of_source_does_not_revive(self):
+        engine = self._engine()
+        deletion = build_deletion_engine(engine)
+        forget(deletion, "secret", DeletionReason.FORGET, FORGET_NOW)
+        revived = MemoryItem(
+            item_id="secret", tier=MemoryTier.SEMANTIC, content="alpha budget secret numbers"
+        )
+        assert safe_index(engine, deletion, revived) is False
+        assert engine.search("alpha budget secret") and all(
+            r.item_id != "secret" for r in engine.search("alpha budget secret")
+        )
+
+    def test_citations_still_resolve_after_deletion(self):
+        engine = self._engine()
+        deletion = build_deletion_engine(engine)
+        forget(deletion, "secret", DeletionReason.FORGET, FORGET_NOW)
+        assert engine.property_citations_resolve("alpha budget")
