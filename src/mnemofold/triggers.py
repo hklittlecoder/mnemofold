@@ -8,10 +8,14 @@ an item.  Trigger logs are deterministic and replayable.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
+from typing import Any
 
 
 class TriggerKind(StrEnum):
@@ -190,3 +194,75 @@ class TriggerEngine:
             key = f.kind.value
             counts[key] = counts.get(key, 0) + 1
         return counts
+
+
+# --- Persistent trigger log -----------------------------------------------------
+
+
+def fired_to_dict(fired: FiredTrigger) -> dict[str, Any]:
+    return {
+        "rule_id": fired.rule_id,
+        "kind": fired.kind.value,
+        "target_id": fired.target_id,
+        "fired_at": fired.fired_at.isoformat(),
+        "severity": fired.severity.value,
+        "message": fired.message,
+        "suppressed": fired.suppressed,
+        "suppress_reason": fired.suppress_reason,
+    }
+
+
+def fired_from_dict(data: dict[str, Any]) -> FiredTrigger:
+    return FiredTrigger(
+        rule_id=data["rule_id"],
+        kind=TriggerKind(data["kind"]),
+        target_id=data["target_id"],
+        fired_at=datetime.fromisoformat(data["fired_at"]),
+        severity=TriggerSeverity(data["severity"]),
+        message=data.get("message", ""),
+        suppressed=data.get("suppressed", False),
+        suppress_reason=data.get("suppress_reason", ""),
+    )
+
+
+def write_trigger_log(path: str | Path, fired: list[FiredTrigger]) -> None:
+    """Write fired triggers as a checksummed JSONL log (full rewrite).
+
+    Each line carries a SHA-256 chained from the previous line, so any
+    later edit, reorder, or truncation of the log is detectable on read.
+    Identical input always produces identical bytes.
+    """
+    lines: list[str] = []
+    prev = "0" * 64
+    for trigger in fired:
+        entry = fired_to_dict(trigger)
+        digest = hashlib.sha256(
+            (prev + "\n" + json.dumps(entry, sort_keys=True)).encode()
+        ).hexdigest()
+        lines.append(json.dumps({"hash": digest, "entry": entry}, sort_keys=True))
+        prev = digest
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+
+
+def read_trigger_log(path: str | Path) -> list[FiredTrigger]:
+    """Read a trigger log, verifying every chained hash.
+
+    Raises ValueError when the chain does not verify.
+    """
+    prev = "0" * 64
+    out: list[FiredTrigger] = []
+    text = Path(path).read_text(encoding="utf-8")
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        obj = json.loads(line)
+        expected = hashlib.sha256(
+            (prev + "\n" + json.dumps(obj["entry"], sort_keys=True)).encode()
+        ).hexdigest()
+        if obj["hash"] != expected:
+            raise ValueError(f"trigger log corrupt at line {lineno}")
+        prev = obj["hash"]
+        out.append(fired_from_dict(obj["entry"]))
+    return out

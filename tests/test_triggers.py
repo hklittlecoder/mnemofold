@@ -1,11 +1,18 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from mnemofold.triggers import (
+    FiredTrigger,
     QuietHours,
     TriggerEngine,
     TriggerKind,
     TriggerRule,
     TriggerSeverity,
+    fired_from_dict,
+    fired_to_dict,
+    read_trigger_log,
+    write_trigger_log,
 )
 
 NOW = datetime(2026, 3, 15, 10, 0, 0, tzinfo=UTC)
@@ -217,3 +224,62 @@ def test_counts_by_kind():
     counts = engine.counts_by_kind()
     assert counts["overdue_alert"] == 2
     assert counts["stale_thread"] == 1
+
+
+def _fired(rule_id="r1", kind=TriggerKind.OVERDUE_ALERT, suppressed=False) -> FiredTrigger:
+    return FiredTrigger(
+        rule_id=rule_id,
+        kind=kind,
+        target_id="c1",
+        fired_at=NOW,
+        severity=TriggerSeverity.WARNING,
+        message="overdue",
+        suppressed=suppressed,
+        suppress_reason="quiet_hours" if suppressed else "",
+    )
+
+
+class TestTriggerLogPersistence:
+    def test_dict_roundtrip(self):
+        trigger = _fired()
+        assert fired_from_dict(fired_to_dict(trigger)) == trigger
+
+    def test_dict_roundtrip_suppressed(self):
+        trigger = _fired(suppressed=True)
+        restored = fired_from_dict(fired_to_dict(trigger))
+        assert restored.suppressed is True
+        assert restored.suppress_reason == "quiet_hours"
+
+    def test_write_read_roundtrip(self, tmp_path):
+        path = tmp_path / "triggers.jsonl"
+        triggers = [_fired("r1"), _fired("r2", kind=TriggerKind.STALE_THREAD)]
+        write_trigger_log(path, triggers)
+        assert read_trigger_log(path) == triggers
+
+    def test_log_is_deterministic(self, tmp_path):
+        a = tmp_path / "a.jsonl"
+        b = tmp_path / "b.jsonl"
+        triggers = [_fired("r1"), _fired("r2")]
+        write_trigger_log(a, triggers)
+        write_trigger_log(b, triggers)
+        assert a.read_text() == b.read_text()
+
+    def test_tampering_is_detected(self, tmp_path):
+        path = tmp_path / "triggers.jsonl"
+        write_trigger_log(path, [_fired("r1"), _fired("r2")])
+        lines = path.read_text().splitlines()
+        lines[0] = lines[0].replace("r1", "r9")
+        path.write_text("\n".join(lines) + "\n")
+        with pytest.raises(ValueError, match="corrupt"):
+            read_trigger_log(path)
+
+    def test_empty_log_reads_empty(self, tmp_path):
+        path = tmp_path / "empty.jsonl"
+        write_trigger_log(path, [])
+        assert read_trigger_log(path) == []
+
+    def test_suppressed_flag_survives_log(self, tmp_path):
+        path = tmp_path / "triggers.jsonl"
+        write_trigger_log(path, [_fired("r1", suppressed=True)])
+        restored = read_trigger_log(path)
+        assert restored[0].suppressed is True
