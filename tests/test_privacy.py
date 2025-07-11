@@ -323,3 +323,62 @@ class TestNameDetection:
         assert starts == sorted(starts)
         kinds = {m.kind for m in matches}
         assert PiiKind.EMAIL in kinds and PiiKind.NAME in kinds
+
+
+class TestPiiSweep:
+    def test_overlapping_matches_are_deduped_by_vault(self):
+        # An email contains a phone-like digit run in some corpora; sealing
+        # must not corrupt offsets. Use adjacent PII to stress ordering.
+        text = "Reach me at bob@x.io or 555-000-1111 soon."
+        vault = RedactionVault(salt="s")
+        sealed = vault.seal(text)
+        assert vault.unseal(sealed) == text
+
+    def test_mask_mode_uses_kind_labels(self):
+        text = "card 4111 1111 1111 1111 on file"
+        out = redact(text, detect_pii(text), mode=RedactionMode.MASK)
+        assert "4111" not in out
+        assert "[credit_card]" in out
+
+    def test_remove_mode_deletes_span(self):
+        text = "email: alice@example.com!"
+        out = redact(text, detect_pii(text), mode=RedactionMode.REMOVE)
+        assert "alice@example.com" not in out
+        assert out == "email: !"
+
+    def test_hash_mode_is_stable_per_salt(self):
+        text = "bob@x.io"
+        matches = detect_pii(text)
+        a = redact(text, matches, mode=RedactionMode.HASH, hash_salt="s")
+        b = redact(text, matches, mode=RedactionMode.HASH, hash_salt="s")
+        c = redact(text, matches, mode=RedactionMode.HASH, hash_salt="other")
+        assert a == b
+        assert a != c
+
+    def test_invalid_luhn_not_flagged_as_card(self):
+        # 4111 1111 1111 1112 fails Luhn
+        matches = detect_pii("card 4111 1111 1111 1112 here")
+        assert not [m for m in matches if m.kind == PiiKind.CREDIT_CARD]
+
+    def test_valid_luhn_flagged(self):
+        matches = detect_pii("card 4111 1111 1111 1111 here")
+        assert any(m.kind == PiiKind.CREDIT_CARD for m in matches)
+
+    def test_short_digit_run_not_a_card(self):
+        matches = detect_pii("order 12345 shipped")
+        assert not [m for m in matches if m.kind == PiiKind.CREDIT_CARD]
+
+    def test_address_detected(self):
+        matches = detect_pii("Send to 1600 Pennsylvania Avenue")
+        assert any(m.kind == PiiKind.ADDRESS for m in matches)
+
+    def test_matches_sorted_by_position(self):
+        text = "bob@x.io then 555-000-1111 then 12 Main Street"
+        starts = [m.start for m in detect_pii(text)]
+        assert starts == sorted(starts)
+
+    def test_empty_text_no_matches(self):
+        assert detect_pii("") == []
+
+    def test_redact_without_matches_is_identity(self):
+        assert redact("plain text", []) == "plain text"
