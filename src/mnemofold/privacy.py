@@ -271,6 +271,34 @@ def can_read(consumer_tier: PrivacyTier, resource_tier: PrivacyTier) -> bool:
     return _TIER_ORDER[consumer_tier] >= _TIER_ORDER[resource_tier]
 
 
+def can_write(actor_tier: PrivacyTier, resource_tier: PrivacyTier) -> bool:
+    """Return True if an actor at ``actor_tier`` may write ``resource_tier``.
+
+    An actor may only write content classified at or below its own tier:
+    a PUBLIC actor cannot create RESTRICTED records, while a RESTRICTED
+    actor may write anything down to PUBLIC.
+    """
+    return _TIER_ORDER[actor_tier] >= _TIER_ORDER[resource_tier]
+
+
+def can_export(resource_tier: PrivacyTier, target_tier: PrivacyTier) -> bool:
+    """Return True if content may move from ``resource_tier`` to ``target_tier``.
+
+    Enforces the never-leak-downward invariant: a resource may be
+    exported only into a context whose tier is at least as high as the
+    resource's own classification. Exporting RESTRICTED content into a
+    PUBLIC context is refused.
+    """
+    return _TIER_ORDER[target_tier] >= _TIER_ORDER[resource_tier]
+
+
+def export_violations(resource_tier: PrivacyTier, target_tier: PrivacyTier) -> list[str]:
+    """Human-readable reasons an export would leak; empty when allowed."""
+    if can_export(resource_tier, target_tier):
+        return []
+    return [f"cannot export {resource_tier.value} content to lower tier {target_tier.value}"]
+
+
 def _select_non_overlapping(matches: list[PiiMatch]) -> list[PiiMatch]:
     """Greedily keep leftmost-longest matches, dropping overlaps.
 

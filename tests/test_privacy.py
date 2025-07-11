@@ -10,8 +10,11 @@ from mnemofold.privacy import (
     PrivacyTier,
     RedactionMode,
     RedactionVault,
+    can_export,
     can_read,
+    can_write,
     detect_pii,
+    export_violations,
     redact,
 )
 
@@ -382,3 +385,53 @@ class TestPiiSweep:
 
     def test_redact_without_matches_is_identity(self):
         assert redact("plain text", []) == "plain text"
+
+
+TIERS = [
+    PrivacyTier.PUBLIC,
+    PrivacyTier.INTERNAL,
+    PrivacyTier.CONFIDENTIAL,
+    PrivacyTier.RESTRICTED,
+]
+
+
+class TestTierRules:
+    def test_read_allows_equal_and_higher_to_lower(self):
+        for consumer in TIERS:
+            for resource in TIERS:
+                expected = TIERS.index(consumer) >= TIERS.index(resource)
+                assert can_read(consumer, resource) is expected
+
+    def test_write_matrix(self):
+        for actor in TIERS:
+            for resource in TIERS:
+                expected = TIERS.index(actor) >= TIERS.index(resource)
+                assert can_write(actor, resource) is expected
+
+    def test_public_actor_cannot_write_restricted(self):
+        assert can_write(PrivacyTier.PUBLIC, PrivacyTier.RESTRICTED) is False
+
+    def test_export_never_leaks_downward(self):
+        for resource in TIERS:
+            for target in TIERS:
+                expected = TIERS.index(target) >= TIERS.index(resource)
+                assert can_export(resource, target) is expected
+        # explicit downward leaks refused
+        assert can_export(PrivacyTier.RESTRICTED, PrivacyTier.PUBLIC) is False
+        assert can_export(PrivacyTier.CONFIDENTIAL, PrivacyTier.INTERNAL) is False
+
+    def test_export_upward_allowed(self):
+        assert can_export(PrivacyTier.PUBLIC, PrivacyTier.RESTRICTED) is True
+        assert can_export(PrivacyTier.INTERNAL, PrivacyTier.CONFIDENTIAL) is True
+
+    def test_export_same_tier_allowed(self):
+        for tier in TIERS:
+            assert can_export(tier, tier) is True
+
+    def test_violations_message_when_leaking(self):
+        violations = export_violations(PrivacyTier.RESTRICTED, PrivacyTier.PUBLIC)
+        assert len(violations) == 1
+        assert "restricted" in violations[0] and "public" in violations[0]
+
+    def test_no_violations_when_allowed(self):
+        assert export_violations(PrivacyTier.PUBLIC, PrivacyTier.RESTRICTED) == []
