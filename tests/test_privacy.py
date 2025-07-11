@@ -435,3 +435,72 @@ class TestTierRules:
 
     def test_no_violations_when_allowed(self):
         assert export_violations(PrivacyTier.PUBLIC, PrivacyTier.RESTRICTED) == []
+
+
+class TestAccessLogChain:
+    def _entry(self, principal="alice", action="read", resource="r1", granted=True):
+        return AccessLogEntry(
+            timestamp=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+            principal=principal,
+            action=action,
+            resource_id=resource,
+            granted=granted,
+            reason="policy",
+        )
+
+    def test_empty_log_verifies(self):
+        log = AccessLog()
+        assert log.verify()
+        assert log.head_hash() == "0" * 64
+
+    def test_record_and_verify(self):
+        log = AccessLog()
+        log.record(self._entry())
+        log.record(self._entry(principal="bob"))
+        assert log.verify()
+        assert len(log.entries()) == 2
+
+    def test_head_hash_advances(self):
+        log = AccessLog()
+        h0 = log.head_hash()
+        log.record(self._entry())
+        h1 = log.head_hash()
+        log.record(self._entry(principal="bob"))
+        h2 = log.head_hash()
+        assert len({h0, h1, h2}) == 3
+
+    def test_tampering_detected(self):
+        log = AccessLog()
+        log.record(self._entry(principal="alice"))
+        log.record(self._entry(principal="bob"))
+        assert log.verify()
+        log._entries[0].granted = False
+        assert not log.verify()
+
+    def test_reordering_detected(self):
+        log = AccessLog()
+        log.record(self._entry(principal="alice", resource="r1"))
+        log.record(self._entry(principal="bob", resource="r2"))
+        log._entries.reverse()
+        assert not log.verify()
+
+    def test_dropping_entry_detected(self):
+        log = AccessLog()
+        log.record(self._entry(principal="alice"))
+        log.record(self._entry(principal="bob"))
+        del log._entries[0]
+        assert not log.verify()
+
+    def test_chain_is_deterministic(self):
+        a, b = AccessLog(), AccessLog()
+        for log in (a, b):
+            log.record(self._entry())
+            log.record(self._entry(principal="bob"))
+        assert a.head_hash() == b.head_hash()
+
+    def test_count_by_principal_still_works(self):
+        log = AccessLog()
+        log.record(self._entry(principal="alice"))
+        log.record(self._entry(principal="alice"))
+        log.record(self._entry(principal="bob"))
+        assert log.count_by_principal() == {"alice": 2, "bob": 1}

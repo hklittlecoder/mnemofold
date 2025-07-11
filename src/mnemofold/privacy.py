@@ -234,17 +234,57 @@ class AccessLogEntry:
     reason: str
 
 
+def _entry_payload(entry: AccessLogEntry) -> str:
+    """Canonical, deterministic serialization of one access-log entry."""
+    return "|".join(
+        [
+            entry.timestamp.isoformat(),
+            entry.principal,
+            entry.action,
+            entry.resource_id,
+            "1" if entry.granted else "0",
+            entry.reason,
+        ]
+    )
+
+
 class AccessLog:
-    """Append-only access log.  Entries cannot be modified once added."""
+    """Append-only, hash-chained access log.
+
+    Each entry is chained to its predecessor with SHA-256, so editing,
+    reordering, or dropping a recorded entry is detected by
+    :meth:`verify`. The log itself never mutates an entry in place.
+    """
+
+    _GENESIS = "0" * 64
 
     def __init__(self) -> None:
         self._entries: list[AccessLogEntry] = []
+        self._hashes: list[str] = []
 
-    def record(self, entry: AccessLogEntry) -> None:
+    def record(self, entry: AccessLogEntry) -> str:
+        """Append an entry, chaining it to the current head. Returns its hash."""
+        prev = self._hashes[-1] if self._hashes else self._GENESIS
+        digest = hashlib.sha256((prev + "\n" + _entry_payload(entry)).encode()).hexdigest()
         self._entries.append(entry)
+        self._hashes.append(digest)
+        return digest
 
     def entries(self) -> list[AccessLogEntry]:
         return list(self._entries)
+
+    def head_hash(self) -> str:
+        return self._hashes[-1] if self._hashes else self._GENESIS
+
+    def verify(self) -> bool:
+        """Recompute the chain and confirm it matches the stored hashes."""
+        prev = self._GENESIS
+        for entry, stored in zip(self._entries, self._hashes, strict=True):
+            expected = hashlib.sha256((prev + "\n" + _entry_payload(entry)).encode()).hexdigest()
+            if expected != stored:
+                return False
+            prev = stored
+        return True
 
     def count_by_principal(self) -> dict[str, int]:
         counts: dict[str, int] = {}
