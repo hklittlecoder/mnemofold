@@ -10,10 +10,12 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from mnemofold.deletion import DeletionEngine, DeletionReason, DeletionReport, GraphDeletionTarget
 from mnemofold.graph import WorkstreamGraph
 from mnemofold.memory import MemoryItem, MemoryStore
 
@@ -642,3 +644,66 @@ def fuse_score(
         weights.relevance * relevance + weights.importance * salience + weights.recency * recency
     )
     return round(fused, 6)
+
+
+# --- Right-to-forget wiring -----------------------------------------------------
+
+
+def build_deletion_engine(
+    engine: RetrievalEngine,
+    is_protected: Callable[[str], bool] | None = None,
+) -> DeletionEngine:
+    """Wire a DeletionEngine to a retrieval engine's store and index.
+
+    Cascade follows each item's ``metadata["cascade"]`` list of related
+    ids (e.g. memories derived from the deleted one). Deleting removes
+    the item from the memory store and the BM25 index, then tombstones
+    the id so it cannot be re-derived or re-indexed later. Lookups go
+    through ``peek`` so deletion never inflates access statistics.
+    """
+    store = engine.store
+
+    def get_target(key: str) -> GraphDeletionTarget | None:
+        item = store.peek(key)
+        if item is None:
+            return None
+        outgoing = [str(related) for related in item.metadata.get("cascade", [])]
+        return GraphDeletionTarget(key=key, kind="memory", outgoing_relations=outgoing)
+
+    def delete_item(key: str, kind: str, reason: DeletionReason, now: datetime) -> bool:
+        store.remove(key)
+        engine.index.remove(key)
+        for holders in engine._entity_index.values():
+            holders.discard(key)
+        return store.peek(key) is None
+
+    return DeletionEngine(
+        get_target=get_target,
+        delete_item=delete_item,
+        is_protected=is_protected or (lambda _key: False),
+    )
+
+
+def forget(
+    deletion: DeletionEngine,
+    item_id: str,
+    reason: DeletionReason,
+    now: datetime,
+    requested_by: str | None = None,
+) -> DeletionReport:
+    """Delete an item with cascade and return the audit report."""
+    return deletion.delete(item_id, reason, now, requested_by=requested_by)
+
+
+def safe_index(engine: RetrievalEngine, deletion: DeletionEngine, item: MemoryItem) -> bool:
+    """Index an item unless its id is tombstoned (blocks re-derivation).
+
+    Returns True when the item was stored and indexed, False when a
+    tombstone refused it — deleted content must never reappear through
+    re-ingestion of surviving sources.
+    """
+    if deletion.is_deleted(item.item_id):
+        return False
+    engine.store.add(item)
+    engine.index_item(item)
+    return True

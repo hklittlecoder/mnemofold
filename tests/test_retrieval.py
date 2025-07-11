@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
+from mnemofold.deletion import DeletionReason
 from mnemofold.factory import WorkHistoryFactory
 from mnemofold.graph import Edge, EdgeType, Node, NodeType, WorkstreamGraph
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
@@ -12,11 +15,16 @@ from mnemofold.retrieval import (
     FusionWeights,
     ParsedQuery,
     RetrievalEngine,
+    build_deletion_engine,
+    forget,
     fuse_score,
     mmr_rerank,
     parse_query,
+    safe_index,
     tokenize,
 )
+
+FORGET_NOW = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
 
 
 class TestTokenizer:
@@ -844,3 +852,89 @@ class TestRetrievalBoundaries:
         results = engine.search("release report")
         assert all(r.item_id != "a" for r in results)
         assert engine.property_citations_resolve("release report")
+
+
+class TestDeletionWiring:
+    def _engine(self) -> RetrievalEngine:
+        store = MemoryStore()
+        engine = RetrievalEngine(store=store)
+        items = [
+            MemoryItem(
+                item_id="root",
+                tier=MemoryTier.SEMANTIC,
+                content="quarterly budget secrets",
+                metadata={"cascade": ["derived"]},
+            ),
+            MemoryItem(
+                item_id="derived",
+                tier=MemoryTier.SEMANTIC,
+                content="derived budget summary",
+            ),
+            MemoryItem(
+                item_id="other",
+                tier=MemoryTier.SEMANTIC,
+                content="unrelated holiday notes",
+            ),
+        ]
+        for item in items:
+            store.add(item)
+            engine.index_item(item)
+        return engine
+
+    def test_forget_cascades_and_clears_index(self):
+        engine = self._engine()
+        deletion = build_deletion_engine(engine)
+        report = forget(deletion, "root", DeletionReason.FORGET, FORGET_NOW)
+        assert report.total_deleted == 2  # root + derived
+        assert engine.store.peek("root") is None
+        assert engine.store.peek("derived") is None
+        assert engine.store.peek("other") is not None
+        assert "root" not in engine.index.ids()
+        assert "derived" not in engine.index.ids()
+
+    def test_deleted_content_not_searchable(self):
+        engine = self._engine()
+        deletion = build_deletion_engine(engine)
+        assert engine.search("budget")
+        forget(deletion, "root", DeletionReason.FORGET, FORGET_NOW)
+        results = engine.search("budget")
+        assert all(r.item_id not in {"root", "derived"} for r in results)
+
+    def test_tombstone_blocks_reindex(self):
+        engine = self._engine()
+        deletion = build_deletion_engine(engine)
+        forget(deletion, "root", DeletionReason.FORGET, FORGET_NOW)
+        revived = MemoryItem(
+            item_id="root", tier=MemoryTier.SEMANTIC, content="budget secrets return"
+        )
+        assert safe_index(engine, deletion, revived) is False
+        assert engine.store.peek("root") is None
+
+    def test_protected_item_blocks_cascade(self):
+        engine = self._engine()
+        deletion = build_deletion_engine(engine, is_protected=lambda k: k == "derived")
+        report = forget(deletion, "root", DeletionReason.FORGET, FORGET_NOW)
+        assert "derived" in report.blocked
+        assert engine.store.peek("derived") is not None
+
+    def test_safe_index_allows_fresh_items(self):
+        engine = self._engine()
+        deletion = build_deletion_engine(engine)
+        fresh = MemoryItem(item_id="fresh", tier=MemoryTier.SEMANTIC, content="new note")
+        assert safe_index(engine, deletion, fresh) is True
+        assert engine.store.peek("fresh") is not None
+
+    def test_peek_does_not_record_access(self):
+        store = MemoryStore()
+        store.add(MemoryItem("i1", MemoryTier.EPISODIC, "c"))
+        assert store.peek("i1") is not None
+        assert store.peek("i1").access_count == 0
+        assert store.get("i1") is not None
+        assert store.peek("i1").access_count == 1
+
+    def test_forget_missing_target_records_error(self):
+        engine = self._engine()
+        deletion = build_deletion_engine(engine)
+        report = forget(deletion, "ghost", DeletionReason.FORGET, FORGET_NOW)
+        assert report.total_deleted == 0
+        assert any("ghost" in err for err in report.errors)

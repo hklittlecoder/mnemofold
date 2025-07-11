@@ -119,6 +119,15 @@ class MemoryStore:
             item.access_count += 1
         return item
 
+    def peek(self, item_id: str) -> MemoryItem | None:
+        """Get an item by ID without recording an access.
+
+        Deletion, audit, and policy paths must not inflate access counts
+        or recency — those feed back into promotion and decay, so a
+        right-to-forget sweep must not make surviving items look hotter.
+        """
+        return self._items.get(item_id)
+
     def remove(self, item_id: str) -> None:
         """Remove an item from memory."""
         if item_id in self._items:
