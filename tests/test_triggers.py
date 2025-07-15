@@ -283,3 +283,115 @@ class TestTriggerLogPersistence:
         write_trigger_log(path, [_fired("r1", suppressed=True)])
         restored = read_trigger_log(path)
         assert restored[0].suppressed is True
+
+
+def _rule(rule_id, fire_at, *, kind=TriggerKind.FOLLOW_UP, target="t1", **kwargs) -> TriggerRule:
+    return TriggerRule(rule_id=rule_id, kind=kind, target_id=target, fire_at=fire_at, **kwargs)
+
+
+class TestTriggerEngineSweep:
+    def test_fires_exactly_at_fire_at(self):
+        engine = TriggerEngine()
+        engine.add_rule(_rule("r1", NOW))
+        assert engine.tick(NOW - timedelta(seconds=1)) == []
+        fired = engine.tick(NOW)
+        assert len(fired) == 1
+        assert fired[0].rule_id == "r1"
+
+    def test_cooldown_blocks_then_allows(self):
+        engine = TriggerEngine()
+        engine.add_rule(_rule("r1", NOW, cooldown=timedelta(hours=1)))
+        assert len(engine.tick(NOW)) == 1
+        assert engine.tick(NOW + timedelta(minutes=30)) == []
+        assert len(engine.tick(NOW + timedelta(hours=1))) == 1
+
+    def test_dedupe_window_suppresses_second_rule_on_same_target(self):
+        engine = TriggerEngine()
+        engine.add_rule(
+            _rule(
+                "r1",
+                NOW,
+                kind=TriggerKind.STALE_THREAD,
+                target="t1",
+                dedupe_window=timedelta(hours=2),
+            )
+        )
+        engine.add_rule(
+            _rule(
+                "r2",
+                NOW,
+                kind=TriggerKind.STALE_THREAD,
+                target="t1",
+                dedupe_window=timedelta(hours=2),
+            )
+        )
+        fired = engine.tick(NOW)
+        assert [f.rule_id for f in fired] == ["r1"]
+        # within the window everything on (t1, stale_thread) stays quiet
+        assert engine.tick(NOW + timedelta(minutes=30)) == []
+        # after the window the first rule in order fires again and re-arms
+        # the shared (target, kind) key, so r2 stays suppressed: exactly
+        # one trigger per target per window
+        later = engine.tick(NOW + timedelta(hours=3))
+        assert [f.rule_id for f in later] == ["r1"]
+        # a different target is untouched by t1's dedupe state
+        engine.add_rule(_rule("r3", NOW, kind=TriggerKind.STALE_THREAD, target="t2"))
+        other = engine.tick(NOW + timedelta(hours=3, minutes=1))
+        assert [f.rule_id for f in other] == ["r3"]
+
+    def test_quiet_hours_suppress_low_severity_only(self):
+        quiet = QuietHours(
+            start_hour=22, end_hour=7, suppress_severity_below=TriggerSeverity.CRITICAL
+        )
+        engine = TriggerEngine(quiet_hours=quiet)
+        engine.add_rule(
+            _rule("info", datetime(2026, 3, 15, 23, 0, tzinfo=UTC), severity=TriggerSeverity.INFO)
+        )
+        engine.add_rule(
+            _rule(
+                "crit", datetime(2026, 3, 15, 23, 0, tzinfo=UTC), severity=TriggerSeverity.CRITICAL
+            )
+        )
+        fired = engine.tick(datetime(2026, 3, 15, 23, 30, tzinfo=UTC))
+        by_id = {f.rule_id: f for f in fired}
+        assert by_id["info"].suppressed is True
+        assert by_id["info"].suppress_reason == "quiet_hours"
+        assert by_id["crit"].suppressed is False
+
+    def test_report_coverage_suppresses(self):
+        engine = TriggerEngine(is_covered_by_report=lambda tid, kind: tid == "covered")
+        engine.add_rule(_rule("r1", NOW, target="covered"))
+        engine.add_rule(_rule("r2", NOW, target="other"))
+        fired = engine.tick(NOW)
+        by_id = {f.rule_id: f for f in fired}
+        assert by_id["r1"].suppressed is True
+        assert by_id["r1"].suppress_reason == "covered_by_report"
+        assert by_id["r2"].suppressed is False
+
+    def test_active_triggers_exclude_suppressed(self):
+        quiet = QuietHours(start_hour=0, end_hour=23)
+        engine = TriggerEngine(quiet_hours=quiet)
+        engine.add_rule(_rule("r1", NOW, severity=TriggerSeverity.INFO))
+        engine.tick(NOW)
+        assert engine.active_triggers() == []
+        assert len(engine.fired()) == 1
+
+    def test_counts_by_kind(self):
+        engine = TriggerEngine()
+        engine.add_rule(_rule("r1", NOW, kind=TriggerKind.STALE_THREAD, target="a"))
+        engine.add_rule(_rule("r2", NOW, kind=TriggerKind.STALE_THREAD, target="b"))
+        engine.add_rule(_rule("r3", NOW, kind=TriggerKind.DAILY_SUMMARY, target="c"))
+        engine.tick(NOW)
+        assert engine.counts_by_kind() == {"stale_thread": 2, "daily_summary": 1}
+
+    def test_fire_sequence_is_deterministic(self):
+        def run() -> list[str]:
+            engine = TriggerEngine()
+            engine.add_rule(_rule("r1", NOW, cooldown=timedelta(hours=1)))
+            log: list[str] = []
+            for hours in range(4):
+                for fired in engine.tick(NOW + timedelta(minutes=30 * hours)):
+                    log.append(fired.rule_id)
+            return log
+
+        assert run() == run()
