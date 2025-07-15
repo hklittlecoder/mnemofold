@@ -200,3 +200,68 @@ def test_empty_trace(tmp_path):
     assert reader.count() == 0
     assert reader.verify()
     assert reader.entries() == []
+
+
+class TestReplayResume:
+    def test_resume_continues_chain(self, tmp_path):
+        path = tmp_path / "trace.jsonl"
+        with TraceRecorder(path) as rec:
+            rec.record_event("t0", {"a": 1})
+            rec.record_decision("t1", {"b": 2})
+        # simulate a process restart: a fresh recorder on the same file
+        with TraceRecorder(path) as resumed:
+            assert resumed.count() == 2
+            resumed.record_event("t2", {"c": 3})
+        reader = TraceReader(path)
+        assert reader.verify()  # one unbroken chain across the restart
+        assert reader.count() == 3
+
+    def test_resume_on_fresh_file_starts_at_genesis(self, tmp_path):
+        path = tmp_path / "new.jsonl"
+        rec = TraceRecorder(path)
+        assert rec.count() == 0
+        assert rec.last_hash() == "0" * 64
+        rec.close()
+
+    def test_replay_from_last_checkpoint_skips_prefix(self, tmp_path):
+        path = tmp_path / "trace.jsonl"
+        with TraceRecorder(path) as rec:
+            rec.record_event("t0", {"step": 0})
+            rec.checkpoint("t1", {"at": 1})
+            rec.record_event("t2", {"step": 2})
+            rec.record_event("t3", {"step": 3})
+        seen: list[dict] = []
+        count = Replayer(path).replay_from_last_checkpoint(
+            on_event=lambda payload: seen.append(payload)
+        )
+        assert count == 2
+        assert seen == [{"step": 2}, {"step": 3}]
+
+    def test_replay_from_checkpoint_without_checkpoint_replays_all(self, tmp_path):
+        path = tmp_path / "trace.jsonl"
+        with TraceRecorder(path) as rec:
+            rec.record_event("t0", {"step": 0})
+            rec.record_event("t1", {"step": 1})
+        seen: list[dict] = []
+        count = Replayer(path).replay_from_last_checkpoint(
+            on_event=lambda payload: seen.append(payload)
+        )
+        assert count == 2
+        assert len(seen) == 2
+
+    def test_resumed_recorder_hashes_match_single_session(self, tmp_path):
+        # Writing 2+1 across a restart yields the same chain as 3 at once.
+        split = tmp_path / "split.jsonl"
+        with TraceRecorder(split) as rec:
+            rec.record_event("t0", {"a": 1})
+            rec.record_event("t1", {"a": 2})
+        with TraceRecorder(split) as rec:
+            rec.record_event("t2", {"a": 3})
+
+        single = tmp_path / "single.jsonl"
+        with TraceRecorder(single) as rec:
+            rec.record_event("t0", {"a": 1})
+            rec.record_event("t1", {"a": 2})
+            rec.record_event("t2", {"a": 3})
+
+        assert TraceReader(split).head() == TraceReader(single).head()

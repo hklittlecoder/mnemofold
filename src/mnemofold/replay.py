@@ -71,6 +71,10 @@ class TraceRecorder:
         self._prev_hash = "0" * 64
         self._count = 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Resume an existing trace: adopt its head hash and entry count so
+        # appended entries continue the chain instead of restarting it.
+        if self.path.exists() and self.path.stat().st_size > 0:
+            self._prev_hash, self._count = TraceReader(self.path).head()
         self._fp = self.path.open("a", encoding="utf-8")
 
     def record(self, entry: TraceEntry) -> str:
@@ -161,6 +165,13 @@ class TraceReader:
     def count(self) -> int:
         return len(self._iter_lines())
 
+    def head(self) -> tuple[str, int]:
+        """Return (last_hash, entry_count) after verifying the whole chain."""
+        lines = self._iter_lines()
+        if not lines:
+            return "0" * 64, 0
+        return lines[-1]["hash"], len(lines)
+
 
 def trace_diff(
     path_a: str | Path,
@@ -217,8 +228,54 @@ class Replayer:
 
         Returns the number of entries replayed.
         """
+        return self._replay_entries(
+            self._reader.entries(),
+            on_event,
+            on_decision,
+            on_recall,
+            on_receipt,
+            on_checkpoint,
+        )
+
+    def replay_from_last_checkpoint(
+        self,
+        on_event: Callable[[dict[str, Any]], None] | None,
+        on_decision: Callable[[dict[str, Any]], None] | None = None,
+        on_recall: Callable[[dict[str, Any]], None] | None = None,
+        on_receipt: Callable[[dict[str, Any]], None] | None = None,
+        on_checkpoint: Callable[[dict[str, Any]], None] | None = None,
+    ) -> int:
+        """Resume replay from just after the last checkpoint entry.
+
+        Models crash recovery: everything before the last checkpoint is
+        already durable, so only the tail is replayed. With no checkpoint
+        present this replays the whole trace, same as :meth:`replay`.
+        """
+        entries = self._reader.entries()
+        start = 0
+        for index, entry in enumerate(entries):
+            if entry.kind == TraceEntryKind.CHECKPOINT:
+                start = index + 1
+        return self._replay_entries(
+            entries[start:],
+            on_event,
+            on_decision,
+            on_recall,
+            on_receipt,
+            on_checkpoint,
+        )
+
+    def _replay_entries(
+        self,
+        entries: list[TraceEntry],
+        on_event: Callable[[dict[str, Any]], None] | None,
+        on_decision: Callable[[dict[str, Any]], None] | None,
+        on_recall: Callable[[dict[str, Any]], None] | None,
+        on_receipt: Callable[[dict[str, Any]], None] | None,
+        on_checkpoint: Callable[[dict[str, Any]], None] | None,
+    ) -> int:
         count = 0
-        for entry in self._reader.entries():
+        for entry in entries:
             if entry.kind == TraceEntryKind.EVENT and on_event:
                 on_event(entry.payload)
             elif entry.kind == TraceEntryKind.DECISION and on_decision:
