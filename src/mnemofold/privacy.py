@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 
 class PiiKind(StrEnum):
@@ -184,6 +185,57 @@ class PolicyEngine:
 
     def rules(self) -> list[PolicyRule]:
         return list(self._rules)
+
+    def explain(
+        self,
+        action: str,
+        principal: str,
+        resource_tier: PrivacyTier,
+    ) -> list[dict[str, Any]]:
+        """Rule-by-rule audit trail for one decision.
+
+        Every configured rule gets one entry, in declaration order:
+        whether it matched and, when it did not, which predicate
+        (action / principal / tier) excluded it. Denials and ASK
+        fallbacks can therefore always be traced back to concrete rules.
+        """
+        trail: list[dict[str, Any]] = []
+        for rule in self._rules:
+            if rule.action != "*" and rule.action != action:
+                trail.append(
+                    {
+                        "rule_id": rule.rule_id,
+                        "matched": False,
+                        "reason": f"action != {rule.action}",
+                    }
+                )
+                continue
+            if rule.principal is not None and rule.principal != principal:
+                trail.append(
+                    {
+                        "rule_id": rule.rule_id,
+                        "matched": False,
+                        "reason": f"principal != {rule.principal}",
+                    }
+                )
+                continue
+            if rule.resource_tier is not None and rule.resource_tier != resource_tier:
+                trail.append(
+                    {
+                        "rule_id": rule.rule_id,
+                        "matched": False,
+                        "reason": f"tier != {rule.resource_tier.value}",
+                    }
+                )
+                continue
+            trail.append(
+                {
+                    "rule_id": rule.rule_id,
+                    "matched": True,
+                    "reason": f"effect={rule.effect.value} precedence={rule.precedence}",
+                }
+            )
+        return trail
 
     def evaluate(
         self,

@@ -504,3 +504,68 @@ class TestAccessLogChain:
         log.record(self._entry(principal="alice"))
         log.record(self._entry(principal="bob"))
         assert log.count_by_principal() == {"alice": 2, "bob": 1}
+
+
+class TestPolicyExplain:
+    def _engine(self) -> PolicyEngine:
+        engine = PolicyEngine(
+            [
+                PolicyRule(
+                    rule_id="deny-restricted",
+                    effect=PolicyEffect.DENY,
+                    action="export",
+                    resource_tier=PrivacyTier.RESTRICTED,
+                    precedence=10,
+                ),
+                PolicyRule(
+                    rule_id="allow-alice",
+                    effect=PolicyEffect.ALLOW,
+                    action="read",
+                    principal="alice",
+                    precedence=50,
+                ),
+                PolicyRule(
+                    rule_id="ask-default", effect=PolicyEffect.ASK, action="*", precedence=100
+                ),
+            ]
+        )
+        return engine
+
+    def test_trail_covers_every_rule_in_order(self):
+        trail = self._engine().explain("read", "alice", PrivacyTier.INTERNAL)
+        assert [entry["rule_id"] for entry in trail] == [
+            "deny-restricted",
+            "allow-alice",
+            "ask-default",
+        ]
+
+    def test_skip_reasons_are_specific(self):
+        trail = self._engine().explain("read", "alice", PrivacyTier.INTERNAL)
+        assert trail[0]["matched"] is False
+        assert "action != export" in trail[0]["reason"]
+        assert trail[1]["matched"] is True
+        assert "effect=allow" in trail[1]["reason"]
+
+    def test_principal_mismatch_reported(self):
+        trail = self._engine().explain("read", "bob", PrivacyTier.INTERNAL)
+        allow_entry = next(e for e in trail if e["rule_id"] == "allow-alice")
+        assert allow_entry["matched"] is False
+        assert "principal != alice" in allow_entry["reason"]
+
+    def test_tier_mismatch_reported(self):
+        trail = self._engine().explain("export", "bob", PrivacyTier.PUBLIC)
+        deny_entry = next(e for e in trail if e["rule_id"] == "deny-restricted")
+        assert deny_entry["matched"] is False
+        assert "tier != restricted" in deny_entry["reason"]
+
+    def test_explain_agrees_with_evaluate(self):
+        engine = self._engine()
+        decision = engine.evaluate("export", "bob", PrivacyTier.RESTRICTED)
+        trail = engine.explain("export", "bob", PrivacyTier.RESTRICTED)
+        matched = [e["rule_id"] for e in trail if e["matched"]]
+        assert decision.effect == PolicyEffect.DENY
+        assert matched[0] == "deny-restricted"
+
+    def test_wildcard_always_matches(self):
+        trail = self._engine().explain("anything", "nobody", PrivacyTier.PUBLIC)
+        assert trail[-1]["matched"] is True
