@@ -284,3 +284,50 @@ class TestDesignerPersona:
         factory.add_persona(Persona("x1", "Solo", PersonaRole.ENGINEER, projects=["alpha"]))
         _, manifest = factory.generate()
         assert manifest.personas == ["x1"]
+
+
+class TestFactorySweep:
+    def test_same_seed_is_reproducible(self):
+        _, a = WorkHistoryFactory(seed=99, days=30).generate()
+        _, b = WorkHistoryFactory(seed=99, days=30).generate()
+        assert a.checksum == b.checksum
+        assert a.event_count == b.event_count
+
+    def test_different_seeds_diverge(self):
+        _, a = WorkHistoryFactory(seed=1, days=30).generate()
+        _, b = WorkHistoryFactory(seed=2, days=30).generate()
+        assert a.checksum != b.checksum
+
+    def test_event_count_scales_with_days(self):
+        _, small = WorkHistoryFactory(seed=7, days=10).generate()
+        _, large = WorkHistoryFactory(seed=7, days=60).generate()
+        assert large.event_count > small.event_count
+
+    def test_events_are_chronologically_sorted(self):
+        events, _ = WorkHistoryFactory(seed=7, days=30).generate()
+        stamps = [e.timestamp for e in events]
+        assert stamps == sorted(stamps)
+
+    def test_event_ids_are_sequential(self):
+        events, _ = WorkHistoryFactory(seed=7, days=14).generate()
+        assert [e.event_id for e in events] == [f"evt-{i:06d}" for i in range(len(events))]
+
+    def test_planted_counts_match_manifest(self):
+        events, manifest = WorkHistoryFactory(seed=7, days=120).generate()
+        assert manifest.planted_commitments >= 2
+        assert manifest.planted_decisions >= 1
+        assert manifest.planted_contradictions >= 1
+        assert manifest.event_count == len(events)
+
+    def test_all_event_types_are_valid(self):
+        events, _ = WorkHistoryFactory(seed=7, days=60).generate()
+        valid = {t.value for t in EventType}
+        for e in events:
+            assert e.event_type in valid
+
+    def test_to_event_conversion_roundtrips(self):
+        events, _ = WorkHistoryFactory(seed=7, days=14).generate()
+        for synthetic in events[:20]:
+            typed = synthetic.to_event()
+            assert typed.event_type.value == synthetic.event_type
+            assert typed.content  # non-empty payload
