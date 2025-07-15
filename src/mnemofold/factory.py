@@ -15,8 +15,47 @@ import random
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import Any
 
 from mnemofold.events import Event, EventType
+
+
+@dataclass(frozen=True, slots=True)
+class FactoryConfig:
+    """Knobs for shaping a synthetic work history.
+
+    Defaults reproduce the baseline history exactly: generation is
+    byte-stable for a given ``(seed, days, config)``. Every non-default
+    knob only consumes randomness when it is enabled, so turning one
+    feature on never silently reshapes an unrelated stream — a history
+    generated with defaults has the same checksum before and after new
+    knobs are introduced.
+    """
+
+    include_designer: bool = False
+    noise_level: float = 0.0
+    workflow_repeats: int = 0
+    contradiction_kinds: tuple[str, ...] = ("due_date",)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "include_designer": self.include_designer,
+            "noise_level": self.noise_level,
+            "workflow_repeats": self.workflow_repeats,
+            "contradiction_kinds": list(self.contradiction_kinds),
+        }
+
+    def validate(self) -> None:
+        if not 0.0 <= self.noise_level <= 1.0:
+            raise ValueError("noise_level must be within [0, 1]")
+        if self.workflow_repeats < 0:
+            raise ValueError("workflow_repeats must be non-negative")
+        known = {"due_date", "owner", "decision"}
+        unknown = sorted(set(self.contradiction_kinds) - known)
+        if unknown:
+            raise ValueError(f"unknown contradiction kinds: {unknown}")
+        if not self.contradiction_kinds:
+            raise ValueError("contradiction_kinds must not be empty")
 
 
 class PersonaRole(StrEnum):
@@ -84,6 +123,7 @@ class HistoryManifest:
     planted_decisions: int
     planted_contradictions: int
     checksum: str = ""
+    config: dict = field(default_factory=dict)
 
 
 class WorkHistoryFactory:
@@ -94,9 +134,13 @@ class WorkHistoryFactory:
     truth for evaluation.
     """
 
-    def __init__(self, seed: int = 42, days: int = 180) -> None:
+    def __init__(
+        self, seed: int = 42, days: int = 180, config: FactoryConfig | None = None
+    ) -> None:
         self.seed = seed
         self.days = days
+        self.config = config or FactoryConfig()
+        self.config.validate()
         self.start_date = datetime(2025, 1, 1, tzinfo=UTC)
         self.personas: list[Persona] = []
         self.projects: list[str] = []
@@ -145,6 +189,7 @@ class WorkHistoryFactory:
             planted_decisions=sum(1 for p in self._planted if p.kind == "decision"),
             planted_contradictions=sum(1 for p in self._planted if p.kind == "contradiction"),
             checksum=self._compute_checksum(),
+            config=self.config.to_dict(),
         )
         return self._events, manifest
 

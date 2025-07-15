@@ -1,9 +1,11 @@
+from dataclasses import FrozenInstanceError
 from datetime import datetime
 
 import pytest
 
 from mnemofold.events import EventType
 from mnemofold.factory import (
+    FactoryConfig,
     Persona,
     PersonaRole,
     PlantedItem,
@@ -205,3 +207,44 @@ def test_synthetic_event_to_event_rejects_unknown_type():
     synth = SyntheticEvent("e", "not_a_type", "2026-01-02T00:00:00+00:00", {})
     with pytest.raises(ValueError):
         synth.to_event()
+
+
+class TestFactoryConfig:
+    def test_defaults_reproduce_baseline_checksum(self):
+        baseline = WorkHistoryFactory(seed=5, days=20)
+        with_default = WorkHistoryFactory(seed=5, days=20, config=FactoryConfig())
+        _, m1 = baseline.generate()
+        _, m2 = with_default.generate()
+        assert m1.checksum == m2.checksum
+        assert m1.event_count == m2.event_count
+
+    def test_manifest_carries_config_echo(self):
+        config = FactoryConfig(noise_level=0.5, workflow_repeats=2, include_designer=True)
+        _, manifest = WorkHistoryFactory(seed=5, days=20, config=config).generate()
+        assert manifest.config["noise_level"] == 0.5
+        assert manifest.config["workflow_repeats"] == 2
+        assert manifest.config["include_designer"] is True
+        assert manifest.config["contradiction_kinds"] == ["due_date"]
+
+    def test_default_config_echo(self):
+        _, manifest = WorkHistoryFactory(seed=5, days=10).generate()
+        assert manifest.config == FactoryConfig().to_dict()
+
+    def test_config_validation_rejects_bad_values(self):
+        with pytest.raises(ValueError, match="noise_level"):
+            WorkHistoryFactory(config=FactoryConfig(noise_level=1.5))
+        with pytest.raises(ValueError, match="workflow_repeats"):
+            WorkHistoryFactory(config=FactoryConfig(workflow_repeats=-1))
+        with pytest.raises(ValueError, match="unknown contradiction kinds"):
+            WorkHistoryFactory(config=FactoryConfig(contradiction_kinds=("bogus",)))
+        with pytest.raises(ValueError, match="must not be empty"):
+            WorkHistoryFactory(config=FactoryConfig(contradiction_kinds=()))
+
+    def test_config_is_immutable(self):
+        config = FactoryConfig()
+        with pytest.raises(FrozenInstanceError):
+            config.noise_level = 0.9  # type: ignore[misc]
+
+    def test_to_dict_roundtrip_stable(self):
+        config = FactoryConfig(noise_level=0.3, workflow_repeats=1)
+        assert config.to_dict() == config.to_dict()
