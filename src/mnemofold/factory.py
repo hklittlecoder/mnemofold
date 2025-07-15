@@ -161,6 +161,16 @@ class WorkHistoryFactory:
 
         if not self.personas:
             self._default_personas()
+            if self.config.include_designer:
+                self.add_persona(
+                    Persona(
+                        "p4",
+                        "Dana Kim",
+                        PersonaRole.DESIGNER,
+                        team="growth",
+                        projects=["beta", "gamma"],
+                    )
+                )
         if not self.projects:
             self._default_projects()
 

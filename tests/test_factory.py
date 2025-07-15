@@ -248,3 +248,39 @@ class TestFactoryConfig:
     def test_to_dict_roundtrip_stable(self):
         config = FactoryConfig(noise_level=0.3, workflow_repeats=1)
         assert config.to_dict() == config.to_dict()
+
+
+class TestDesignerPersona:
+    DESIGNER_TYPES = {"document_change", "note", "meeting_held", "mail_sent"}
+
+    def test_default_history_has_three_personas(self):
+        _, manifest = WorkHistoryFactory(seed=3, days=14).generate()
+        assert manifest.personas == ["p1", "p2", "p3"]
+
+    def test_flag_adds_designer(self):
+        factory = WorkHistoryFactory(seed=3, days=14, config=FactoryConfig(include_designer=True))
+        _, manifest = factory.generate()
+        assert manifest.personas == ["p1", "p2", "p3", "p4"]
+        designer = factory.personas[3]
+        assert designer.role == PersonaRole.DESIGNER
+        assert designer.name == "Dana Kim"
+
+    def test_designer_produces_role_events(self):
+        factory = WorkHistoryFactory(seed=3, days=30, config=FactoryConfig(include_designer=True))
+        events, _ = factory.generate()
+        designer_events = [e for e in events if e.payload.get("persona_id") == "p4"]
+        assert designer_events
+        assert all(e.event_type in self.DESIGNER_TYPES for e in designer_events)
+
+    def test_default_stream_unchanged_by_flag_presence(self):
+        _, plain = WorkHistoryFactory(seed=3, days=14).generate()
+        _, flagged = WorkHistoryFactory(
+            seed=3, days=14, config=FactoryConfig(include_designer=False)
+        ).generate()
+        assert plain.checksum == flagged.checksum
+
+    def test_custom_personas_ignore_designer_flag(self):
+        factory = WorkHistoryFactory(seed=3, days=14, config=FactoryConfig(include_designer=True))
+        factory.add_persona(Persona("x1", "Solo", PersonaRole.ENGINEER, projects=["alpha"]))
+        _, manifest = factory.generate()
+        assert manifest.personas == ["x1"]
