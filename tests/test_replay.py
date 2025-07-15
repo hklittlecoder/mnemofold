@@ -265,3 +265,66 @@ class TestReplayResume:
             rec.record_event("t2", {"a": 3})
 
         assert TraceReader(split).head() == TraceReader(single).head()
+
+
+class TestReplayByteIdentity:
+    def _write(self, path) -> None:
+        with TraceRecorder(path) as rec:
+            rec.record_event("t0", {"a": 1})
+            rec.record_decision("t1", {"b": 2})
+            rec.record_recall("t2", {"c": 3})
+            rec.record_receipt("t3", {"d": 4})
+
+    def test_identical_inputs_produce_identical_bytes(self, tmp_path):
+        a = tmp_path / "a.jsonl"
+        b = tmp_path / "b.jsonl"
+        self._write(a)
+        self._write(b)
+        assert a.read_bytes() == b.read_bytes()
+
+    def test_verify_passes_on_clean_trace(self, tmp_path):
+        path = tmp_path / "t.jsonl"
+        self._write(path)
+        assert TraceReader(path).verify()
+
+    def test_mid_tampering_breaks_verify(self, tmp_path):
+        path = tmp_path / "t.jsonl"
+        self._write(path)
+        text = path.read_text()
+        path.write_text(text.replace('"a": 1', '"a": 9'))
+        assert not TraceReader(path).verify()
+
+    def test_reordering_breaks_verify(self, tmp_path):
+        path = tmp_path / "t.jsonl"
+        self._write(path)
+        lines = path.read_text().splitlines()
+        lines[0], lines[1] = lines[1], lines[0]
+        path.write_text("\n".join(lines) + "\n")
+        assert not TraceReader(path).verify()
+
+    def test_trace_diff_reports_equality(self, tmp_path):
+        a = tmp_path / "a.jsonl"
+        b = tmp_path / "b.jsonl"
+        self._write(a)
+        self._write(b)
+        diff = trace_diff(a, b)
+        assert diff["equal"] is True
+        assert diff["first_mismatch"] is None
+        assert diff["a_count"] == diff["b_count"] == 4
+
+    def test_trace_diff_locates_first_mismatch(self, tmp_path):
+        a = tmp_path / "a.jsonl"
+        b = tmp_path / "b.jsonl"
+        self._write(a)
+        with TraceRecorder(b) as rec:
+            rec.record_event("t0", {"a": 1})
+            rec.record_decision("t1", {"b": 999})  # differs here
+        diff = trace_diff(a, b)
+        assert diff["equal"] is False
+        assert diff["first_mismatch"] == 1
+
+    def test_entry_roundtrip(self):
+        entry = TraceEntry(
+            kind=TraceEntryKind.EVENT, timestamp="t", payload={"x": 1}, entry_id="e1"
+        )
+        assert TraceEntry.from_dict(entry.to_dict()) == entry
