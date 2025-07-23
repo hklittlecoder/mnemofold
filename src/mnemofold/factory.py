@@ -11,6 +11,7 @@ All output is reproducible from a seed and a manifest.
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -692,9 +693,20 @@ class WorkHistoryFactory:
             ev.event_id = f"evt-{i:06d}"
 
     def _compute_checksum(self) -> str:
+        """Checksum covering event identity AND payload content.
+
+        Including the canonical payload JSON means two histories with the
+        same ids/types/timestamps but different content (e.g. different
+        persona names) no longer collide — the manifest digest reflects
+        the actual bytes a consumer would ingest.
+        """
         h = hashlib.sha256()
         for ev in self._events:
             h.update(ev.event_id.encode())
             h.update(ev.timestamp.encode())
             h.update(ev.event_type.encode())
+            payload = json.dumps(
+                ev.payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
+            )
+            h.update(payload.encode())
         return h.hexdigest()[:16]

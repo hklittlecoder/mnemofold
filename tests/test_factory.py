@@ -623,3 +623,35 @@ class TestContradictionRecovery:
             ref = e.payload.get("contradiction_ref")
             if ref and "project" in e.payload:
                 assert e.payload["project"] in projects or e.payload["project"] == "general"
+
+
+class TestPayloadChecksum:
+    def _factory_with_name(self, name: str) -> WorkHistoryFactory:
+        factory = WorkHistoryFactory(seed=5, days=20)
+        factory.add_persona(Persona("p1", name, PersonaRole.PM, projects=["alpha"]))
+        factory.add_project("alpha")
+        return factory
+
+    def test_checksum_still_deterministic(self):
+        _, a = WorkHistoryFactory(seed=5, days=30).generate()
+        _, b = WorkHistoryFactory(seed=5, days=30).generate()
+        assert a.checksum == b.checksum
+        assert len(a.checksum) == 16
+
+    def test_payload_difference_changes_checksum(self):
+        # Same seed, same structure (one persona, same projects), only the
+        # display name differs — the old identity-only checksum missed this,
+        # the payload-covering checksum must not.
+        _, m1 = self._factory_with_name("Alice Chen").generate()
+        _, m2 = self._factory_with_name("Alicia Chen").generate()
+        assert m1.event_count == m2.event_count
+        assert m1.checksum != m2.checksum
+
+    def test_structure_still_covered(self):
+        _, a = WorkHistoryFactory(seed=5, days=20).generate()
+        _, b = WorkHistoryFactory(seed=5, days=21).generate()
+        assert a.checksum != b.checksum
+
+    def test_checksum_is_lowercase_hex(self):
+        _, manifest = WorkHistoryFactory(seed=5, days=10).generate()
+        assert all(c in "0123456789abcdef" for c in manifest.checksum)
