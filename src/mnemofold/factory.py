@@ -549,19 +549,33 @@ class WorkHistoryFactory:
     def _plant_contradictions(self) -> None:
         rng = self._rng
         count = min(max(1, self.days // 60), 10)
+        kinds = self.config.contradiction_kinds
         for i in range(count):
             commitments = [p for p in self._planted if p.kind == "commitment"]
             if not commitments:
                 break
-            target = rng.choice(commitments)
-            original_due = target.data["due_date"]
-            due_dt = datetime.fromisoformat(original_due)
-            shift_days = rng.choice([-3, -1, 5, 7])
-            new_due_dt = due_dt + timedelta(days=shift_days)
-            notify_before = min(3, max(1, (due_dt - self.start_date).days - 1))
-            ts_dt = due_dt - timedelta(days=notify_before)
+            # Only draw a kind when there is a choice, so single-kind
+            # configs (the default) keep the exact same random stream.
+            kind = rng.choice(tuple(kinds)) if len(kinds) > 1 else kinds[0]
             cid = f"planted-contradiction-{i}"
-            item = PlantedItem(
+            if kind == "owner":
+                self._plant_owner_contradiction(cid, rng, commitments)
+            else:
+                self._plant_due_date_contradiction(cid, rng, commitments)
+
+    def _plant_due_date_contradiction(
+        self, cid: str, rng: random.Random, commitments: list[PlantedItem]
+    ) -> None:
+        target = rng.choice(commitments)
+        original_due = target.data["due_date"]
+        due_dt = datetime.fromisoformat(original_due)
+        shift_days = rng.choice([-3, -1, 5, 7])
+        new_due_dt = due_dt + timedelta(days=shift_days)
+        notify_before = min(3, max(1, (due_dt - self.start_date).days - 1))
+        ts_dt = due_dt - timedelta(days=notify_before)
+        reason = rng.choice(["scope change", "resource shift", "priority change"])
+        self._planted.append(
+            PlantedItem(
                 item_id=cid,
                 kind="contradiction",
                 data={
@@ -569,25 +583,65 @@ class WorkHistoryFactory:
                     "change": "due_date",
                     "old_value": original_due,
                     "new_value": new_due_dt.isoformat(),
-                    "reason": rng.choice(["scope change", "resource shift", "priority change"]),
+                    "reason": reason,
                 },
             )
-            self._planted.append(item)
-            self._events.append(
-                SyntheticEvent(
-                    event_id="",
-                    event_type="mail_sent",
-                    timestamp=ts_dt.isoformat(),
-                    payload={
-                        "from": f"{target.data['owed_by']}@co.example",
-                        "subject": "Updating deadline",
-                        "body": f"New deadline: {new_due_dt.date()}",
-                        "commitment_ref": target.item_id,
-                        "contradiction_ref": cid,
-                        "project": target.data["project"],
-                    },
-                )
+        )
+        self._events.append(
+            SyntheticEvent(
+                event_id="",
+                event_type="mail_sent",
+                timestamp=ts_dt.isoformat(),
+                payload={
+                    "from": f"{target.data['owed_by']}@co.example",
+                    "subject": "Updating deadline",
+                    "body": f"New deadline: {new_due_dt.date()}",
+                    "commitment_ref": target.item_id,
+                    "contradiction_ref": cid,
+                    "project": target.data["project"],
+                },
             )
+        )
+
+    def _plant_owner_contradiction(
+        self, cid: str, rng: random.Random, commitments: list[PlantedItem]
+    ) -> None:
+        target = rng.choice(commitments)
+        original_owner = target.data["owed_by"]
+        candidates = [p.person_id for p in self.personas if p.person_id != original_owner]
+        new_owner = rng.choice(candidates) if candidates else original_owner
+        due_dt = datetime.fromisoformat(target.data["due_date"])
+        notify_before = min(3, max(1, (due_dt - self.start_date).days - 1))
+        ts_dt = due_dt - timedelta(days=notify_before)
+        reason = rng.choice(["reassignment", "ownership transfer", "team change"])
+        self._planted.append(
+            PlantedItem(
+                item_id=cid,
+                kind="contradiction",
+                data={
+                    "target_commitment": target.item_id,
+                    "change": "owner",
+                    "old_value": original_owner,
+                    "new_value": new_owner,
+                    "reason": reason,
+                },
+            )
+        )
+        self._events.append(
+            SyntheticEvent(
+                event_id="",
+                event_type="mail_sent",
+                timestamp=ts_dt.isoformat(),
+                payload={
+                    "from": f"{original_owner}@co.example",
+                    "subject": "Reassigning owner",
+                    "body": f"{new_owner} will now own this commitment.",
+                    "commitment_ref": target.item_id,
+                    "contradiction_ref": cid,
+                    "project": target.data["project"],
+                },
+            )
+        )
 
     def _assign_ids(self) -> None:
         for i, ev in enumerate(self._events):

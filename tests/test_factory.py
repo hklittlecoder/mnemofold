@@ -466,3 +466,57 @@ class TestExpandedFactoryIntegration:
         assert manifest.planted_commitments >= 2
         refs = {p.item_id for p in factory.planted_items() if p.kind == "commitment"}
         assert refs  # ground truth is still planted alongside the noise
+
+
+class TestOwnerContradictions:
+    def test_default_plants_only_due_date_contradictions(self):
+        factory = WorkHistoryFactory(seed=13, days=180)
+        factory.generate()
+        contradictions = [p for p in factory.planted_items() if p.kind == "contradiction"]
+        assert contradictions
+        assert all(c.data["change"] == "due_date" for c in contradictions)
+
+    def test_owner_kind_plants_reassignments(self):
+        factory = WorkHistoryFactory(
+            seed=13, days=180, config=FactoryConfig(contradiction_kinds=("owner",))
+        )
+        factory.generate()
+        contradictions = [p for p in factory.planted_items() if p.kind == "contradiction"]
+        assert contradictions
+        assert all(c.data["change"] == "owner" for c in contradictions)
+
+    def test_owner_change_names_a_different_owner(self):
+        factory = WorkHistoryFactory(
+            seed=13, days=180, config=FactoryConfig(contradiction_kinds=("owner",))
+        )
+        factory.generate()
+        owners = [c.data for c in factory.planted_items() if c.kind == "contradiction"]
+        assert any(d["old_value"] != d["new_value"] for d in owners)
+
+    def test_mixed_kinds_produce_both_changes(self):
+        factory = WorkHistoryFactory(
+            seed=13, days=180, config=FactoryConfig(contradiction_kinds=("due_date", "owner"))
+        )
+        factory.generate()
+        changes = {c.data["change"] for c in factory.planted_items() if c.kind == "contradiction"}
+        assert changes <= {"due_date", "owner"}
+        assert len(changes) >= 1
+
+    def test_owner_contradiction_emits_event(self):
+        factory = WorkHistoryFactory(
+            seed=13, days=180, config=FactoryConfig(contradiction_kinds=("owner",))
+        )
+        events, _ = factory.generate()
+        reassign = [e for e in events if e.payload.get("subject") == "Reassigning owner"]
+        assert reassign
+        assert all("contradiction_ref" in e.payload for e in reassign)
+
+    def test_contradiction_targets_are_real_commitments(self):
+        factory = WorkHistoryFactory(
+            seed=13, days=180, config=FactoryConfig(contradiction_kinds=("owner",))
+        )
+        factory.generate()
+        commitment_ids = {p.item_id for p in factory.planted_items() if p.kind == "commitment"}
+        for c in factory.planted_items():
+            if c.kind == "contradiction":
+                assert c.data["target_commitment"] in commitment_ids
