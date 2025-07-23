@@ -371,3 +371,46 @@ class TestNoiseEvents:
             seed=7, days=60, config=FactoryConfig(noise_level=1.0)
         ).generate()
         assert loud.event_count > quiet.event_count
+
+
+class TestRepeatedWorkflows:
+    def test_default_has_no_workflow_events(self):
+        events, _ = WorkHistoryFactory(seed=7, days=30).generate()
+        assert not any("workflow" in e.payload for e in events)
+
+    def test_repeats_zero_stream_matches_default(self):
+        _, plain = WorkHistoryFactory(seed=7, days=30).generate()
+        _, zero = WorkHistoryFactory(
+            seed=7, days=30, config=FactoryConfig(workflow_repeats=0)
+        ).generate()
+        assert plain.checksum == zero.checksum
+
+    def test_runs_emit_ordered_steps(self):
+        events, _ = WorkHistoryFactory(
+            seed=7, days=60, config=FactoryConfig(workflow_repeats=3)
+        ).generate()
+        wf = [e for e in events if e.payload.get("workflow") == "release"]
+        assert len(wf) == 9  # 3 runs x 3 steps
+        runs: dict[str, list[str]] = {}
+        for e in sorted(wf, key=lambda e: e.timestamp):
+            runs.setdefault(e.payload["run_id"], []).append(e.payload["step"])
+        assert len(runs) == 3
+        for steps in runs.values():
+            assert steps == ["draft", "review", "publish"]
+
+    def test_workflow_metadata_matches_miner_contract(self):
+        events, _ = WorkHistoryFactory(
+            seed=7, days=60, config=FactoryConfig(workflow_repeats=2)
+        ).generate()
+        for e in events:
+            if e.payload.get("workflow"):
+                assert {"workflow", "run_id", "step"} <= set(e.payload)
+
+    def test_workflow_events_stay_within_history_window(self):
+        events, manifest = WorkHistoryFactory(
+            seed=7, days=30, config=FactoryConfig(workflow_repeats=4)
+        ).generate()
+        start = manifest.start_date
+        for e in events:
+            if e.payload.get("workflow"):
+                assert e.timestamp >= start

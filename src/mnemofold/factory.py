@@ -181,6 +181,9 @@ class WorkHistoryFactory:
             else:
                 self._generate_workday(day_date)
 
+        if self.config.workflow_repeats > 0:
+            self._generate_workflows()
+
         self._plant_commitments()
         self._plant_decisions()
         self._plant_contradictions()
@@ -428,6 +431,42 @@ class WorkHistoryFactory:
                 payload=payload,
             )
         )
+
+    def _generate_workflows(self) -> None:
+        """Emit repeated workflow runs for playbook recurrence mining.
+
+        Each run is the same ordered step sequence (draft -> review ->
+        publish) stamped with workflow / run_id / step metadata so the
+        fold miner can detect the recurrence and propose a playbook.
+        Only runs when ``workflow_repeats > 0``, so the default stream is
+        untouched; events land in the right place via the final sort.
+        """
+        rng = self._rng
+        steps = ("draft", "review", "publish")
+        for run in range(self.config.workflow_repeats):
+            persona = rng.choice(self.personas)
+            project = rng.choice(persona.projects) if persona.projects else "general"
+            day_offset = rng.randint(0, max(0, self.days - len(steps) - 1))
+            run_id = f"release-run-{run}"
+            for step_index, step in enumerate(steps):
+                ts = self.start_date + timedelta(days=day_offset + step_index, hours=10)
+                self._events.append(
+                    SyntheticEvent(
+                        event_id="",
+                        event_type="task_update",
+                        timestamp=ts.isoformat(),
+                        payload={
+                            "persona_id": persona.person_id,
+                            "project": project,
+                            "task_id": f"{run_id}-{step}",
+                            "status": "in_progress",
+                            "workflow": "release",
+                            "run_id": run_id,
+                            "step": step,
+                            "step_index": step_index,
+                        },
+                    )
+                )
 
     def _plant_commitments(self) -> None:
         rng = self._rng
