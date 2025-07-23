@@ -576,3 +576,50 @@ class TestDecisionContradictions:
         _, a = WorkHistoryFactory(seed=17, days=180, config=config).generate()
         _, b = WorkHistoryFactory(seed=17, days=180, config=config).generate()
         assert a.checksum == b.checksum
+
+
+class TestContradictionRecovery:
+    def _all_kinds_factory(self, seed: int = 23) -> WorkHistoryFactory:
+        return WorkHistoryFactory(
+            seed=seed,
+            days=180,
+            config=FactoryConfig(contradiction_kinds=("due_date", "owner", "decision")),
+        )
+
+    def test_manifest_count_matches_planted(self):
+        factory = self._all_kinds_factory()
+        _, manifest = factory.generate()
+        planted = [p for p in factory.planted_items() if p.kind == "contradiction"]
+        assert manifest.planted_contradictions == len(planted)
+
+    def test_every_contradiction_has_an_event(self):
+        factory = self._all_kinds_factory()
+        events, _ = factory.generate()
+        refs_in_events = {
+            e.payload.get("contradiction_ref") for e in events if e.payload.get("contradiction_ref")
+        }
+        for c in factory.planted_items():
+            if c.kind == "contradiction":
+                assert c.item_id in refs_in_events
+
+    def test_each_change_kind_is_represented(self):
+        factory = self._all_kinds_factory(seed=29)
+        factory.generate()
+        changes = {c.data["change"] for c in factory.planted_items() if c.kind == "contradiction"}
+        # with three kinds enabled and enough contradictions, all appear
+        assert changes == {"due_date", "owner", "decision"}
+
+    def test_contradiction_ids_are_unique(self):
+        factory = self._all_kinds_factory()
+        factory.generate()
+        ids = [c.item_id for c in factory.planted_items() if c.kind == "contradiction"]
+        assert len(ids) == len(set(ids))
+
+    def test_contradictions_reference_known_projects(self):
+        factory = self._all_kinds_factory()
+        _, manifest = factory.generate()
+        projects = set(manifest.projects)
+        for e in factory._events:
+            ref = e.payload.get("contradiction_ref")
+            if ref and "project" in e.payload:
+                assert e.payload["project"] in projects or e.payload["project"] == "general"
