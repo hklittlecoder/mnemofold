@@ -231,6 +231,45 @@ class WorkHistoryFactory:
                 ts = day_date + timedelta(hours=base_hour + hour_offset)
                 event_type = self._pick_event_type(rng, persona)
                 self._make_event(event_type, persona, ts)
+        if self.config.noise_level > 0:
+            self._generate_noise(day_date)
+
+    def _generate_noise(self, day_date: datetime) -> None:
+        """Emit low-signal chatter events, each tagged ``noise=True``.
+
+        The count scales with ``noise_level`` (0-1). At the default level
+        of 0 this method is never called, so the base stream is untouched.
+        Noise events carry no planted references and are clearly labeled
+        so evaluation can filter or account for them honestly.
+        """
+        rng = self._rng
+        persona = rng.choice(self.personas)
+        project = rng.choice(persona.projects) if persona.projects else "general"
+        count = rng.randint(0, max(1, int(self.config.noise_level * 6)))
+        for _ in range(count):
+            hour_offset = rng.uniform(0, 8)
+            ts = day_date + timedelta(hours=self._work_start_hour(persona) + hour_offset)
+            kind = rng.choice(["chat_message", "note"])
+            payload: dict = {"persona_id": persona.person_id, "project": project, "noise": True}
+            if kind == "chat_message":
+                payload.update(
+                    {
+                        "channel": f"#{project}",
+                        "message": rng.choice(["ack", "thanks!", "on it", "brb", "+1", "noted"]),
+                    }
+                )
+            else:
+                payload.update(
+                    {
+                        "title": "scratch",
+                        "content": rng.choice(["todo: revisit", "hmm", "parking lot idea"]),
+                    }
+                )
+            self._events.append(
+                SyntheticEvent(
+                    event_id="", event_type=kind, timestamp=ts.isoformat(), payload=payload
+                )
+            )
 
     def _generate_weekend_day(self, day_date: datetime) -> None:
         rng = self._rng

@@ -331,3 +331,43 @@ class TestFactorySweep:
             typed = synthetic.to_event()
             assert typed.event_type.value == synthetic.event_type
             assert typed.content  # non-empty payload
+
+
+class TestNoiseEvents:
+    def test_default_has_no_noise(self):
+        events, _ = WorkHistoryFactory(seed=7, days=30).generate()
+        assert not any(e.payload.get("noise") for e in events)
+
+    def test_noise_level_zero_stream_matches_default(self):
+        _, plain = WorkHistoryFactory(seed=7, days=30).generate()
+        _, zero = WorkHistoryFactory(
+            seed=7, days=30, config=FactoryConfig(noise_level=0.0)
+        ).generate()
+        assert plain.checksum == zero.checksum
+
+    def test_high_noise_adds_labeled_events(self):
+        events, _ = WorkHistoryFactory(
+            seed=7, days=60, config=FactoryConfig(noise_level=1.0)
+        ).generate()
+        noise = [e for e in events if e.payload.get("noise") is True]
+        assert noise, "high noise level should produce noise events"
+        assert all(e.event_type in {"chat_message", "note"} for e in noise)
+
+    def test_noise_events_carry_no_planted_refs(self):
+        events, _ = WorkHistoryFactory(
+            seed=7, days=60, config=FactoryConfig(noise_level=1.0)
+        ).generate()
+        for e in events:
+            if e.payload.get("noise"):
+                assert "commitment_ref" not in e.payload
+                assert "decision_ref" not in e.payload
+                assert "contradiction_ref" not in e.payload
+
+    def test_more_noise_means_more_events(self):
+        _, quiet = WorkHistoryFactory(
+            seed=7, days=60, config=FactoryConfig(noise_level=0.0)
+        ).generate()
+        _, loud = WorkHistoryFactory(
+            seed=7, days=60, config=FactoryConfig(noise_level=1.0)
+        ).generate()
+        assert loud.event_count > quiet.event_count
