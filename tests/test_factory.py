@@ -13,6 +13,8 @@ from mnemofold.factory import (
     WorkdayPattern,
     WorkHistoryFactory,
 )
+from mnemofold.fold import Folder
+from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 
 
 def test_persona_defaults():
@@ -414,3 +416,53 @@ class TestRepeatedWorkflows:
         for e in events:
             if e.payload.get("workflow"):
                 assert e.timestamp >= start
+
+
+class TestExpandedFactoryIntegration:
+    def _workflow_store(self, factory: WorkHistoryFactory) -> MemoryStore:
+        events, _ = factory.generate()
+        store = MemoryStore()
+        for e in events:
+            if e.payload.get("workflow") != "release":
+                continue
+            store.add(
+                MemoryItem(
+                    item_id=e.payload["task_id"],
+                    tier=MemoryTier.EPISODIC,
+                    content=f"{e.payload['step']} for {e.payload['project']}",
+                    created_at=e.timestamp,
+                    metadata={
+                        "workflow": e.payload["workflow"],
+                        "run_id": e.payload["run_id"],
+                        "step": e.payload["step"],
+                    },
+                )
+            )
+        return store
+
+    def test_fold_mines_factory_workflows(self):
+        factory = WorkHistoryFactory(seed=11, days=90, config=FactoryConfig(workflow_repeats=4))
+        store = self._workflow_store(factory)
+        report = Folder(min_episodes_for_recurrence=3).fold(store, "2025-06-01T00:00:00+00:00")
+        seqs = [p for p in report.recurrence_proposals if p.get("kind") == "workflow_sequence"]
+        assert any(
+            p["workflow"] == "release"
+            and p["steps"] == ["draft", "review", "publish"]
+            and p["run_count"] == 4
+            for p in seqs
+        )
+
+    def test_expanded_history_stays_deterministic(self):
+        config = FactoryConfig(include_designer=True, noise_level=0.5, workflow_repeats=3)
+        _, a = WorkHistoryFactory(seed=21, days=60, config=config).generate()
+        _, b = WorkHistoryFactory(seed=21, days=60, config=config).generate()
+        assert a.checksum == b.checksum
+        assert a.event_count == b.event_count
+
+    def test_planted_commitments_survive_expansion(self):
+        config = FactoryConfig(include_designer=True, noise_level=0.5, workflow_repeats=3)
+        factory = WorkHistoryFactory(seed=21, days=120, config=config)
+        _, manifest = factory.generate()
+        assert manifest.planted_commitments >= 2
+        refs = {p.item_id for p in factory.planted_items() if p.kind == "commitment"}
+        assert refs  # ground truth is still planted alongside the noise
