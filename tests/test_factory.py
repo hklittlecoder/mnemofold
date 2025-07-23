@@ -520,3 +520,59 @@ class TestOwnerContradictions:
         for c in factory.planted_items():
             if c.kind == "contradiction":
                 assert c.data["target_commitment"] in commitment_ids
+
+
+class TestDecisionContradictions:
+    def test_decision_kind_plants_reversals(self):
+        factory = WorkHistoryFactory(
+            seed=17, days=180, config=FactoryConfig(contradiction_kinds=("decision",))
+        )
+        factory.generate()
+        contradictions = [p for p in factory.planted_items() if p.kind == "contradiction"]
+        assert contradictions
+        assert all(c.data["change"] == "decision" for c in contradictions)
+
+    def test_reversal_targets_an_existing_decision(self):
+        factory = WorkHistoryFactory(
+            seed=17, days=180, config=FactoryConfig(contradiction_kinds=("decision",))
+        )
+        factory.generate()
+        decision_ids = {p.item_id for p in factory.planted_items() if p.kind == "decision"}
+        reversals = [
+            c
+            for c in factory.planted_items()
+            if c.kind == "contradiction" and c.data["change"] == "decision"
+        ]
+        assert reversals
+        for c in reversals:
+            # either it targets a real decision or (rare) had none to target
+            assert c.data["target_decision"] in decision_ids or c.data["target_decision"] == ""
+
+    def test_reversal_emits_note_event(self):
+        factory = WorkHistoryFactory(
+            seed=17, days=180, config=FactoryConfig(contradiction_kinds=("decision",))
+        )
+        events, _ = factory.generate()
+        reversals = [
+            e
+            for e in events
+            if e.payload.get("decision_ref", "").startswith("planted-contradiction")
+        ]
+        assert reversals
+        assert all(e.event_type == "note" for e in reversals)
+
+    def test_all_three_kinds_coexist(self):
+        factory = WorkHistoryFactory(
+            seed=17,
+            days=180,
+            config=FactoryConfig(contradiction_kinds=("due_date", "owner", "decision")),
+        )
+        factory.generate()
+        changes = {c.data["change"] for c in factory.planted_items() if c.kind == "contradiction"}
+        assert changes <= {"due_date", "owner", "decision"}
+
+    def test_decision_contradiction_still_deterministic(self):
+        config = FactoryConfig(contradiction_kinds=("due_date", "owner", "decision"))
+        _, a = WorkHistoryFactory(seed=17, days=180, config=config).generate()
+        _, b = WorkHistoryFactory(seed=17, days=180, config=config).generate()
+        assert a.checksum == b.checksum

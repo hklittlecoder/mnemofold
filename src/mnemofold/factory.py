@@ -560,8 +560,52 @@ class WorkHistoryFactory:
             cid = f"planted-contradiction-{i}"
             if kind == "owner":
                 self._plant_owner_contradiction(cid, rng, commitments)
+            elif kind == "decision":
+                self._plant_decision_contradiction(cid, rng)
             else:
                 self._plant_due_date_contradiction(cid, rng, commitments)
+
+    def _plant_decision_contradiction(self, cid: str, rng: random.Random) -> None:
+        """Plant a decision that reverses an earlier one for the same project."""
+        decisions = [p for p in self._planted if p.kind == "decision"]
+        target = rng.choice(decisions) if decisions else None
+        if target is not None:
+            project = target.data["project"]
+            old_title = target.data["title"]
+        else:
+            project = rng.choice(self.projects) if self.projects else "general"
+            old_title = ""
+        day_offset = rng.randint(0, max(1, self.days - 1))
+        ts = (self.start_date + timedelta(days=day_offset)).isoformat()
+        reason = rng.choice(["new evidence", "requirements changed", "escalation"])
+        self._planted.append(
+            PlantedItem(
+                item_id=cid,
+                kind="contradiction",
+                data={
+                    "target_decision": target.item_id if target else "",
+                    "change": "decision",
+                    "project": project,
+                    "old_value": old_title,
+                    "new_value": f"Decision reversed: {project}",
+                    "reason": reason,
+                },
+            )
+        )
+        self._events.append(
+            SyntheticEvent(
+                event_id="",
+                event_type="note",
+                timestamp=ts,
+                payload={
+                    "title": f"Decision record: {project}",
+                    "content": f"We decided to reverse the earlier {project} decision.",
+                    "decision_ref": cid,
+                    "contradiction_ref": cid,
+                    "project": project,
+                },
+            )
+        )
 
     def _plant_due_date_contradiction(
         self, cid: str, rng: random.Random, commitments: list[PlantedItem]
