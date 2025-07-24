@@ -1,0 +1,42 @@
+{
+  "checksum": "87dd7689b8b60e6f",
+  "days": 14,
+  "event_count": 166,
+  "event_type_counts": {
+    "chat_message": 2,
+    "document_change": 27,
+    "focus_block": 4,
+    "mail_received": 24,
+    "mail_sent": 43,
+    "meeting_held": 13,
+    "meeting_scheduled": 5,
+    "note": 30,
+    "task_update": 18
+  },
+  "first_event": {
+    "id": "evt-000000",
+    "timestamp": "2025-01-01T09:17:59.874963+00:00",
+    "type": "meeting_held"
+  },
+  "last_event": {
+    "id": "evt-000165",
+    "timestamp": "2025-01-14T15:42:55.042724+00:00",
+    "type": "mail_sent"
+  },
+  "personas": [
+    "p1",
+    "p2",
+    "p3"
+  ],
+  "planted": {
+    "commitments": 2,
+    "contradictions": 1,
+    "decisions": 1
+  },
+  "projects": [
+    "alpha",
+    "beta",
+    "gamma"
+  ],
+  "seed": 7
+}
