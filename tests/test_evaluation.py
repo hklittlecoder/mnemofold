@@ -1,3 +1,5 @@
+import pytest
+
 from mnemofold.evaluation import (
     MetricResult,
     MetricStatus,
@@ -300,3 +302,32 @@ class TestCommitmentScenario:
         first = run_commitment_scenario(config).scorecard.to_dict()
         second = run_commitment_scenario(config).scorecard.to_dict()
         assert first == second
+
+
+class TestCommitmentScenarioRobustness:
+    @pytest.mark.parametrize("seed", [3, 11, 42])
+    def test_recall_holds_across_seeds(self, seed):
+        result = run_commitment_scenario(ScenarioConfig(seed=seed, days=60))
+        assert result.measurements["commitment_recall"] == 1.0
+        assert result.scorecard.overall_pass()
+
+    def test_longer_history_plants_more(self):
+        short = run_commitment_scenario(ScenarioConfig(seed=5, days=30))
+        long = run_commitment_scenario(ScenarioConfig(seed=5, days=150))
+        assert long.measurements["planted"] > short.measurements["planted"]
+        assert long.scorecard.overall_pass()
+
+    def test_now_day_shifts_overdue_population(self):
+        early = run_commitment_scenario(ScenarioConfig(seed=42, days=90, now_day=10))
+        late = run_commitment_scenario(ScenarioConfig(seed=42, days=90, now_day=85))
+        assert late.measurements["actual_overdue"] >= early.measurements["actual_overdue"]
+        assert early.scorecard.overall_pass()
+        assert late.scorecard.overall_pass()
+
+    def test_scorecard_serializes_cleanly(self):
+        import json
+
+        card = run_commitment_scenario(ScenarioConfig(seed=42, days=30)).scorecard
+        payload = json.dumps(card.to_dict(), sort_keys=True)
+        assert "commitment_recall" in payload
+        assert json.loads(payload)["scenario"] == card.scenario
