@@ -19,10 +19,11 @@ from typing import Any
 from mnemofold.context import ContextItem, ContextPacker, estimate_tokens
 from mnemofold.events import Event
 from mnemofold.factory import FactoryConfig, HistoryManifest, WorkHistoryFactory
-from mnemofold.ingest import IngestPipeline
+from mnemofold.ingest import CommitmentExtractor, IngestPipeline
 from mnemofold.ledger import Commitment, CommitmentLedger
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.retrieval import RetrievalEngine
+from mnemofold.triage import TriageItem, TriageScorer
 
 
 class MetricStatus(StrEnum):
@@ -408,3 +409,71 @@ def run_commitment_scenario(config: ScenarioConfig | None = None) -> ScenarioRes
     card.add(MetricResult("budget_adherence", measured["budget_adherence"], threshold=1.0))
     card.add(MetricResult("replay_determinism", measured["replay_determinism"], threshold=1.0))
     return ScenarioResult(scorecard=card, measurements=measured)
+
+
+def run_triage_scenario(config: ScenarioConfig | None = None) -> ScenarioResult:
+    """Inbox-triage precision measured against planted commitment mails.
+
+    Commitment flags for the scorer are derived by running the commitment
+    extractor over event text — never from the labels themselves, so the
+    measurement is not circular. precision@k values are reported WITHOUT
+    pass/fail thresholds: they are measurements on synthetic data, and
+    this framework claims no real-inbox quality.
+    """
+    cfg = config or ScenarioConfig()
+    factory, typed, manifest = _typed_history(cfg)
+    extractor = CommitmentExtractor()
+    planted_refs = {p.item_id for p in factory.planted_items() if p.kind == "commitment"}
+
+    items: list[TriageItem] = []
+    labels: dict[str, bool] = {}
+    for event in typed:
+        if event.event_type.value not in ("mail_received", "mail_sent", "chat_message"):
+            continue
+        content = event.content
+        mentions = extractor.extract(event)
+        due = next((m.due for m in mentions if m.due), None)
+        items.append(
+            TriageItem(
+                item_id=event.event_id,
+                title=str(content.get("subject", content.get("channel", ""))),
+                sender=str(content.get("sender", content.get("persona_id", ""))),
+                received_at=event.timestamp.isoformat(),
+                content=str(content.get("body", content.get("text", ""))),
+                mentions_commitment=bool(mentions),
+                has_deadline=due is not None,
+                deadline=f"{due}T00:00:00+00:00" if due else "",
+            )
+        )
+        ref = content.get("commitment_ref")
+        labels[event.event_id] = isinstance(ref, str) and ref in planted_refs
+
+    now = _scenario_now(cfg, factory).isoformat()
+    ranked = TriageScorer().batch_score(items, now)
+    ranked_ids = [r.item_id for r in ranked]
+    relevant = {item_id for item_id, flag in labels.items() if flag}
+    k = max(1, len(relevant))
+
+    card = Scorecard(
+        scenario=f"triage-seed{cfg.seed}-{cfg.days}d",
+        details={
+            "ground_truth": "synthetic planted commitment mails",
+            "inbox_items": len(items),
+            "planted_mails": len(relevant),
+            "checksum": manifest.checksum,
+        },
+    )
+    p_at_1 = precision_at_k(relevant, ranked_ids, 1)
+    p_at_k = precision_at_k(relevant, ranked_ids, k)
+    card.add(MetricResult("triage_precision_at_1", p_at_1))
+    card.add(MetricResult(f"triage_precision_at_{k}", p_at_k))
+    return ScenarioResult(
+        scorecard=card,
+        measurements={
+            "inbox_items": len(items),
+            "planted_mails": len(relevant),
+            "precision_at_1": p_at_1,
+            "precision_at_k": p_at_k,
+            "k": k,
+        },
+    )

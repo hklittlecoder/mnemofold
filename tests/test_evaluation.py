@@ -20,6 +20,7 @@ from mnemofold.evaluation import (
     recall,
     replay_determinism_score,
     run_commitment_scenario,
+    run_triage_scenario,
     stale_fact_avoidance,
 )
 
@@ -331,3 +332,30 @@ class TestCommitmentScenarioRobustness:
         payload = json.dumps(card.to_dict(), sort_keys=True)
         assert "commitment_recall" in payload
         assert json.loads(payload)["scenario"] == card.scenario
+
+
+class TestTriageScenario:
+    def test_reports_measured_precision_without_thresholds(self):
+        result = run_triage_scenario(ScenarioConfig(seed=9, days=30))
+        measured = result.measurements
+        assert measured["inbox_items"] > 0
+        assert measured["planted_mails"] >= 2
+        assert 0.0 <= measured["precision_at_1"] <= 1.0
+        assert 0.0 <= measured["precision_at_k"] <= 1.0
+        # informational metrics carry no threshold -> never a false FAIL
+        assert result.scorecard.overall_pass()
+        assert all(m.threshold is None for m in result.scorecard.metrics)
+
+    def test_details_label_the_ground_truth(self):
+        result = run_triage_scenario(ScenarioConfig(seed=9, days=30))
+        assert result.scorecard.details["ground_truth"] == "synthetic planted commitment mails"
+
+    def test_k_matches_planted_count(self):
+        result = run_triage_scenario(ScenarioConfig(seed=9, days=30))
+        assert result.measurements["k"] == result.measurements["planted_mails"]
+
+    def test_deterministic(self):
+        cfg = ScenarioConfig(seed=9, days=30)
+        first = run_triage_scenario(cfg).scorecard.to_dict()
+        second = run_triage_scenario(cfg).scorecard.to_dict()
+        assert first == second
