@@ -12,8 +12,17 @@ golden tests.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
+
+from mnemofold.context import ContextItem, ContextPacker, estimate_tokens
+from mnemofold.events import Event
+from mnemofold.factory import FactoryConfig, HistoryManifest, WorkHistoryFactory
+from mnemofold.ingest import IngestPipeline
+from mnemofold.ledger import Commitment, CommitmentLedger
+from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
+from mnemofold.retrieval import RetrievalEngine
 
 
 class MetricStatus(StrEnum):
@@ -240,3 +249,162 @@ def aggregate_scorecards(cards: list[Scorecard]) -> Scorecard:
             )
         )
     return agg
+
+
+# --- End-to-end scenarios (synthetic data with planted ground truth) ------------
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioConfig:
+    """Knobs for one evaluation scenario.
+
+    ``now_day`` defaults to half the history so overdue and as-of
+    measurements see a mix of past and future deadlines instead of a
+    degenerate all-overdue set.
+    """
+
+    seed: int = 42
+    days: int = 90
+    now_day: int | None = None
+    top_k: int = 5
+    context_budget: int = 800
+    factory_config: FactoryConfig | None = None
+
+
+@dataclass(slots=True)
+class ScenarioResult:
+    """A scorecard plus measured intermediates for inspection."""
+
+    scorecard: Scorecard
+    measurements: dict[str, Any] = field(default_factory=dict)
+
+
+def _typed_history(
+    config: ScenarioConfig,
+) -> tuple[WorkHistoryFactory, list[Event], HistoryManifest]:
+    factory = WorkHistoryFactory(seed=config.seed, days=config.days, config=config.factory_config)
+    synthetic, manifest = factory.generate()
+    typed = [event.to_event() for event in synthetic]
+    return factory, typed, manifest
+
+
+def _scenario_now(config: ScenarioConfig, factory: WorkHistoryFactory) -> datetime:
+    day = config.now_day if config.now_day is not None else max(1, config.days // 2)
+    return factory.start_date + timedelta(days=day)
+
+
+def _commitment_measurements(config: ScenarioConfig, project: str | None = None) -> dict[str, Any]:
+    """Run factory -> ingest -> ledger -> context and measure everything.
+
+    Shared by the whole-history scenario and the per-project slices. When
+    ``project`` is given, only planted commitments of that project form
+    the ground truth for recall and overdue detection. Every number is
+    measured from the run; nothing is assumed.
+    """
+    factory, typed, manifest = _typed_history(config)
+    pipeline = IngestPipeline()
+    result = pipeline.run(typed)
+    rerun = IngestPipeline().run(typed)
+
+    planted = {
+        item.item_id: item
+        for item in factory.planted_items()
+        if item.kind == "commitment" and (project is None or item.data["project"] == project)
+    }
+    ref_of_key: dict[str, str] = {
+        f"{item.data['description']}\n{item.data['due_date'][:10]}": ref
+        for ref, item in planted.items()
+    }
+
+    structured = [m for m in result.commitments if m.evidence.field == "commitment_ref"]
+    extracted_keys = {f"{m.description}\n{m.due or ''}" for m in structured}
+    planted_keys = set(ref_of_key)
+    recovered = planted_keys & extracted_keys
+
+    now_dt = _scenario_now(config, factory)
+    now = now_dt.isoformat()
+    ledger = CommitmentLedger()
+    for mention in structured:
+        ref = ref_of_key.get(f"{mention.description}\n{mention.due or ''}")
+        if ref is None:
+            continue
+        ledger.add(
+            Commitment(
+                ref,
+                mention.debtor,
+                mention.creditor,
+                mention.description,
+                planted[ref].data["due_date"],
+            )
+        )
+    actual_overdue = {
+        ref
+        for ref, item in planted.items()
+        if datetime.fromisoformat(item.data["due_date"]) < now_dt
+    }
+    detected_overdue = {c.commitment_id for c in ledger.overdue(now)}
+    overdue = overdue_detection_accuracy(actual_overdue, detected_overdue)
+
+    store = MemoryStore()
+    engine = RetrievalEngine(store=store)
+    for episode in result.episodes:
+        item = MemoryItem(
+            episode.episode_id, MemoryTier.EPISODIC, episode.title, title=episode.title
+        )
+        store.add(item)
+        engine.index_item(item)
+    hits = engine.search("milestone update", top_k=config.top_k)
+    cited = {h.item_id for h in hits}
+    citation_fraction, _invalid = citation_validity(cited, set(engine.index.ids()))
+    pack = ContextPacker(budget=config.context_budget).pack(
+        [
+            ContextItem(
+                item_id=hit.item_id,
+                content=hit.snippet,
+                title=hit.title,
+                token_estimate=estimate_tokens(hit.snippet),
+                priority=hit.score,
+            )
+            for hit in hits
+        ]
+    )
+
+    return {
+        "planted": len(planted),
+        "structured_mentions": len(structured),
+        "recovered": len(recovered),
+        "commitment_recall": recall(planted_keys, recovered),
+        "commitment_precision": precision(planted_keys, extracted_keys),
+        "overdue": overdue,
+        "actual_overdue": len(actual_overdue),
+        "citation_validity": citation_fraction,
+        "budget_adherence": budget_adherence(pack.total_tokens, config.context_budget),
+        "replay_determinism": replay_determinism_score(result.digest(), rerun.digest()),
+        "checksum": manifest.checksum,
+    }
+
+
+def run_commitment_scenario(config: ScenarioConfig | None = None) -> ScenarioResult:
+    """Whole-history commitment scenario on synthetic planted truth."""
+    cfg = config or ScenarioConfig()
+    measured = _commitment_measurements(cfg)
+    card = Scorecard(
+        scenario=f"commitments-seed{cfg.seed}-{cfg.days}d",
+        details={
+            "ground_truth": "synthetic planted commitments",
+            "planted_commitments": measured["planted"],
+            "structured_mentions": measured["structured_mentions"],
+            "recovered": measured["recovered"],
+            "actual_overdue": measured["actual_overdue"],
+            "checksum": measured["checksum"],
+        },
+    )
+    card.add(MetricResult("commitment_recall", measured["commitment_recall"], threshold=1.0))
+    card.add(MetricResult("commitment_precision", measured["commitment_precision"], threshold=1.0))
+    card.add(MetricResult("overdue_precision", measured["overdue"]["precision"], threshold=1.0))
+    card.add(MetricResult("overdue_recall", measured["overdue"]["recall"], threshold=1.0))
+    card.add(MetricResult("overdue_f1", measured["overdue"]["f1"], threshold=1.0))
+    card.add(MetricResult("citation_validity", measured["citation_validity"], threshold=1.0))
+    card.add(MetricResult("budget_adherence", measured["budget_adherence"], threshold=1.0))
+    card.add(MetricResult("replay_determinism", measured["replay_determinism"], threshold=1.0))
+    return ScenarioResult(scorecard=card, measurements=measured)

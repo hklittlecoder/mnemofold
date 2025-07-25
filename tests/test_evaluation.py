@@ -1,6 +1,8 @@
 from mnemofold.evaluation import (
     MetricResult,
     MetricStatus,
+    ScenarioConfig,
+    ScenarioResult,
     Scorecard,
     aggregate_scorecards,
     as_of_accuracy,
@@ -15,6 +17,7 @@ from mnemofold.evaluation import (
     privacy_violation_count,
     recall,
     replay_determinism_score,
+    run_commitment_scenario,
     stale_fact_avoidance,
 )
 
@@ -257,3 +260,43 @@ def test_aggregate_empty():
     agg = aggregate_scorecards([])
     assert agg.scenario == "aggregate"
     assert agg.metrics == []
+
+
+class TestCommitmentScenario:
+    def test_scenario_runs_and_passes(self):
+        result = run_commitment_scenario(ScenarioConfig(seed=42, days=90))
+        assert isinstance(result, ScenarioResult)
+        card = result.scorecard
+        assert card.scenario == "commitments-seed42-90d"
+        assert card.overall_pass(), [
+            (m.name, m.value, m.status) for m in card.metrics if m.status != MetricStatus.PASS
+        ]
+
+    def test_recall_and_precision_are_measured_high(self):
+        result = run_commitment_scenario(ScenarioConfig(seed=42, days=90))
+        values = {m.name: m.value for m in result.scorecard.metrics}
+        assert values["commitment_recall"] == 1.0
+        assert values["commitment_precision"] == 1.0
+        assert values["citation_validity"] == 1.0
+        assert values["budget_adherence"] == 1.0
+        assert values["replay_determinism"] == 1.0
+
+    def test_details_label_synthetic_ground_truth(self):
+        result = run_commitment_scenario(ScenarioConfig(seed=7, days=60))
+        details = result.scorecard.details
+        assert details["ground_truth"] == "synthetic planted commitments"
+        assert details["planted_commitments"] >= 2
+        assert details["recovered"] == details["planted_commitments"]
+
+    def test_measurements_expose_counts(self):
+        result = run_commitment_scenario(ScenarioConfig(seed=7, days=60))
+        measured = result.measurements
+        assert measured["planted"] >= 2
+        assert measured["structured_mentions"] >= measured["recovered"]
+        assert measured["checksum"]
+
+    def test_scenario_is_deterministic(self):
+        config = ScenarioConfig(seed=11, days=60)
+        first = run_commitment_scenario(config).scorecard.to_dict()
+        second = run_commitment_scenario(config).scorecard.to_dict()
+        assert first == second
