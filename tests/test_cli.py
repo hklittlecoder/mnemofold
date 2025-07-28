@@ -295,3 +295,24 @@ def test_cmd_triggers_runs(capsys):
     assert "Proactive Triggers" in out
     assert "Total fired" in out
     assert "Active" in out
+
+
+def test_cmd_eval_runs_scenario_suite(capsys):
+    rc = main(["eval", "--seed", "42", "--days", "30"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "commitments-seed42-30d" in out
+    assert "commitment_recall" in out
+    assert "Aggregate pass: True" in out
+
+
+def test_cmd_eval_json_has_cards_and_aggregate(capsys):
+    main(["eval", "--seed", "1", "--days", "20", "--json"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["scenario"] == "eval-seed1-20d"
+    assert len(data["cards"]) == 4
+    assert data["aggregate"]["scenario"] == "aggregate"
+    assert data["overall_pass"] is True
+    card_scenarios = [card["scenario"] for card in data["cards"]]
+    assert any(s.startswith("triage-") for s in card_scenarios)
+    assert any(s.startswith("asof-") for s in card_scenarios)

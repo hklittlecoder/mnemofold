@@ -125,55 +125,36 @@ def _cmd_version(_args: argparse.Namespace) -> int:
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:
-    from .evaluation import MetricResult, MetricStatus, Scorecard
+    from .evaluation import ScenarioConfig, run_suite
     from .factory import WorkHistoryFactory
 
     factory = WorkHistoryFactory(seed=args.seed, days=args.days)
     events, manifest = factory.generate()
-
-    sc = Scorecard(scenario=f"eval-seed{args.seed}-{args.days}d")
-    sc.add(MetricResult(name="event_count", value=float(len(events)), higher_is_better=True))
-    sc.add(
-        MetricResult(
-            name="planted_commitments",
-            value=float(manifest.planted_commitments),
-            higher_is_better=True,
-        )
-    )
-    sc.add(
-        MetricResult(
-            name="planted_decisions",
-            value=float(manifest.planted_decisions),
-            higher_is_better=True,
-        )
-    )
-    sc.add(
-        MetricResult(
-            name="planted_contradictions",
-            value=float(manifest.planted_contradictions),
-            higher_is_better=True,
-        )
-    )
-    # Determinism check (implicit pass: we generated once and have a checksum)
-    sc.add(
-        MetricResult(
-            name="deterministic_checksum",
-            value=1.0 if manifest.checksum else 0.0,
-            threshold=1.0,
-            higher_is_better=True,
-            status=MetricStatus.PASS if manifest.checksum else MetricStatus.FAIL,
-        )
-    )
-    sc.details = {
-        "seed": args.seed,
-        "days": args.days,
-        "checksum": manifest.checksum,
-    }
+    suite = run_suite(ScenarioConfig(seed=args.seed, days=args.days))
 
     if args.json:
         import json
 
-        print(json.dumps(sc.to_dict(), indent=2, sort_keys=True))
+        payload = {
+            "scenario": f"eval-seed{args.seed}-{args.days}d",
+            "checksum": manifest.checksum,
+            "metrics": [
+                {"name": "event_count", "value": float(len(events))},
+                {
+                    "name": "planted_commitments",
+                    "value": float(manifest.planted_commitments),
+                },
+                {"name": "planted_decisions", "value": float(manifest.planted_decisions)},
+                {
+                    "name": "planted_contradictions",
+                    "value": float(manifest.planted_contradictions),
+                },
+            ],
+            "cards": [card.to_dict() for card in suite.cards],
+            "aggregate": suite.aggregate.to_dict(),
+            "overall_pass": suite.overall_pass(),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(f"=== mnemofold eval (seed={args.seed}, days={args.days}) ===")
         print(f"Events: {len(events)}")
@@ -181,9 +162,14 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print(f"Planted decisions: {manifest.planted_decisions}")
         print(f"Planted contradictions: {manifest.planted_contradictions}")
         print(f"Checksum: {manifest.checksum}")
-        print(f"Pass: {sc.overall_pass()}")
+        for card in suite.cards:
+            verdict = "PASS" if card.overall_pass() else "FAIL"
+            print(f"[{verdict}] {card.scenario} ({card.pass_count()}/{len(card.metrics)})")
+            for metric in card.metrics:
+                print(f"    {metric.name}: {metric.value:.4f} [{metric.status.value}]")
+        print(f"Aggregate pass: {suite.aggregate.overall_pass()}")
 
-    return 0 if sc.overall_pass() else 1
+    return 0 if suite.overall_pass() else 1
 
 
 def _cmd_demo(args: argparse.Namespace) -> int:
