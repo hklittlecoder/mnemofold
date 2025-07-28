@@ -24,6 +24,7 @@ from mnemofold.evaluation import (
     run_triage_scenario,
     stale_fact_avoidance,
 )
+from mnemofold.factory import FactoryConfig
 
 
 def test_precision_at_k_perfect():
@@ -384,3 +385,35 @@ class TestAsOfScenario:
         first = run_asof_scenario(cfg).scorecard.to_dict()
         second = run_asof_scenario(cfg).scorecard.to_dict()
         assert first == second
+
+
+class TestScenarioSweeps:
+    @pytest.mark.parametrize("seed", [3, 42])
+    def test_core_scenarios_pass_across_seeds(self, seed):
+        cfg = ScenarioConfig(seed=seed, days=60)
+        assert run_commitment_scenario(cfg).scorecard.overall_pass()
+        assert run_asof_scenario(cfg).scorecard.overall_pass()
+        assert run_triage_scenario(cfg).scorecard.overall_pass()
+
+    def test_commitment_recall_survives_noise(self):
+        cfg = ScenarioConfig(seed=13, days=60, factory_config=FactoryConfig(noise_level=0.5))
+        result = run_commitment_scenario(cfg)
+        assert result.measurements["commitment_recall"] == 1.0
+        assert result.scorecard.overall_pass()
+
+    def test_expanded_history_with_designer_and_workflows(self):
+        cfg = ScenarioConfig(
+            seed=13,
+            days=60,
+            factory_config=FactoryConfig(include_designer=True, workflow_repeats=2),
+        )
+        result = run_commitment_scenario(cfg)
+        assert result.measurements["commitment_recall"] == 1.0
+        assert result.scorecard.overall_pass()
+
+    def test_double_run_identical_scorecards(self):
+        cfg = ScenarioConfig(seed=8, days=45)
+        for runner in (run_commitment_scenario, run_asof_scenario, run_triage_scenario):
+            first = runner(cfg).scorecard.to_dict()
+            second = runner(cfg).scorecard.to_dict()
+            assert first == second, runner.__name__
