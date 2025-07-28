@@ -21,6 +21,7 @@ from mnemofold.evaluation import (
     replay_determinism_score,
     run_asof_scenario,
     run_commitment_scenario,
+    run_privacy_deletion_scenario,
     run_triage_scenario,
     stale_fact_avoidance,
 )
@@ -417,3 +418,29 @@ class TestScenarioSweeps:
             first = runner(cfg).scorecard.to_dict()
             second = runner(cfg).scorecard.to_dict()
             assert first == second, runner.__name__
+
+
+class TestPrivacyDeletionScenario:
+    def test_zero_violations_and_clean_deletion(self):
+        result = run_privacy_deletion_scenario(ScenarioConfig(seed=42, days=60))
+        assert result.measurements["violations"] == []
+        assert result.measurements["sampled"] > 0
+        assert result.measurements["clean"] is True
+        assert result.scorecard.overall_pass()
+
+    def test_deletion_actually_removed_content(self):
+        result = run_privacy_deletion_scenario(ScenarioConfig(seed=42, days=60))
+        assert result.measurements["deleted"]
+
+    def test_metric_directions(self):
+        card = run_privacy_deletion_scenario(ScenarioConfig(seed=7, days=45)).scorecard
+        by_name = {m.name: m for m in card.metrics}
+        assert by_name["privacy_violations"].higher_is_better is False
+        assert by_name["privacy_violations"].value == 0.0
+        assert by_name["deletion_clean"].value == 1.0
+
+    def test_deterministic(self):
+        cfg = ScenarioConfig(seed=5, days=45)
+        first = run_privacy_deletion_scenario(cfg).scorecard.to_dict()
+        second = run_privacy_deletion_scenario(cfg).scorecard.to_dict()
+        assert first == second

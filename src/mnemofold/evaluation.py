@@ -17,12 +17,14 @@ from enum import StrEnum
 from typing import Any
 
 from mnemofold.context import ContextItem, ContextPacker, estimate_tokens
+from mnemofold.deletion import DeletionReason
 from mnemofold.events import Event
 from mnemofold.factory import FactoryConfig, HistoryManifest, WorkHistoryFactory
 from mnemofold.ingest import CommitmentExtractor, IngestPipeline
 from mnemofold.ledger import Commitment, CommitmentLedger
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
-from mnemofold.retrieval import RetrievalEngine
+from mnemofold.privacy import RedactionVault, detect_pii
+from mnemofold.retrieval import RetrievalEngine, build_deletion_engine, forget
 from mnemofold.temporal import IntervalFact, TemporalStore
 from mnemofold.triage import TriageItem, TriageScorer
 
@@ -542,4 +544,90 @@ def run_asof_scenario(config: ScenarioConfig | None = None) -> ScenarioResult:
     return ScenarioResult(
         scorecard=card,
         measurements={"probes": len(probes), "accuracy": accuracy},
+    )
+
+
+def run_privacy_deletion_scenario(config: ScenarioConfig | None = None) -> ScenarioResult:
+    """Privacy sealing and right-to-forget, measured end to end.
+
+    Privacy leg: seal sampled event text through the reversible vault and
+    count raw PII occurrences that survive sealing — the count must be
+    zero. Deletion leg: forget one episode memory and verify it never
+    resurfaces through search, index listing, or broad queries.
+    """
+    cfg = config or ScenarioConfig()
+    factory, typed, manifest = _typed_history(cfg)
+    now_dt = _scenario_now(cfg, factory)
+
+    vault = RedactionVault(salt=f"eval-{cfg.seed}")
+    violations: list[str] = []
+    sampled = 0
+    for event in typed:
+        parts = [str(v) for _k, v in sorted(event.content.items()) if isinstance(v, str)]
+        text = " ".join(parts)
+        matches = detect_pii(text)
+        if not matches:
+            continue
+        sampled += 1
+        sealed = vault.seal(text)
+        for match in matches:
+            if match.value in sealed:
+                violations.append(f"{event.event_id}:{match.kind.value}")
+        if sampled >= 120:
+            break
+
+    result = IngestPipeline().run(typed)
+    store = MemoryStore()
+    engine = RetrievalEngine(store=store)
+    for episode in result.episodes:
+        item = MemoryItem(
+            episode.episode_id, MemoryTier.EPISODIC, episode.title, title=episode.title
+        )
+        store.add(item)
+        engine.index_item(item)
+    ids = engine.index.ids()
+    victim_id = ids[len(ids) // 2] if ids else ""
+    victim = store.peek(victim_id) if victim_id else None
+    deletion = build_deletion_engine(engine)
+    deleted: set[str] = set()
+    if victim is not None:
+        report = forget(deletion, victim_id, DeletionReason.FORGET, now_dt)
+        deleted = {entry.key for entry in report.deleted}
+    query_results = {
+        "title_search": {
+            r.item_id for r in engine.search(victim.title if victim else "", top_k=25)
+        },
+        "broad_search": {
+            r.item_id for r in engine.search("update milestone review plan", top_k=50)
+        },
+        "index_listing": set(engine.index.ids()),
+    }
+    clean, resurrected = deletion_resurrection_check(deleted, query_results)
+
+    card = Scorecard(
+        scenario=f"privacy-deletion-seed{cfg.seed}-{cfg.days}d",
+        details={
+            "pii_events_sampled": sampled,
+            "deleted": sorted(deleted),
+            "resurrected": sorted(resurrected),
+            "checksum": manifest.checksum,
+        },
+    )
+    card.add(
+        MetricResult(
+            "privacy_violations",
+            float(len(violations)),
+            threshold=0.0,
+            higher_is_better=False,
+        )
+    )
+    card.add(MetricResult("deletion_clean", 1.0 if clean else 0.0, threshold=1.0))
+    return ScenarioResult(
+        scorecard=card,
+        measurements={
+            "violations": violations,
+            "sampled": sampled,
+            "deleted": sorted(deleted),
+            "clean": clean,
+        },
     )
