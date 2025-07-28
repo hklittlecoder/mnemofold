@@ -19,6 +19,7 @@ from mnemofold.evaluation import (
     privacy_violation_count,
     recall,
     replay_determinism_score,
+    run_asof_scenario,
     run_commitment_scenario,
     run_triage_scenario,
     stale_fact_avoidance,
@@ -358,4 +359,28 @@ class TestTriageScenario:
         cfg = ScenarioConfig(seed=9, days=30)
         first = run_triage_scenario(cfg).scorecard.to_dict()
         second = run_triage_scenario(cfg).scorecard.to_dict()
+        assert first == second
+
+
+class TestAsOfScenario:
+    def test_accuracy_is_perfect_on_planted_changes(self):
+        result = run_asof_scenario(ScenarioConfig(seed=42, days=180))
+        assert result.measurements["probes"] >= 2
+        assert result.measurements["accuracy"] == 1.0
+        assert result.scorecard.overall_pass()
+
+    def test_small_history_degrades_gracefully(self):
+        result = run_asof_scenario(ScenarioConfig(seed=42, days=5))
+        # degenerate or missing windows are skipped, never guessed at
+        assert result.scorecard.overall_pass()
+        assert result.measurements["accuracy"] == 1.0
+
+    def test_details_label_ground_truth(self):
+        result = run_asof_scenario(ScenarioConfig(seed=42, days=120))
+        assert result.scorecard.details["ground_truth"] == "synthetic planted due-date changes"
+
+    def test_deterministic(self):
+        cfg = ScenarioConfig(seed=42, days=120)
+        first = run_asof_scenario(cfg).scorecard.to_dict()
+        second = run_asof_scenario(cfg).scorecard.to_dict()
         assert first == second

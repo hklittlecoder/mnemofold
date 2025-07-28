@@ -23,6 +23,7 @@ from mnemofold.ingest import CommitmentExtractor, IngestPipeline
 from mnemofold.ledger import Commitment, CommitmentLedger
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.retrieval import RetrievalEngine
+from mnemofold.temporal import IntervalFact, TemporalStore
 from mnemofold.triage import TriageItem, TriageScorer
 
 
@@ -476,4 +477,69 @@ def run_triage_scenario(config: ScenarioConfig | None = None) -> ScenarioResult:
             "precision_at_k": p_at_k,
             "k": k,
         },
+    )
+
+
+def run_asof_scenario(config: ScenarioConfig | None = None) -> ScenarioResult:
+    """As-of correctness against planted due-date contradictions.
+
+    For every planted due-date change the original due is valid from the
+    commitment mail until the change notice; the new due is valid from
+    the notice onward. Probes before and after the boundary must return
+    the value that was known at that instant. Degenerate windows (change
+    not after the original) are skipped rather than guessed at.
+    """
+    cfg = config or ScenarioConfig()
+    factory, typed, manifest = _typed_history(cfg)
+
+    commitment_ts: dict[str, datetime] = {}
+    contradiction_ts: dict[str, datetime] = {}
+    for event in typed:
+        ref = event.content.get("commitment_ref")
+        if isinstance(ref, str) and str(event.content.get("subject", "")).startswith("Commitment:"):
+            commitment_ts[ref] = event.timestamp
+        cref = event.content.get("contradiction_ref")
+        if isinstance(cref, str):
+            contradiction_ts[cref] = event.timestamp
+
+    store: TemporalStore[str] = TemporalStore()
+    probes: list[tuple[str, str, str, str]] = []  # label, key, when, expected
+    for planted_item in factory.planted_items():
+        if planted_item.kind != "contradiction":
+            continue
+        if planted_item.data.get("change") != "due_date":
+            continue
+        ref = planted_item.data["target_commitment"]
+        start = commitment_ts.get(ref)
+        change = contradiction_ts.get(planted_item.item_id)
+        if start is None or change is None or change <= start:
+            continue
+        key = f"commitment:{ref}:due"
+        old_value = planted_item.data["old_value"][:10]
+        new_value = planted_item.data["new_value"][:10]
+        store.add(IntervalFact(key, old_value, start.isoformat(), change.isoformat()))
+        store.add(IntervalFact(key, new_value, change.isoformat()))
+        mid = start + (change - start) / 2
+        probes.append((f"{key}@before", key, mid.isoformat(), old_value))
+        probes.append((f"{key}@after", key, (change + timedelta(days=1)).isoformat(), new_value))
+
+    expected = {label: value for label, _, _, value in probes}
+    actual: dict[str, str] = {}
+    for label, key, when, _ in probes:
+        fact = store.as_of(key, when)
+        actual[label] = fact.value if fact is not None else ""
+    accuracy = as_of_accuracy(expected, actual)
+
+    card = Scorecard(
+        scenario=f"asof-seed{cfg.seed}-{cfg.days}d",
+        details={
+            "ground_truth": "synthetic planted due-date changes",
+            "probes": len(probes),
+            "checksum": manifest.checksum,
+        },
+    )
+    card.add(MetricResult("as_of_accuracy", accuracy, threshold=1.0))
+    return ScenarioResult(
+        scorecard=card,
+        measurements={"probes": len(probes), "accuracy": accuracy},
     )
