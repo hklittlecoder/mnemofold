@@ -631,3 +631,35 @@ def run_privacy_deletion_scenario(config: ScenarioConfig | None = None) -> Scena
             "clean": clean,
         },
     )
+
+
+def run_commitment_slices(config: ScenarioConfig | None = None) -> list[ScenarioResult]:
+    """Per-project commitment scorecards, in sorted project order.
+
+    Slices reuse the whole-history measurement machinery with the ground
+    truth restricted to one project, so slice numbers and the aggregate
+    never drift apart methodologically.
+    """
+    cfg = config or ScenarioConfig()
+    factory, _typed, _manifest = _typed_history(cfg)
+    projects = sorted(
+        {item.data["project"] for item in factory.planted_items() if item.kind == "commitment"}
+    )
+    results: list[ScenarioResult] = []
+    for project in projects:
+        measured = _commitment_measurements(cfg, project=project)
+        card = Scorecard(
+            scenario=f"commitments[{project}]-seed{cfg.seed}",
+            details={
+                "ground_truth": f"synthetic planted commitments ({project})",
+                "planted_commitments": measured["planted"],
+                "recovered": measured["recovered"],
+                "actual_overdue": measured["actual_overdue"],
+            },
+        )
+        card.add(
+            MetricResult("slice_commitment_recall", measured["commitment_recall"], threshold=1.0)
+        )
+        card.add(MetricResult("slice_overdue_f1", measured["overdue"]["f1"], threshold=1.0))
+        results.append(ScenarioResult(scorecard=card, measurements=measured))
+    return results
