@@ -663,3 +663,34 @@ def run_commitment_slices(config: ScenarioConfig | None = None) -> list[Scenario
         card.add(MetricResult("slice_overdue_f1", measured["overdue"]["f1"], threshold=1.0))
         results.append(ScenarioResult(scorecard=card, measurements=measured))
     return results
+
+
+@dataclass(slots=True)
+class SuiteResult:
+    """Every scenario card plus the aggregate summary."""
+
+    cards: list[Scorecard] = field(default_factory=list)
+    aggregate: Scorecard = field(default_factory=lambda: Scorecard(scenario="aggregate"))
+
+    def overall_pass(self) -> bool:
+        return all(card.overall_pass() for card in self.cards)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cards": [card.to_dict() for card in self.cards],
+            "aggregate": self.aggregate.to_dict(),
+            "overall_pass": self.overall_pass(),
+        }
+
+
+def run_suite(config: ScenarioConfig | None = None) -> SuiteResult:
+    """Run every scenario once and aggregate (used by the CLI eval)."""
+    cfg = config or ScenarioConfig()
+    results = [
+        run_commitment_scenario(cfg),
+        run_triage_scenario(cfg),
+        run_asof_scenario(cfg),
+        run_privacy_deletion_scenario(cfg),
+    ]
+    cards = [result.scorecard for result in results]
+    return SuiteResult(cards=cards, aggregate=aggregate_scorecards(cards))

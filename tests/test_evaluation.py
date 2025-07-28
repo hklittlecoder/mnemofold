@@ -23,6 +23,7 @@ from mnemofold.evaluation import (
     run_commitment_scenario,
     run_commitment_slices,
     run_privacy_deletion_scenario,
+    run_suite,
     run_triage_scenario,
     stale_fact_avoidance,
 )
@@ -475,4 +476,37 @@ class TestCommitmentSlices:
         cfg = ScenarioConfig(seed=7, days=60)
         first = [r.scorecard.to_dict() for r in run_commitment_slices(cfg)]
         second = [r.scorecard.to_dict() for r in run_commitment_slices(cfg)]
+        assert first == second
+
+
+class TestEvaluationSuite:
+    def test_suite_runs_every_scenario(self):
+        suite = run_suite(ScenarioConfig(seed=42, days=60))
+        scenarios = [card.scenario for card in suite.cards]
+        assert scenarios == [
+            "commitments-seed42-60d",
+            "triage-seed42-60d",
+            "asof-seed42-60d",
+            "privacy-deletion-seed42-60d",
+        ]
+
+    def test_suite_passes_and_aggregates(self):
+        suite = run_suite(ScenarioConfig(seed=42, days=60))
+        assert suite.overall_pass()
+        assert suite.aggregate.scenario == "aggregate"
+        assert suite.aggregate.overall_pass()
+        names = {m.name for m in suite.aggregate.metrics}
+        assert {"commitment_recall", "as_of_accuracy", "privacy_violations"} <= names
+
+    def test_suite_dict_roundtrip_shape(self):
+        suite = run_suite(ScenarioConfig(seed=7, days=30))
+        payload = suite.to_dict()
+        assert payload["overall_pass"] is True
+        assert len(payload["cards"]) == 4
+        assert payload["aggregate"]["scenario"] == "aggregate"
+
+    def test_suite_is_deterministic(self):
+        cfg = ScenarioConfig(seed=11, days=45)
+        first = run_suite(cfg).to_dict()
+        second = run_suite(cfg).to_dict()
         assert first == second
