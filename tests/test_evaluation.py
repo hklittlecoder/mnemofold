@@ -21,6 +21,7 @@ from mnemofold.evaluation import (
     replay_determinism_score,
     run_asof_scenario,
     run_commitment_scenario,
+    run_commitment_slices,
     run_privacy_deletion_scenario,
     run_triage_scenario,
     stale_fact_avoidance,
@@ -443,4 +444,35 @@ class TestPrivacyDeletionScenario:
         cfg = ScenarioConfig(seed=5, days=45)
         first = run_privacy_deletion_scenario(cfg).scorecard.to_dict()
         second = run_privacy_deletion_scenario(cfg).scorecard.to_dict()
+        assert first == second
+
+
+class TestCommitmentSlices:
+    def test_slices_are_sorted_and_cover_planted_total(self):
+        cfg = ScenarioConfig(seed=42, days=120)
+        slices = run_commitment_slices(cfg)
+        names = [r.scorecard.scenario for r in slices]
+        assert names == sorted(names)
+        total = sum(r.measurements["planted"] for r in slices)
+        whole = run_commitment_scenario(cfg).measurements["planted"]
+        assert total == whole
+
+    def test_every_slice_passes(self):
+        for result in run_commitment_slices(ScenarioConfig(seed=42, days=90)):
+            assert result.scorecard.overall_pass(), result.scorecard.scenario
+            values = {m.name: m.value for m in result.scorecard.metrics}
+            assert values["slice_commitment_recall"] == 1.0
+
+    def test_aggregate_of_slices_averages_recall(self):
+        slices = run_commitment_slices(ScenarioConfig(seed=7, days=60))
+        agg = aggregate_scorecards([r.scorecard for r in slices])
+        assert agg.scenario == "aggregate"
+        values = {m.name: m.value for m in agg.metrics}
+        assert values["slice_commitment_recall"] == 1.0
+        assert agg.overall_pass()
+
+    def test_slices_deterministic(self):
+        cfg = ScenarioConfig(seed=7, days=60)
+        first = [r.scorecard.to_dict() for r in run_commitment_slices(cfg)]
+        second = [r.scorecard.to_dict() for r in run_commitment_slices(cfg)]
         assert first == second
