@@ -510,3 +510,41 @@ class TestEvaluationSuite:
         first = run_suite(cfg).to_dict()
         second = run_suite(cfg).to_dict()
         assert first == second
+
+
+class TestMetricThresholdSemantics:
+    def test_higher_is_better_boundary_is_inclusive(self):
+        assert MetricResult("m", 0.5, threshold=0.5).status == MetricStatus.PASS
+        assert MetricResult("m", 0.499999, threshold=0.5).status == MetricStatus.FAIL
+
+    def test_lower_is_better_boundary_is_inclusive(self):
+        metric = MetricResult("m", 0.0, threshold=0.0, higher_is_better=False)
+        assert metric.status == MetricStatus.PASS
+        worse = MetricResult("m", 0.1, threshold=0.0, higher_is_better=False)
+        assert worse.status == MetricStatus.FAIL
+
+    def test_no_threshold_never_fails(self):
+        assert MetricResult("m", 123.0).status == MetricStatus.PASS
+
+    def test_aggregate_averages_and_keeps_threshold(self):
+        first = Scorecard("s1")
+        first.add(MetricResult("x", 1.0, threshold=0.5))
+        second = Scorecard("s2")
+        second.add(MetricResult("x", 0.0, threshold=0.5))
+        agg = aggregate_scorecards([first, second])
+        metric = agg.metrics[0]
+        assert metric.value == 0.5
+        assert metric.threshold == 0.5
+        assert metric.status == MetricStatus.PASS  # boundary inclusive
+
+    def test_aggregate_records_scenario_order(self):
+        first = Scorecard("s1")
+        second = Scorecard("s2")
+        agg = aggregate_scorecards([first, second])
+        assert agg.details["scenarios"] == ["s1", "s2"]
+
+    def test_aggregate_empty_suite(self):
+        agg = aggregate_scorecards([])
+        assert agg.scenario == "aggregate"
+        assert agg.metrics == []
+        assert agg.overall_pass()
