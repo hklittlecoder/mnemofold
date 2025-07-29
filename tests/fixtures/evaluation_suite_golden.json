@@ -1,0 +1,57 @@
+{
+  "aggregate": {
+    "as_of_accuracy": 1.0,
+    "budget_adherence": 1.0,
+    "citation_validity": 1.0,
+    "commitment_precision": 1.0,
+    "commitment_recall": 1.0,
+    "deletion_clean": 1.0,
+    "overdue_f1": 1.0,
+    "overdue_precision": 1.0,
+    "overdue_recall": 1.0,
+    "privacy_violations": 0.0,
+    "replay_determinism": 1.0,
+    "triage_precision_at_1": 1.0,
+    "triage_precision_at_5": 0.8
+  },
+  "cards": [
+    {
+      "metrics": {
+        "budget_adherence": 1.0,
+        "citation_validity": 1.0,
+        "commitment_precision": 1.0,
+        "commitment_recall": 1.0,
+        "overdue_f1": 1.0,
+        "overdue_precision": 1.0,
+        "overdue_recall": 1.0,
+        "replay_determinism": 1.0
+      },
+      "overall_pass": true,
+      "scenario": "commitments-seed42-60d"
+    },
+    {
+      "metrics": {
+        "triage_precision_at_1": 1.0,
+        "triage_precision_at_5": 0.8
+      },
+      "overall_pass": true,
+      "scenario": "triage-seed42-60d"
+    },
+    {
+      "metrics": {
+        "as_of_accuracy": 1.0
+      },
+      "overall_pass": true,
+      "scenario": "asof-seed42-60d"
+    },
+    {
+      "metrics": {
+        "deletion_clean": 1.0,
+        "privacy_violations": 0.0
+      },
+      "overall_pass": true,
+      "scenario": "privacy-deletion-seed42-60d"
+    }
+  ],
+  "overall_pass": true
+}
