@@ -135,3 +135,48 @@ class TestProjectEvent:
     def test_created_at_matches_event_timestamp(self):
         event = _sample_events()[1]
         assert project_event(event).created_at == event.timestamp.isoformat()
+
+
+class TestRebuildIdentity:
+    def test_same_events_different_paths_same_digest(self, tmp_path):
+        events = _sample_events() + [_commitment_event()]
+        with Workspace(tmp_path / "a") as wa:
+            wa.ingest_events(events)
+        with Workspace(tmp_path / "b") as wb:
+            wb.ingest_events(events)
+        with Workspace(tmp_path / "a") as ra, Workspace(tmp_path / "b") as rb:
+            assert ra.stats().digest == rb.stats().digest
+
+    def test_digest_sensitive_to_content(self, tmp_path):
+        with Workspace(tmp_path / "a") as wa:
+            wa.ingest_events(_sample_events())
+        altered = _sample_events()
+        altered[1] = Event.note(
+            T0 + timedelta(minutes=30), text="different thoughts", author="alice"
+        )
+        with Workspace(tmp_path / "b") as wb:
+            wb.ingest_events(altered)
+        with Workspace(tmp_path / "a") as ra, Workspace(tmp_path / "b") as rb:
+            assert ra.stats().digest != rb.stats().digest
+
+    def test_rebuild_return_matches_stats(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events(_sample_events())
+            assert ws.rebuild().digest == ws.stats().digest
+
+    def test_incremental_and_bulk_ingest_converge(self, tmp_path):
+        events = _sample_events()
+        with Workspace(tmp_path / "bulk") as ws:
+            ws.ingest_events(events)
+        with Workspace(tmp_path / "incr") as ws:
+            for event in events:
+                ws.ingest_events([event])
+        with Workspace(tmp_path / "bulk") as a, Workspace(tmp_path / "incr") as b:
+            assert a.stats().digest == b.stats().digest
+
+    def test_ledger_reprojects_identically(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events([_commitment_event(), *_sample_events()])
+            before = ws.ledger.to_json()
+            ws.rebuild()
+            assert ws.ledger.to_json() == before
