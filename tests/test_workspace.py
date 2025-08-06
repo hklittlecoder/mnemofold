@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from mnemofold.events import Event, EventType
 from mnemofold.replay import TraceReader
 from mnemofold.workspace import Workspace, WorkspaceStats, project_event
@@ -180,3 +182,82 @@ class TestRebuildIdentity:
             before = ws.ledger.to_json()
             ws.rebuild()
             assert ws.ledger.to_json() == before
+
+
+class TestRememberForget:
+    NOW = "2025-03-10T09:00:00+00:00"
+    LATER = "2025-03-11T09:00:00+00:00"
+
+    def test_remember_returns_content_addressed_id(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            item_id = ws.remember("buy milk", title="errand", now=self.NOW)
+            assert item_id.startswith("evt_")
+            item = ws.store.peek(item_id)
+            assert item is not None
+            assert "buy milk" in item.content
+
+    def test_remember_same_instant_is_idempotent(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            first = ws.remember("buy milk", now=self.NOW)
+            second = ws.remember("buy milk", now=self.NOW)
+            assert first == second
+            assert ws.stats().events == 1
+
+    def test_remember_rejects_invalid_now(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws, pytest.raises(ValueError, match="invalid timestamp"):
+            ws.remember("x", now="garbage")
+
+    def test_remember_naive_now_read_as_utc(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            item_id = ws.remember("x", now="2025-03-10T09:00:00")
+            assert ws.store.peek(item_id).created_at == "2025-03-10T09:00:00+00:00"
+
+    def test_forget_removes_and_tombstones(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            item_id = ws.remember("secret note", now=self.NOW)
+            report = ws.forget(item_id, reason="gdpr", now=self.LATER)
+            assert report.total_deleted == 1
+            assert ws.store.peek(item_id) is None
+            assert ws.stats().tombstones == 1
+
+    def test_forget_survives_reopen(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            item_id = ws.remember("secret note", now=self.NOW)
+            ws.forget(item_id, now=self.LATER)
+        with Workspace(tmp_path / "ws") as reopened:
+            assert reopened.store.peek(item_id) is None
+            assert reopened.stats().tombstones == 1
+            # the journal keeps the frame and the chain still verifies
+            assert len(reopened.journal) == 1
+            assert reopened.journal.verify_chain()
+
+    def test_reingest_of_forgotten_event_stays_forgotten(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            item_id = ws.remember("secret note", now=self.NOW)
+            ws.forget(item_id, now=self.LATER)
+            event = Event(
+                EventType.NOTE,
+                datetime(2025, 3, 10, 9, 0, tzinfo=UTC),
+                {"text": "secret note", "title": "", "author": "user", "tags": []},
+            )
+            assert event.event_id == item_id
+            ws.ingest_events([event])
+            assert ws.store.peek(item_id) is None
+
+    def test_forget_drops_ledger_commitment_from_that_event(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            event = _commitment_event()
+            ws.ingest_events([event])
+            assert ws.stats().commitments == 1
+            ws.forget(event.event_id, now=self.LATER)
+            assert ws.stats().commitments == 0
+
+    def test_forget_unknown_item_reports_error(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            report = ws.forget("evt_missing", now=self.LATER)
+            assert report.total_deleted == 0
+            assert report.errors
+
+    def test_forget_invalid_now_raises(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws, pytest.raises(ValueError, match="invalid timestamp"):
+            ws.forget("evt_x", now="nope")

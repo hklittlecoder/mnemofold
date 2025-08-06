@@ -17,13 +17,19 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from mnemofold.deletion import DeletionEngine
-from mnemofold.events import Event
+from mnemofold.deletion import DeletionEngine, DeletionReason, DeletionReport
+from mnemofold.events import Event, EventType
 from mnemofold.ingest import CommitmentExtractor
 from mnemofold.ledger import Commitment, CommitmentLedger
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.replay import TraceRecorder
-from mnemofold.retrieval import RetrievalEngine, build_deletion_engine
+from mnemofold.retrieval import (
+    RetrievalEngine,
+    build_deletion_engine,
+)
+from mnemofold.retrieval import (
+    forget as forget_item,
+)
 from mnemofold.storage import Journal
 
 
@@ -194,3 +200,57 @@ class Workspace:
         if stamp:
             self.trace.record_receipt(stamp, {"action": "ingest", "added": added})
         return added
+
+    def remember(
+        self,
+        text: str,
+        *,
+        now: str,
+        title: str = "",
+        tags: list[str] | None = None,
+        author: str = "user",
+    ) -> str:
+        """Record a note into the journal and project it.
+
+        The event is content-addressed, so remembering the same text at
+        the same instant is idempotent. ``now`` must be an explicit ISO
+        instant — the workspace never reads the wall clock.
+        """
+        moment = _parse_now(now)
+        content: dict[str, object] = {
+            "text": text,
+            "title": title,
+            "author": author,
+            "tags": sorted(tags or []),
+        }
+        event = Event(EventType.NOTE, moment, content)
+        self.ingest_events([event], now=now)
+        self.trace.record_decision(now, {"action": "remember", "event_id": event.event_id})
+        return event.event_id
+
+    def forget(self, item_id: str, *, now: str, reason: str = "") -> DeletionReport:
+        """Forget an item: delete with cascade, then tombstone it.
+
+        The journal frame stays (the hash chain must remain verifiable),
+        but the tombstone blocks the event from ever being re-projected
+        — on rebuild, on reopen, and on re-ingestion of the same event.
+        Ledger commitments sourced from deleted events are dropped too.
+        """
+        moment = _parse_now(now)
+        report = forget_item(
+            self.deletion,
+            item_id,
+            DeletionReason.USER_REQUEST,
+            moment,
+            requested_by="user",
+        )
+        deleted_keys = {entry.key for entry in report.deleted} | {item_id}
+        for commitment in self.ledger.all_commitments():
+            if set(commitment.source_event_ids) & deleted_keys:
+                self.ledger.remove(commitment.commitment_id)
+        self.journal.record_tombstone(item_id, reason or "user request")
+        self.trace.record_receipt(
+            now,
+            {"action": "forget", "item_id": item_id, "deleted": report.total_deleted},
+        )
+        return report

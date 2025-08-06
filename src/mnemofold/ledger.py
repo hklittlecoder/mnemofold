@@ -210,6 +210,27 @@ class CommitmentLedger:
         """All commitments ordered by (due_date, commitment_id)."""
         return sorted(self._commitments.values(), key=lambda c: (c.due_date, c.commitment_id))
 
+    def remove(self, commitment_id: str) -> bool:
+        """Drop a commitment entirely (used when its source is forgotten).
+
+        Unlike a status transition this removes the record; the removal
+        is still visible in the transition history of the source event
+        pipeline, and forgetting is recorded as a journal tombstone.
+        """
+        removed = self._commitments.pop(commitment_id, None)
+        if removed is None:
+            return False
+        self._history.append(
+            {
+                "commitment_id": commitment_id,
+                "action": "removed",
+                "from_status": str(removed.status),
+                "to_status": None,
+                "timestamp": removed.updated_at,
+            }
+        )
+        return True
+
     def transition_history(self) -> list[dict[str, Any]]:
         """Return the full transition history."""
         return list(self._history)
