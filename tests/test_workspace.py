@@ -261,3 +261,58 @@ class TestRememberForget:
     def test_forget_invalid_now_raises(self, tmp_path):
         with Workspace(tmp_path / "ws") as ws, pytest.raises(ValueError, match="invalid timestamp"):
             ws.forget("evt_x", now="nope")
+
+
+class TestForgetPaths:
+    """Forgotten content must stay gone through every derivation path."""
+
+    NOW = "2025-03-10T09:00:00+00:00"
+    LATER = "2025-03-11T09:00:00+00:00"
+
+    def test_digest_changes_after_forget(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events(_sample_events())
+            before = ws.stats().digest
+            victim = ws.stats()
+            target = sorted(ws.engine.index.ids())[0]
+            ws.forget(target, now=self.LATER)
+            assert ws.stats().digest != before
+            assert victim.events == ws.stats().events  # frame retained
+
+    def test_fold_over_store_cannot_resurrect(self, tmp_path):
+        from mnemofold.fold import Folder
+
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events(_sample_events())
+            target = sorted(ws.engine.index.ids())[0]
+            ws.forget(target, now=self.LATER)
+            Folder().fold(ws.store, self.LATER)
+            assert ws.store.peek(target) is None
+            assert target not in ws.engine.index.ids()
+
+    def test_rebuild_after_forget_keeps_item_gone(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events(_sample_events())
+            target = sorted(ws.engine.index.ids())[0]
+            ws.forget(target, now=self.LATER)
+            stats = ws.rebuild()
+            assert target not in ws.engine.index.ids()
+            assert stats.tombstones == 1
+
+    def test_tombstone_records_reason(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            item_id = ws.remember("note", now=self.NOW)
+            ws.forget(item_id, reason="right-to-forget", now=self.LATER)
+            stone = ws.journal.tombstone(item_id)
+            assert stone is not None
+            assert stone.reason == "right-to-forget"
+
+    def test_trace_contains_forget_receipt(self, tmp_path):
+        from mnemofold.replay import TraceReader
+
+        with Workspace(tmp_path / "ws") as ws:
+            item_id = ws.remember("note", now=self.NOW)
+            ws.forget(item_id, now=self.LATER)
+        entries = TraceReader(tmp_path / "ws" / "trace.jsonl").entries()
+        receipts = [e for e in entries if e.payload.get("action") == "forget"]
+        assert receipts and receipts[0].payload["item_id"] == item_id
