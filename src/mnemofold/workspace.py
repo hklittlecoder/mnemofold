@@ -25,7 +25,9 @@ from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.replay import TraceRecorder
 from mnemofold.retrieval import (
     RetrievalEngine,
+    SearchResult,
     build_deletion_engine,
+    parse_query,
 )
 from mnemofold.retrieval import (
     forget as forget_item,
@@ -254,3 +256,41 @@ class Workspace:
             {"action": "forget", "item_id": item_id, "deleted": report.total_deleted},
         )
         return report
+
+    # -- queries ---------------------------------------------------------------
+
+    def ask(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        as_of: str = "",
+        now: str = "",
+    ) -> list[SearchResult]:
+        """Search the workspace with the structured query grammar.
+
+        Supports the ``tag:`` / ``person:`` / ``project:`` / ``before:`` /
+        ``after:`` / ``on:`` filters; ``as_of`` additionally hides any
+        memory created after that instant. Citations in the results
+        always resolve to live (non-forgotten) memories. The lookup is
+        mirrored into the trace when ``now`` is given.
+        """
+        results = self.engine.search_parsed(parse_query(query), top_k=top_k, as_of=as_of)
+        if now:
+            self.trace.record_recall(now, {"query": query, "hits": [r.item_id for r in results]})
+        return results
+
+    def recall(self, item_id: str, *, now: str = "") -> MemoryItem | None:
+        """Fetch one memory by id, honoring tombstones.
+
+        Returns None for unknown ids AND for forgotten ids — tombstoned
+        content must never resurface through direct recall either. A
+        successful recall records access (feeding salience/decay) and is
+        mirrored into the trace when ``now`` is given.
+        """
+        if self._is_tombstoned(item_id):
+            return None
+        item = self.store.get(item_id)
+        if item is not None and now:
+            self.trace.record_recall(now, {"item_id": item_id})
+        return item
