@@ -480,3 +480,66 @@ class TestCmdMemoryOps:
         second = capsys.readouterr().out.strip().split()[1]
         assert rc == 0
         assert first == second
+
+
+class TestCmdAsk:
+    def _seeded(self, tmp_path) -> str:
+        db = str(tmp_path / "ws")
+        main(["ingest", "--db", db, "--seed", "5", "--days", "20"])
+        return db
+
+    def test_ask_returns_results(self, tmp_path, capsys):
+        db = self._seeded(tmp_path)
+        capsys.readouterr()
+        rc = main(["ask", "--db", db, "milestone update"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "result(s) for: milestone update" in out
+
+    def test_ask_json_shape(self, tmp_path, capsys):
+        db = self._seeded(tmp_path)
+        capsys.readouterr()
+        rc = main(["ask", "--db", db, "milestone", "--json", "--top", "3"])
+        data = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert isinstance(data, list)
+        assert len(data) <= 3
+        assert all("citation" in row for row in data)
+
+    def test_ask_finds_remembered_note(self, tmp_path, capsys):
+        db = str(tmp_path / "ws")
+        main(
+            [
+                "remember",
+                "--db",
+                db,
+                "--text",
+                "zephyr launch checklist",
+                "--now",
+                "2025-03-01T09:00:00+00:00",
+            ]
+        )
+        capsys.readouterr()
+        rc = main(["ask", "--db", db, "zephyr", "--json"])
+        data = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert len(data) >= 1  # the remembered note is findable by its text
+
+    def test_ask_as_of_excludes_later(self, tmp_path, capsys):
+        db = str(tmp_path / "ws")
+        main(
+            ["remember", "--db", db, "--text", "early zephyr", "--now", "2025-03-01T09:00:00+00:00"]
+        )
+        main(
+            ["remember", "--db", db, "--text", "late zephyr", "--now", "2025-06-01T09:00:00+00:00"]
+        )
+        capsys.readouterr()
+        rc = main(["ask", "--db", db, "zephyr", "--json", "--as-of", "2025-04-01T00:00:00+00:00"])
+        data = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert len(data) == 1
+
+    def test_ask_missing_workspace(self, tmp_path, capsys):
+        rc = main(["ask", "--db", str(tmp_path / "nope"), "x"])
+        assert rc == 1
+        assert "workspace not found" in capsys.readouterr().err

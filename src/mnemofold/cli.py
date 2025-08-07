@@ -158,6 +158,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_recall.add_argument("item_id", help="memory id to recall")
     p_recall.set_defaults(func=_cmd_recall)
 
+    # ask
+    p_ask = sub.add_parser("ask", help="search the workspace with filters")
+    p_ask.add_argument("--db", required=True, help="workspace directory")
+    p_ask.add_argument("query", help="query text with optional tag:/person:/before: filters")
+    p_ask.add_argument("--top", type=int, default=5, help="max results")
+    p_ask.add_argument("--as-of", default="", help="only results created at or before this instant")
+    p_ask.add_argument("--json", action="store_true", help="output JSON results")
+    p_ask.set_defaults(func=_cmd_ask)
+
     return parser
 
 
@@ -843,6 +852,34 @@ def _cmd_recall(args: argparse.Namespace) -> int:
     if item.tags:
         print(f"tags: {', '.join(sorted(item.tags))}")
     print(item.content)
+    return 0
+
+
+def _cmd_ask(args: argparse.Namespace) -> int:
+    workspace = _open_workspace(args.db)
+    if workspace is None:
+        return 1
+    try:
+        results = workspace.ask(args.query, top_k=args.top, as_of=args.as_of)
+    finally:
+        workspace.close()
+    if args.json:
+        import json
+
+        payload = [
+            {
+                "item_id": r.item_id,
+                "score": round(r.score, 6),
+                "title": r.title,
+                "citation": r.citation,
+            }
+            for r in results
+        ]
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"=== {len(results)} result(s) for: {args.query} ===")
+        for rank, r in enumerate(results, 1):
+            print(f"{rank:2d}. [{r.score:.3f}] {r.title[:60]} {r.citation}")
     return 0
 
 
