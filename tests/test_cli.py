@@ -543,3 +543,88 @@ class TestCmdAsk:
         rc = main(["ask", "--db", str(tmp_path / "nope"), "x"])
         assert rc == 1
         assert "workspace not found" in capsys.readouterr().err
+
+
+class TestCmdReports:
+    def _seeded(self, tmp_path) -> str:
+        db = str(tmp_path / "ws")
+        main(["ingest", "--db", db, "--seed", "42", "--days", "30"])
+        return db
+
+    def test_standup_markdown(self, tmp_path, capsys):
+        db = self._seeded(tmp_path)
+        capsys.readouterr()
+        rc = main(["standup", "--db", db])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Standup" in out
+
+    def test_standup_explicit_today_html(self, tmp_path, capsys):
+        db = self._seeded(tmp_path)
+        capsys.readouterr()
+        rc = main(["standup", "--db", db, "--today", "2025-01-20T00:00:00+00:00", "--html"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "<html" in out
+
+    def test_standup_invalid_today_returns_1(self, tmp_path, capsys):
+        db = self._seeded(tmp_path)
+        capsys.readouterr()
+        rc = main(["standup", "--db", db, "--today", "garbage"])
+        assert rc == 1
+        assert "invalid standup date" in capsys.readouterr().err
+
+    def test_review_markdown(self, tmp_path, capsys):
+        db = self._seeded(tmp_path)
+        capsys.readouterr()
+        rc = main(
+            [
+                "review",
+                "--db",
+                db,
+                "--start",
+                "2025-01-06T00:00:00+00:00",
+                "--end",
+                "2025-01-13T00:00:00+00:00",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Weekly Review" in out
+
+    def test_review_html(self, tmp_path, capsys):
+        db = self._seeded(tmp_path)
+        capsys.readouterr()
+        rc = main(
+            [
+                "review",
+                "--db",
+                db,
+                "--start",
+                "2025-01-06T00:00:00+00:00",
+                "--end",
+                "2025-01-13T00:00:00+00:00",
+                "--html",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "<html" in out
+
+    def test_reports_missing_workspace(self, tmp_path, capsys):
+        assert main(["standup", "--db", str(tmp_path / "nope")]) == 1
+        capsys.readouterr()
+        assert (
+            main(
+                [
+                    "review",
+                    "--db",
+                    str(tmp_path / "nope"),
+                    "--start",
+                    "2025-01-06T00:00:00+00:00",
+                    "--end",
+                    "2025-01-13T00:00:00+00:00",
+                ]
+            )
+            == 1
+        )

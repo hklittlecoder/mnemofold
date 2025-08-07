@@ -167,6 +167,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask.add_argument("--json", action="store_true", help="output JSON results")
     p_ask.set_defaults(func=_cmd_ask)
 
+    # standup
+    p_standup = sub.add_parser("standup", help="standup report from workspace ledger")
+    p_standup.add_argument("--db", required=True, help="workspace directory")
+    p_standup.add_argument("--today", help="ISO instant for 'today' (default: last event)")
+    p_standup.add_argument("--html", action="store_true", help="output HTML")
+    p_standup.set_defaults(func=_cmd_standup)
+
+    # review
+    p_review = sub.add_parser("review", help="weekly review from workspace ledger")
+    p_review.add_argument("--db", required=True, help="workspace directory")
+    p_review.add_argument("--start", required=True, help="ISO week start")
+    p_review.add_argument("--end", required=True, help="ISO week end")
+    p_review.add_argument("--html", action="store_true", help="output HTML")
+    p_review.set_defaults(func=_cmd_review)
+
     return parser
 
 
@@ -880,6 +895,46 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         print(f"=== {len(results)} result(s) for: {args.query} ===")
         for rank, r in enumerate(results, 1):
             print(f"{rank:2d}. [{r.score:.3f}] {r.title[:60]} {r.citation}")
+    return 0
+
+
+def _last_event_ts(workspace: Workspace) -> str:
+    """Timestamp of the most recent journal event (epoch fallback)."""
+    for event in workspace.journal.iter_events(reverse=True):
+        return event.timestamp.isoformat()
+    return "1970-01-01T00:00:00+00:00"
+
+
+def _cmd_standup(args: argparse.Namespace) -> int:
+    from .review import StandupGenerator, render_standup_html, render_standup_markdown
+
+    workspace = _open_workspace(args.db)
+    if workspace is None:
+        return 1
+    try:
+        today = args.today or _last_event_ts(workspace)
+        try:
+            data = StandupGenerator(workspace.ledger).generate(today)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+    finally:
+        workspace.close()
+    print(render_standup_html(data) if args.html else render_standup_markdown(data))
+    return 0
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    from .review import WeeklyReviewGenerator, render_weekly_html, render_weekly_markdown
+
+    workspace = _open_workspace(args.db)
+    if workspace is None:
+        return 1
+    try:
+        review = WeeklyReviewGenerator(workspace.ledger).generate(args.start, args.end)
+    finally:
+        workspace.close()
+    print(render_weekly_html(review) if args.html else render_weekly_markdown(review))
     return 0
 
 
