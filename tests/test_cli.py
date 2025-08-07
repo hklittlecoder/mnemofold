@@ -394,3 +394,89 @@ class TestCmdExport:
         rc = main(["export", "--db", str(tmp_path / "nope")])
         assert rc == 1
         assert "workspace not found" in capsys.readouterr().err
+
+
+class TestCmdMemoryOps:
+    NOW = "2025-03-10T09:00:00+00:00"
+    LATER = "2025-03-11T09:00:00+00:00"
+
+    def _remember(self, tmp_path, capsys, text="buy milk"):
+        db = str(tmp_path / "ws")
+        rc = main(
+            [
+                "remember",
+                "--db",
+                db,
+                "--text",
+                text,
+                "--title",
+                "errand",
+                "--tags",
+                "home,shop",
+                "--now",
+                self.NOW,
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert out.startswith("remembered evt_")
+        return db, out.strip().split()[1]
+
+    def test_remember_recall_forget_flow(self, tmp_path, capsys):
+        db, item_id = self._remember(tmp_path, capsys)
+        rc = main(["recall", "--db", db, item_id])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "buy milk" in out
+        assert "errand" in out
+        assert "home" in out
+
+        rc = main(["forget", "--db", db, item_id, "--now", self.LATER, "--reason", "done"])
+        assert rc == 0
+        assert "forgotten" in capsys.readouterr().out
+
+        rc = main(["recall", "--db", db, item_id])
+        assert rc == 1
+        assert "no live memory" in capsys.readouterr().err
+
+    def test_recall_unknown_item(self, tmp_path, capsys):
+        db, _ = self._remember(tmp_path, capsys)
+        rc = main(["recall", "--db", db, "evt_nope"])
+        assert rc == 1
+        assert "no live memory" in capsys.readouterr().err
+
+    def test_remember_bad_now_exits_one(self, tmp_path, capsys):
+        rc = main(["remember", "--db", str(tmp_path / "ws"), "--text", "x", "--now", "garbage"])
+        assert rc == 1
+        assert "invalid timestamp" in capsys.readouterr().err
+
+    def test_forget_unknown_item_exits_one(self, tmp_path, capsys):
+        db, _ = self._remember(tmp_path, capsys)
+        rc = main(["forget", "--db", db, "evt_ghost", "--now", self.LATER])
+        assert rc == 1
+
+    def test_forget_missing_workspace(self, tmp_path, capsys):
+        rc = main(["forget", "--db", str(tmp_path / "nope"), "evt_x", "--now", self.LATER])
+        assert rc == 1
+        assert "workspace not found" in capsys.readouterr().err
+
+    def test_remember_is_idempotent_from_cli(self, tmp_path, capsys):
+        db, first = self._remember(tmp_path, capsys)
+        rc = main(
+            [
+                "remember",
+                "--db",
+                db,
+                "--text",
+                "buy milk",
+                "--title",
+                "errand",
+                "--tags",
+                "home,shop",
+                "--now",
+                self.NOW,
+            ]
+        )
+        second = capsys.readouterr().out.strip().split()[1]
+        assert rc == 0
+        assert first == second
