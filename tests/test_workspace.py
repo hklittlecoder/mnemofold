@@ -138,6 +138,30 @@ class TestProjectEvent:
         event = _sample_events()[1]
         assert project_event(event).created_at == event.timestamp.isoformat()
 
+    def test_content_tags_are_projected(self):
+        event = Event(
+            EventType.NOTE,
+            T0,
+            {"text": "labelled note", "author": "alice", "tags": ["home", "shop"]},
+        )
+        item = project_event(event)
+        assert {"home", "shop"} <= item.tags
+        assert "note" in item.tags  # event type tag is always present
+
+    def test_non_string_tags_are_ignored(self):
+        event = Event(EventType.NOTE, T0, {"text": "x", "tags": ["ok", 3, "", None]})
+        item = project_event(event)
+        assert item.tags == {"note", "ok"}
+
+    def test_remember_tags_surface_on_recall(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            item_id = ws.remember(
+                "buy milk", now="2025-03-10T09:00:00+00:00", tags=["home", "shop"]
+            )
+            item = ws.recall(item_id)
+            assert item is not None
+            assert {"home", "shop"} <= item.tags
+
 
 class TestRebuildIdentity:
     def test_same_events_different_paths_same_digest(self, tmp_path):

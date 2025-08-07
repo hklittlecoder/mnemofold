@@ -56,19 +56,28 @@ def _parse_now(now: str) -> datetime:
 
 
 def project_event(event: Event) -> MemoryItem:
-    """Deterministic projection of one event into an episodic memory."""
+    """Deterministic projection of one event into an episodic memory.
+
+    The item always carries its event type as a tag; string ``tags``
+    lists in the payload (user labels, factory workflow tags) are merged
+    in so tag filters and recurrence mining can see them.
+    """
     parts = [str(v) for _k, v in sorted(event.content.items()) if isinstance(v, str) and v]
     text = " ".join(parts) or str(event.event_type.value)
     title = str(
         event.content.get("subject") or event.content.get("title") or event.event_type.value
     )
+    tags = {event.event_type.value}
+    content_tags = event.content.get("tags")
+    if isinstance(content_tags, list):
+        tags.update(str(tag) for tag in content_tags if isinstance(tag, str) and tag)
     return MemoryItem(
         item_id=event.event_id,
         tier=MemoryTier.EPISODIC,
         content=text,
         title=title,
         created_at=event.timestamp.isoformat(),
-        tags={event.event_type.value},
+        tags=tags,
         metadata={"event_type": event.event_type.value},
     )
 
