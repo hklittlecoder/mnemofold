@@ -316,3 +316,81 @@ class TestForgetPaths:
         entries = TraceReader(tmp_path / "ws" / "trace.jsonl").entries()
         receipts = [e for e in entries if e.payload.get("action") == "forget"]
         assert receipts and receipts[0].payload["item_id"] == item_id
+
+
+class TestWorkspaceQueries:
+    NOW = "2025-03-10T09:00:00+00:00"
+
+    def _workspace(self, tmp_path) -> Workspace:
+        ws = Workspace(tmp_path / "ws")
+        ws.ingest_events(_sample_events())
+        return ws
+
+    def test_ask_finds_ingested_content(self, tmp_path):
+        with self._workspace(tmp_path) as ws:
+            results = ws.ask("design thoughts")
+            assert results
+            assert any("design" in r.title.lower() or "design" in r.snippet for r in results)
+
+    def test_ask_citations_resolve(self, tmp_path):
+        with self._workspace(tmp_path) as ws:
+            results = ws.ask("kickoff")
+            for result in results:
+                assert ws.store.peek(result.item_id) is not None
+                assert result.citation == f"[{result.item_id}]"
+
+    def test_ask_honors_tag_filters(self, tmp_path):
+        with self._workspace(tmp_path) as ws:
+            results = ws.ask("tag:note")
+            assert results
+            for result in results:
+                item = ws.store.peek(result.item_id)
+                assert "note" in item.tags
+
+    def test_ask_as_of_hides_later_memories(self, tmp_path):
+        with Workspace(tmp_path / "ws") as ws:
+            ws.remember("early zephyr note", now="2025-03-01T09:00:00+00:00")
+            ws.remember("late zephyr note", now="2025-06-01T09:00:00+00:00")
+            all_hits = ws.ask("zephyr")
+            bounded = ws.ask("zephyr", as_of="2025-04-01T00:00:00+00:00")
+            assert len(all_hits) == 2
+            assert len(bounded) == 1
+            assert "early" in ws.store.peek(bounded[0].item_id).content
+
+    def test_ask_never_returns_forgotten(self, tmp_path):
+        with self._workspace(tmp_path) as ws:
+            target = sorted(ws.engine.index.ids())[0]
+            ws.forget(target, now="2025-03-11T09:00:00+00:00")
+            for result in ws.ask("kickoff design spec hello bob alice"):
+                assert result.item_id != target
+
+    def test_recall_returns_item_and_records_access(self, tmp_path):
+        with self._workspace(tmp_path) as ws:
+            target = sorted(ws.engine.index.ids())[0]
+            item = ws.recall(target)
+            assert item is not None
+            assert item.access_count == 1
+
+    def test_recall_unknown_and_forgotten_return_none(self, tmp_path):
+        with self._workspace(tmp_path) as ws:
+            assert ws.recall("evt_nope") is None
+            target = sorted(ws.engine.index.ids())[0]
+            ws.forget(target, now="2025-03-11T09:00:00+00:00")
+            assert ws.recall(target) is None
+
+    def test_ask_is_deterministic(self, tmp_path):
+        with self._workspace(tmp_path) as ws:
+            first = [(r.item_id, round(r.score, 6)) for r in ws.ask("update kickoff")]
+            second = [(r.item_id, round(r.score, 6)) for r in ws.ask("update kickoff")]
+            assert first == second
+
+    def test_queries_write_trace_entries(self, tmp_path):
+        from mnemofold.replay import TraceReader
+
+        with self._workspace(tmp_path) as ws:
+            ws.ask("kickoff", now=self.NOW)
+            target = sorted(ws.engine.index.ids())[0]
+            ws.recall(target, now=self.NOW)
+        entries = TraceReader(tmp_path / "ws" / "trace.jsonl").entries()
+        recalls = [e for e in entries if e.kind.value == "recall"]
+        assert len(recalls) == 2
