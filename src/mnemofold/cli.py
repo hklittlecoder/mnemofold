@@ -135,6 +135,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--out", help="write to file instead of stdout")
     p_export.set_defaults(func=_cmd_export)
 
+    # remember
+    p_remember = sub.add_parser("remember", help="record a note into the workspace")
+    p_remember.add_argument("--db", required=True, help="workspace directory")
+    p_remember.add_argument("--text", required=True, help="note text")
+    p_remember.add_argument("--title", default="", help="optional title")
+    p_remember.add_argument("--tags", default="", help="comma-separated tags")
+    p_remember.add_argument("--now", required=True, help="ISO instant for the note")
+    p_remember.set_defaults(func=_cmd_remember)
+
+    # forget
+    p_forget = sub.add_parser("forget", help="forget a memory (right to be forgotten)")
+    p_forget.add_argument("--db", required=True, help="workspace directory")
+    p_forget.add_argument("item_id", help="memory id to forget")
+    p_forget.add_argument("--reason", default="", help="reason recorded on the tombstone")
+    p_forget.add_argument("--now", required=True, help="ISO instant of the request")
+    p_forget.set_defaults(func=_cmd_forget)
+
+    # recall
+    p_recall = sub.add_parser("recall", help="fetch one memory by id")
+    p_recall.add_argument("--db", required=True, help="workspace directory")
+    p_recall.add_argument("item_id", help="memory id to recall")
+    p_recall.set_defaults(func=_cmd_recall)
+
     return parser
 
 
@@ -766,6 +789,60 @@ def _cmd_export(args: argparse.Namespace) -> int:
         print(f"Wrote {args.format} export to {args.out}")
     else:
         print(text)
+    return 0
+
+
+def _cmd_remember(args: argparse.Namespace) -> int:
+    from .workspace import Workspace
+
+    tags = [tag.strip() for tag in args.tags.split(",") if tag.strip()]
+    try:
+        workspace = Workspace(args.db)
+        try:
+            item_id = workspace.remember(args.text, now=args.now, title=args.title, tags=tags)
+        finally:
+            workspace.close()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"remembered {item_id}")
+    return 0
+
+
+def _cmd_forget(args: argparse.Namespace) -> int:
+    workspace = _open_workspace(args.db)
+    if workspace is None:
+        return 1
+    try:
+        report = workspace.forget(args.item_id, now=args.now, reason=args.reason)
+    except ValueError as exc:
+        workspace.close()
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    workspace.close()
+    if report.total_deleted == 0 and report.errors:
+        print(f"ERROR: {args.item_id}: {'; '.join(report.errors)}", file=sys.stderr)
+        return 1
+    print(f"forgotten {report.total_deleted} item(s); tombstone recorded")
+    return 0
+
+
+def _cmd_recall(args: argparse.Namespace) -> int:
+    workspace = _open_workspace(args.db)
+    if workspace is None:
+        return 1
+    item = workspace.recall(args.item_id)
+    workspace.close()
+    if item is None:
+        print(f"ERROR: no live memory for {args.item_id}", file=sys.stderr)
+        return 1
+    print(f"id: {item.item_id}")
+    print(f"tier: {item.tier.value}")
+    print(f"title: {item.title}")
+    print(f"created: {item.created_at}")
+    if item.tags:
+        print(f"tags: {', '.join(sorted(item.tags))}")
+    print(item.content)
     return 0
 
 
