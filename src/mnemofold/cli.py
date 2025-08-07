@@ -11,8 +11,12 @@ import argparse
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from . import __version__
+
+if TYPE_CHECKING:
+    from .workspace import Workspace
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -115,6 +119,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_triggers.add_argument("--days", type=int, default=30, help="days of history")
     p_triggers.add_argument("--json", action="store_true", help="output JSON")
     p_triggers.set_defaults(func=_cmd_triggers)
+
+    # ingest
+    p_ingest = sub.add_parser("ingest", help="ingest events into a workspace")
+    p_ingest.add_argument("--db", required=True, help="workspace directory")
+    p_ingest.add_argument("--seed", type=int, default=42, help="synthetic history seed")
+    p_ingest.add_argument("--days", type=int, default=30, help="days of synthetic history")
+    p_ingest.add_argument("--jsonl", help="ingest from a JSONL event file instead")
+    p_ingest.set_defaults(func=_cmd_ingest)
+
+    # export
+    p_export = sub.add_parser("export", help="export ledger and workspace stats")
+    p_export.add_argument("--db", required=True, help="workspace directory")
+    p_export.add_argument("--format", default="json", choices=["json", "markdown"])
+    p_export.add_argument("--out", help="write to file instead of stdout")
+    p_export.set_defaults(func=_cmd_export)
 
     return parser
 
@@ -659,6 +678,95 @@ def _parse_ts(raw: str) -> datetime:
     """Parse an ISO timestamp, assuming UTC when naive (e.g. bare dates)."""
     dt = datetime.fromisoformat(raw)
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def _open_workspace(db: str) -> Workspace | None:
+    """Open an existing workspace, or report and return None if absent."""
+    from pathlib import Path
+
+    from .workspace import Workspace
+
+    if not Path(db).exists():
+        print(f"ERROR: workspace not found: {db} (run 'ingest' first)", file=sys.stderr)
+        return None
+    return Workspace(db)
+
+
+def _cmd_ingest(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .workspace import Workspace
+
+    if args.jsonl:
+        from .events import Event
+
+        path = Path(args.jsonl)
+        if not path.exists():
+            print(f"ERROR: jsonl file not found: {args.jsonl}", file=sys.stderr)
+            return 1
+        events = [
+            Event.from_json(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        source = args.jsonl
+    else:
+        from .factory import WorkHistoryFactory
+
+        factory = WorkHistoryFactory(seed=args.seed, days=args.days)
+        synthetic, _manifest = factory.generate()
+        events = [e.to_event() for e in synthetic]
+        source = f"synthetic seed={args.seed} days={args.days}"
+
+    workspace = Workspace(args.db)
+    try:
+        added = workspace.ingest_events(events)
+        stats = workspace.stats()
+    finally:
+        workspace.close()
+
+    print("=== mnemofold ingest ===")
+    print(f"Source: {source}")
+    print(f"Workspace: {args.db}")
+    print(f"Ingested: {added} new events")
+    print(f"Events: {stats.events}  Memories: {stats.memories}  Commitments: {stats.commitments}")
+    print(f"Digest: {stats.digest}")
+    return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    workspace = _open_workspace(args.db)
+    if workspace is None:
+        return 1
+    try:
+        stats = workspace.stats()
+        if args.format == "json":
+            payload = {
+                "stats": {
+                    "events": stats.events,
+                    "memories": stats.memories,
+                    "commitments": stats.commitments,
+                    "tombstones": stats.tombstones,
+                    "head_checksum": stats.head_checksum,
+                    "digest": stats.digest,
+                },
+                "ledger": json.loads(workspace.ledger.to_json()),
+            }
+            text = json.dumps(payload, indent=2, sort_keys=True)
+        else:
+            text = workspace.ledger.to_markdown()
+    finally:
+        workspace.close()
+
+    if args.out:
+        Path(args.out).write_text(text + "\n", encoding="utf-8")
+        print(f"Wrote {args.format} export to {args.out}")
+    else:
+        print(text)
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
