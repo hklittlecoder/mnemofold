@@ -316,3 +316,81 @@ def test_cmd_eval_json_has_cards_and_aggregate(capsys):
     card_scenarios = [card["scenario"] for card in data["cards"]]
     assert any(s.startswith("triage-") for s in card_scenarios)
     assert any(s.startswith("asof-") for s in card_scenarios)
+
+
+class TestCmdIngest:
+    def test_ingest_synthetic_creates_workspace(self, tmp_path, capsys):
+        db = str(tmp_path / "ws")
+        rc = main(["ingest", "--db", db, "--seed", "5", "--days", "10"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Ingested:" in out
+        assert (tmp_path / "ws" / "journal.db").exists()
+
+    def test_ingest_twice_is_idempotent(self, tmp_path, capsys):
+        db = str(tmp_path / "ws")
+        main(["ingest", "--db", db, "--seed", "5", "--days", "10"])
+        capsys.readouterr()
+        rc = main(["ingest", "--db", db, "--seed", "5", "--days", "10"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Ingested: 0 new events" in out
+
+    def test_ingest_from_jsonl(self, tmp_path, capsys):
+        from mnemofold.factory import WorkHistoryFactory
+
+        factory = WorkHistoryFactory(seed=3, days=5)
+        synthetic, _ = factory.generate()
+        jsonl = tmp_path / "in.jsonl"
+        jsonl.write_text(
+            "\n".join(e.to_event().to_json() for e in synthetic[:10]) + "\n",
+            encoding="utf-8",
+        )
+        db = str(tmp_path / "ws")
+        rc = main(["ingest", "--db", db, "--jsonl", str(jsonl)])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Ingested: 10 new events" in out
+
+    def test_ingest_missing_jsonl_returns_1(self, tmp_path, capsys):
+        rc = main(["ingest", "--db", str(tmp_path / "ws"), "--jsonl", "/no/such.jsonl"])
+        assert rc == 1
+        assert "not found" in capsys.readouterr().err
+
+
+class TestCmdExport:
+    def _ingested(self, tmp_path) -> str:
+        db = str(tmp_path / "ws")
+        main(["ingest", "--db", db, "--seed", "5", "--days", "14"])
+        return db
+
+    def test_export_json(self, tmp_path, capsys):
+        db = self._ingested(tmp_path)
+        capsys.readouterr()
+        rc = main(["export", "--db", db, "--format", "json"])
+        data = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert data["stats"]["events"] > 0
+        assert "ledger" in data
+
+    def test_export_markdown(self, tmp_path, capsys):
+        db = self._ingested(tmp_path)
+        capsys.readouterr()
+        rc = main(["export", "--db", db, "--format", "markdown"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Commitment Ledger" in out
+
+    def test_export_to_file(self, tmp_path, capsys):
+        db = self._ingested(tmp_path)
+        capsys.readouterr()
+        out_file = tmp_path / "export.json"
+        rc = main(["export", "--db", db, "--out", str(out_file)])
+        assert rc == 0
+        assert out_file.exists()
+        assert json.loads(out_file.read_text())["stats"]["events"] > 0
+
+    def test_export_missing_workspace_returns_1(self, tmp_path, capsys):
+        rc = main(["export", "--db", str(tmp_path / "nope")])
+        assert rc == 1
+        assert "workspace not found" in capsys.readouterr().err
