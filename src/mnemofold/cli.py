@@ -182,6 +182,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument("--html", action="store_true", help="output HTML")
     p_review.set_defaults(func=_cmd_review)
 
+    # playbooks
+    p_playbooks = sub.add_parser("playbooks", help="mine playbook proposals from workspace memory")
+    p_playbooks.add_argument("--db", required=True, help="workspace directory")
+    p_playbooks.add_argument("--min-repeats", type=int, default=3, help="recurrence floor")
+    p_playbooks.add_argument("--json", action="store_true", help="output JSON proposals")
+    p_playbooks.set_defaults(func=_cmd_playbooks)
+
     return parser
 
 
@@ -935,6 +942,38 @@ def _cmd_review(args: argparse.Namespace) -> int:
     finally:
         workspace.close()
     print(render_weekly_html(review) if args.html else render_weekly_markdown(review))
+    return 0
+
+
+def _cmd_playbooks(args: argparse.Namespace) -> int:
+    from .fold import Folder
+
+    workspace = _open_workspace(args.db)
+    if workspace is None:
+        return 1
+    try:
+        folder = Folder(min_episodes_for_recurrence=args.min_repeats)
+        report = folder.fold(workspace.store, _last_event_ts(workspace))
+    finally:
+        workspace.close()
+    proposals = report.recurrence_proposals
+    if args.json:
+        import json
+
+        print(json.dumps(proposals, indent=2, sort_keys=True))
+    else:
+        print(f"=== {len(proposals)} playbook proposal(s) ===")
+        for proposal in proposals[:20]:
+            if proposal.get("kind") == "workflow_sequence":
+                steps = " -> ".join(proposal["steps"])
+                print(
+                    f"- workflow '{proposal['workflow']}': {steps} ({proposal['run_count']} runs)"
+                )
+            else:
+                print(
+                    f"- tag '{proposal.get('pattern_tag')}': "
+                    f"{proposal.get('instance_count')} instances"
+                )
     return 0
 
 

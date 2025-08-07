@@ -628,3 +628,38 @@ class TestCmdReports:
             )
             == 1
         )
+
+
+class TestCmdPlaybooks:
+    def _seeded(self, tmp_path, days=40) -> str:
+        db = str(tmp_path / "ws")
+        main(["ingest", "--db", db, "--seed", "5", "--days", str(days)])
+        return db
+
+    def test_playbooks_runs(self, tmp_path, capsys):
+        db = self._seeded(tmp_path)
+        capsys.readouterr()
+        rc = main(["playbooks", "--db", db])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "playbook proposal" in out
+
+    def test_playbooks_json_is_list(self, tmp_path, capsys):
+        db = self._seeded(tmp_path)
+        capsys.readouterr()
+        rc = main(["playbooks", "--db", db, "--json"])
+        data = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert isinstance(data, list)
+
+    def test_high_min_repeats_yields_fewer(self, tmp_path, capsys):
+        db = self._seeded(tmp_path)
+        capsys.readouterr()
+        main(["playbooks", "--db", db, "--min-repeats", "100000", "--json"])
+        data = json.loads(capsys.readouterr().out)
+        assert data == []
+
+    def test_playbooks_missing_workspace(self, tmp_path, capsys):
+        rc = main(["playbooks", "--db", str(tmp_path / "nope")])
+        assert rc == 1
+        assert "workspace not found" in capsys.readouterr().err
