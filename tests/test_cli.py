@@ -663,3 +663,66 @@ class TestCmdPlaybooks:
         rc = main(["playbooks", "--db", str(tmp_path / "nope")])
         assert rc == 1
         assert "workspace not found" in capsys.readouterr().err
+
+
+EXPECTED_SUBCOMMANDS = {
+    "version",
+    "eval",
+    "demo",
+    "replay",
+    "diff",
+    "ledger",
+    "triage",
+    "fold",
+    "asof",
+    "context",
+    "prep",
+    "privacy",
+    "triggers",
+    "ingest",
+    "export",
+    "remember",
+    "forget",
+    "recall",
+    "ask",
+    "standup",
+    "review",
+    "playbooks",
+}
+
+
+def _subparser_choices() -> dict:
+    import argparse
+
+    parser = build_parser()
+    action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    return action.choices
+
+
+class TestCliSurface:
+    def test_all_subcommands_registered(self):
+        assert set(_subparser_choices()) == EXPECTED_SUBCOMMANDS
+
+    def test_every_subcommand_has_help(self):
+        for name, subparser in _subparser_choices().items():
+            assert subparser.description or subparser.format_usage(), name
+
+    def test_help_lists_every_subcommand(self, capsys):
+        with pytest.raises(SystemExit):
+            main(["--help"])
+        out = capsys.readouterr().out
+        for name in EXPECTED_SUBCOMMANDS:
+            assert name in out
+
+    def test_no_args_is_an_error(self):
+        with pytest.raises(SystemExit):
+            main([])
+
+    def test_unknown_subcommand_errors(self):
+        with pytest.raises(SystemExit):
+            main(["not-a-command"])
+
+    def test_workspace_commands_require_db(self):
+        for name in ("ingest", "export", "ask", "recall", "remember", "forget"):
+            with pytest.raises(SystemExit):
+                main([name])
