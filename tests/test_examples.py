@@ -87,3 +87,35 @@ class TestContradictionMonthExample:
         first = capsys.readouterr().out
         module.main()
         assert first == capsys.readouterr().out
+
+
+class TestFoldingDemoExample:
+    def test_runs_and_reports_ok(self, capsys):
+        rc = load_example("folding_demo").main()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "RESULT: OK" in out
+
+    def test_second_fold_is_idempotent(self, capsys):
+        load_example("folding_demo").main()
+        out = capsys.readouterr().out
+        assert "second fold idempotent: merges=0 new_semantic=0" in out
+
+    def test_workflow_mined_into_playbook(self, capsys):
+        load_example("folding_demo").main()
+        out = capsys.readouterr().out
+        assert "draft -> review -> publish" in out
+        assert "approved playbooks: ['pb-release']" in out
+
+    def test_report_markdown_embedded(self, capsys):
+        load_example("folding_demo").main()
+        out = capsys.readouterr().out
+        assert "# Fold Report nightly-demo" in out
+
+    @pytest.mark.slow
+    def test_output_is_deterministic(self, capsys):
+        module = load_example("folding_demo")
+        module.main()
+        first = capsys.readouterr().out
+        module.main()
+        assert first == capsys.readouterr().out
