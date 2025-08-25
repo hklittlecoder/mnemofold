@@ -60,9 +60,18 @@ def test_training_loss_trend_downward():
     assert last_quarter < first_quarter
 
 
+def test_seeded_construction_gives_identical_weights():
+    model1 = SalienceMLP(hidden_dim=16, seed=5)
+    model2 = SalienceMLP(hidden_dim=16, seed=5)
+    for p1, p2 in zip(model1.parameters(), model2.parameters(), strict=True):
+        assert bool((p1 == p2).all())
+
+
 def test_deterministic_training():
-    model1 = SalienceMLP(hidden_dim=16)
-    model2 = SalienceMLP(hidden_dim=16)
+    # Seeded construction pins initial weights; seeded training pins the
+    # optimization order — together they make the run reproducible.
+    model1 = SalienceMLP(hidden_dim=16, seed=5)
+    model2 = SalienceMLP(hidden_dim=16, seed=5)
     features, labels = generate_synthetic_dataset(n_samples=100, seed=7)
     r1 = train_salience_model(model1, features, labels, epochs=10, seed=99)
     r2 = train_salience_model(model2, features, labels, epochs=10, seed=99)

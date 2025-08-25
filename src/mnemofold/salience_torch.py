@@ -39,10 +39,19 @@ FEATURE_NAMES = [
 
 
 class SalienceMLP(nn.Module):
-    """A small MLP that maps salience features to a score in [0, 1]."""
+    """A small MLP that maps salience features to a score in [0, 1].
 
-    def __init__(self, hidden_dim: int = 16) -> None:
+    ``seed`` makes weight initialization reproducible: two models built
+    with the same seed and shape start from identical weights, so a
+    subsequent seeded training run is byte-identical. Without a seed the
+    global torch RNG state is used (construction is then non-reproducible
+    on its own), matching the usual PyTorch convention.
+    """
+
+    def __init__(self, hidden_dim: int = 16, seed: int | None = None) -> None:
         super().__init__()
+        if seed is not None:
+            torch.manual_seed(seed)
         self.net = nn.Sequential(
             nn.Linear(N_FEATURES, hidden_dim),
             nn.ReLU(),
