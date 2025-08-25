@@ -1,6 +1,6 @@
 PYTHON = .venv/bin/python
 
-.PHONY: build test format-check format lint test-all typecheck release clean
+.PHONY: build test format-check format lint test-all typecheck examples release clean
 
 build:
 	$(PYTHON) -m build --wheel --no-isolation
@@ -22,6 +22,9 @@ lint:
 
 test-all:
 	$(PYTHON) -m pytest -q
+
+examples:
+	$(PYTHON) scripts/run_examples.py
 
 typecheck:
 	$(PYTHON) -m mypy src/mnemofold
