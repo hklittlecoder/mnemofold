@@ -119,3 +119,39 @@ class TestFoldingDemoExample:
         first = capsys.readouterr().out
         module.main()
         assert first == capsys.readouterr().out
+
+
+class TestAssistantWeekExample:
+    def test_runs_and_reports_ok(self, capsys):
+        rc = load_example("assistant_week").main()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "RESULT: OK" in out
+
+    def test_workspace_and_triage_reported(self, capsys):
+        load_example("assistant_week").main()
+        out = capsys.readouterr().out
+        assert "workspace: events=" in out
+        assert "triage: ranked=" in out
+
+    def test_suite_passes_and_aggregate_printed(self, capsys):
+        load_example("assistant_week").main()
+        out = capsys.readouterr().out
+        assert "suite overall_pass: True" in out
+        assert "aggregate commitment_recall: 1.0000" in out
+        assert "aggregate privacy_violations: 0.0000" in out
+
+    def test_context_pack_within_budget(self, capsys):
+        load_example("assistant_week").main()
+        out = capsys.readouterr().out
+        line = next(line for line in out.splitlines() if "context pack:" in line)
+        used, budget = line.split("tokens")[0].split()[-1].split("/")
+        assert int(used) <= int(budget)
+
+    @pytest.mark.slow
+    def test_output_is_deterministic(self, capsys):
+        module = load_example("assistant_week")
+        module.main()
+        first = capsys.readouterr().out
+        module.main()
+        assert first == capsys.readouterr().out
