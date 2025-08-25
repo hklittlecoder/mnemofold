@@ -43,6 +43,9 @@ jobs:
       - name: Run full test suite
         run: make test-all
 
+      - name: Run offline examples
+        run: make examples
+
       - name: Check formatting
         run: make format-check
 
