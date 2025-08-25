@@ -435,3 +435,84 @@ class TestPlanLoopExecution:
         outcomes = PlanLoop(plan=plan).run_to_completion(_echo_registry())
         assert outcomes == []
         assert plan.status == PlanStatus.COMPLETED
+
+
+class TestMoneyBudget:
+    def test_unlimited_by_default(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            steps=[PlanStep(step_id="a", name="A", tool="noop", cost_money=1000.0)],
+        )
+        outcomes = PlanLoop(plan=plan).run_to_completion(_echo_registry())
+        assert outcomes[0].status == "completed"
+        assert plan.money_spent == 1000.0
+
+    def test_spending_accumulates(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            money_budget=10.0,
+            steps=[
+                PlanStep(step_id="a", name="A", tool="noop", cost_money=1.5),
+                PlanStep(step_id="b", name="B", tool="noop", cost_money=2.25),
+            ],
+        )
+        PlanLoop(plan=plan).run_to_completion(_echo_registry())
+        assert plan.money_spent == 3.75
+        assert plan.status == PlanStatus.COMPLETED
+
+    def test_insufficient_money_skips_step(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            money_budget=5.0,
+            steps=[
+                PlanStep(step_id="a", name="A", tool="noop", cost_money=4.0),
+                PlanStep(step_id="b", name="B", tool="noop", cost_money=4.0),
+            ],
+        )
+        outcomes = PlanLoop(plan=plan).run_to_completion(_echo_registry())
+        statuses = {o.step_id: o.status for o in outcomes}
+        assert statuses["a"] == "completed"
+        assert statuses["b"] == "skipped"
+        assert plan.money_spent == 4.0
+        assert plan.status == PlanStatus.FAILED  # skipped work leaves the plan unfinished
+
+    def test_failed_tool_still_charges_money(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            money_budget=10.0,
+            steps=[PlanStep(step_id="a", name="A", tool="boom", cost_money=3.0)],
+        )
+        outcomes = PlanLoop(plan=plan).run_to_completion(_echo_registry())
+        assert outcomes[0].status == "failed"
+        assert plan.money_spent == 3.0
+
+    def test_can_continue_false_when_money_exhausted(self):
+        plan = Plan(plan_id="p", name="n", money_budget=5.0, money_spent=5.0, steps=[])
+        assert PlanLoop(plan=plan).can_continue() is False
+
+    def test_outcome_reports_money_spent(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            money_budget=10.0,
+            steps=[PlanStep(step_id="a", name="A", tool="noop", cost_money=2.5)],
+        )
+        outcomes = PlanLoop(plan=plan).run_to_completion(_echo_registry())
+        assert outcomes[0].money_spent == 2.5
+
+    def test_serialization_roundtrip_includes_budgets(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            money_budget=9.5,
+            steps=[PlanStep(step_id="a", name="A", budget_tokens=10, cost_money=1.25)],
+        )
+        restored = Plan.from_dict(plan.to_dict())
+        assert restored.money_budget == 9.5
+        assert restored.steps[0].cost_money == 1.25
+        # budget_tokens was previously dropped by to_dict; it now round-trips
+        assert restored.steps[0].budget_tokens == 10

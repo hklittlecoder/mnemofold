@@ -34,6 +34,7 @@ class PlanStep:
     effects: list[str] = field(default_factory=list)
     depends_on: list[str] = field(default_factory=list)
     budget_tokens: int = 0
+    cost_money: float = 0.0
     status: str = "pending"  # pending, running, completed, failed, skipped
 
 
@@ -48,6 +49,8 @@ class Plan:
     total_budget_tokens: int = 100000
     token_used: int = 0
     step_budget: int = 100
+    money_budget: float = 0.0  # 0 means unlimited
+    money_spent: float = 0.0
 
     def __post_init__(self) -> None:
         if isinstance(self.status, str):
@@ -69,12 +72,16 @@ class Plan:
                     "preconditions": list(s.preconditions),
                     "effects": list(s.effects),
                     "depends_on": list(s.depends_on),
+                    "budget_tokens": s.budget_tokens,
+                    "cost_money": round(s.cost_money, 6),
                     "status": s.status,
                 }
                 for s in self.steps
             ],
             "total_budget_tokens": self.total_budget_tokens,
             "step_budget": self.step_budget,
+            "money_budget": self.money_budget,
+            "money_spent": round(self.money_spent, 6),
             "metadata": self.metadata,
         }
 
@@ -87,6 +94,8 @@ class Plan:
             status=d.get("status", PlanStatus.DRAFT),
             total_budget_tokens=d.get("total_budget_tokens", 100000),
             step_budget=d.get("step_budget", 100),
+            money_budget=d.get("money_budget", 0.0),
+            money_spent=d.get("money_spent", 0.0),
             metadata=d.get("metadata", {}),
         )
         for sd in d.get("steps", []):
@@ -100,6 +109,8 @@ class Plan:
                     preconditions=sd.get("preconditions", []),
                     effects=sd.get("effects", []),
                     depends_on=sd.get("depends_on", []),
+                    budget_tokens=sd.get("budget_tokens", 0),
+                    cost_money=sd.get("cost_money", 0.0),
                     status=sd.get("status", "pending"),
                 )
             )
@@ -230,10 +241,11 @@ class StepOutcome:
     """Result of executing one plan step."""
 
     step_id: str
-    status: str  # completed | failed | skipped
+    status: str  # completed | failed | skipped | deferred
     output: Any = None
     error: str = ""
     tokens_spent: int = 0
+    money_spent: float = 0.0
 
 
 @dataclass
@@ -244,8 +256,8 @@ class PlanLoop:
 
     * the next runnable step is the first ``pending`` step in declaration
       order whose dependencies all completed;
-    * a step whose ``budget_tokens`` would exceed the remaining plan
-      budget is marked ``skipped`` and costs nothing;
+    * a step whose ``budget_tokens`` or ``cost_money`` would exceed the
+      remaining plan budgets is marked ``skipped`` and costs nothing;
     * tool failures and validation/policy errors mark the step (and the
       plan) failed and stop the loop;
     * successful outputs are bound to the step's declared ``outputs``
@@ -260,6 +272,8 @@ class PlanLoop:
 
     def can_continue(self) -> bool:
         if self.plan.token_used >= self.plan.total_budget_tokens:
+            return False
+        if self.plan.money_budget > 0 and self.plan.money_spent >= self.plan.money_budget:
             return False
         if self.iteration >= self.max_iterations:
             return False
@@ -323,20 +337,41 @@ class PlanLoop:
             return StepOutcome(
                 step_id=step.step_id, status="skipped", error="token budget exhausted"
             )
+        money_cost = max(0.0, step.cost_money)
+        if (
+            self.plan.money_budget > 0
+            and self.plan.money_spent + money_cost > self.plan.money_budget
+        ):
+            step.status = "skipped"
+            return StepOutcome(
+                step_id=step.step_id, status="skipped", error="money budget exhausted"
+            )
         if not step.tool:
             step.status = "completed"
             self.plan.token_used += cost
-            return StepOutcome(step_id=step.step_id, status="completed", tokens_spent=cost)
+            self.plan.money_spent = round(self.plan.money_spent + money_cost, 6)
+            return StepOutcome(
+                step_id=step.step_id,
+                status="completed",
+                tokens_spent=cost,
+                money_spent=money_cost,
+            )
         try:
             result = registry.invoke(step.tool, self._resolve_inputs(step))
         except (ToolValidationError, ToolPolicyError) as exc:
             step.status = "failed"
             self.plan.status = PlanStatus.FAILED
             self.plan.token_used += cost
+            self.plan.money_spent = round(self.plan.money_spent + money_cost, 6)
             return StepOutcome(
-                step_id=step.step_id, status="failed", error=str(exc), tokens_spent=cost
+                step_id=step.step_id,
+                status="failed",
+                error=str(exc),
+                tokens_spent=cost,
+                money_spent=money_cost,
             )
         self.plan.token_used += cost
+        self.plan.money_spent = round(self.plan.money_spent + money_cost, 6)
         if result.success:
             step.status = "completed"
             self._bind_outputs(step, result.output)
@@ -345,11 +380,16 @@ class PlanLoop:
                 status="completed",
                 output=result.output,
                 tokens_spent=cost,
+                money_spent=money_cost,
             )
         step.status = "failed"
         self.plan.status = PlanStatus.FAILED
         return StepOutcome(
-            step_id=step.step_id, status="failed", error=result.error, tokens_spent=cost
+            step_id=step.step_id,
+            status="failed",
+            error=result.error,
+            tokens_spent=cost,
+            money_spent=money_cost,
         )
 
     def run_to_completion(self, registry: ToolRegistry) -> list[StepOutcome]:
