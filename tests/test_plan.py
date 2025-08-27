@@ -1,3 +1,6 @@
+from datetime import UTC, datetime, timedelta
+
+from mnemofold.approvals import ApprovalQueue, ApprovalStatus, Approver, ApproverPersona
 from mnemofold.plan import (
     Plan,
     PlanDiff,
@@ -516,3 +519,148 @@ class TestMoneyBudget:
         assert restored.steps[0].cost_money == 1.25
         # budget_tokens was previously dropped by to_dict; it now round-trips
         assert restored.steps[0].budget_tokens == 10
+
+
+APPROVAL_NOW = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+
+
+def _approval_queue(persona: ApproverPersona, latency: timedelta = timedelta()) -> ApprovalQueue:
+    queue = ApprovalQueue()
+    queue.add_approver(Approver(name="plan-approver", persona=persona, decision_latency=latency))
+    return queue
+
+
+class TestApprovalGatedSteps:
+    def _plan(self) -> Plan:
+        return Plan(
+            plan_id="p",
+            name="gated",
+            steps=[
+                PlanStep(step_id="a", name="A", tool="noop", requires_approval=True),
+                PlanStep(step_id="b", name="B", tool="noop", depends_on=["a"]),
+            ],
+        )
+
+    def test_auto_approve_executes_step(self):
+        plan = self._plan()
+        loop = PlanLoop(
+            plan=plan,
+            approvals=_approval_queue(ApproverPersona.AUTO_APPROVE),
+            now=APPROVAL_NOW,
+        )
+        outcomes = loop.run_to_completion(_echo_registry())
+        assert [o.status for o in outcomes] == ["completed", "completed"]
+        assert plan.status == PlanStatus.COMPLETED
+
+    def test_auto_deny_fails_step_and_plan(self):
+        plan = self._plan()
+        loop = PlanLoop(
+            plan=plan,
+            approvals=_approval_queue(ApproverPersona.AUTO_DENY),
+            now=APPROVAL_NOW,
+        )
+        outcomes = loop.run_to_completion(_echo_registry())
+        assert outcomes[0].status == "denied"
+        assert plan.status == PlanStatus.FAILED
+        assert plan.steps[1].status == "pending"  # dependent never ran
+
+    def test_ask_persona_defers_then_resumes(self):
+        plan = self._plan()
+        queue = _approval_queue(ApproverPersona.ASK)
+        loop = PlanLoop(plan=plan, approvals=queue, now=APPROVAL_NOW)
+        outcomes = loop.run_to_completion(_echo_registry())
+        assert outcomes[0].status == "deferred"
+        assert plan.status == PlanStatus.RUNNING  # resumable, not failed
+        # a decision lands, then the same loop resumes where it left off
+        queue.decide("p:a", True, APPROVAL_NOW)
+        resumed = loop.run_to_completion(_echo_registry())
+        assert [o.status for o in resumed] == ["completed", "completed"]
+        assert plan.status == PlanStatus.COMPLETED
+
+    def test_missing_queue_defers_instead_of_running(self):
+        plan = self._plan()
+        outcomes = PlanLoop(plan=plan, now=APPROVAL_NOW).run_to_completion(_echo_registry())
+        assert outcomes[0].status == "deferred"
+        assert plan.status == PlanStatus.RUNNING
+
+    def test_denial_recorded_in_queue(self):
+        plan = self._plan()
+        queue = _approval_queue(ApproverPersona.AUTO_DENY)
+        PlanLoop(plan=plan, approvals=queue, now=APPROVAL_NOW).run_to_completion(_echo_registry())
+        request = queue.requests[0]
+        assert request.request_id == "p:a"
+        assert request.item_kind == "plan_step"
+        assert request.status == ApprovalStatus.DENIED
+        assert request.decision_note == "auto-denied"
+
+    def test_request_submitted_only_once_across_resumes(self):
+        plan = Plan(
+            plan_id="p",
+            name="gated",
+            steps=[PlanStep(step_id="a", name="A", tool="noop", requires_approval=True)],
+        )
+        queue = _approval_queue(ApproverPersona.ASK)
+        loop = PlanLoop(plan=plan, approvals=queue, now=APPROVAL_NOW)
+        loop.run_to_completion(_echo_registry())
+        # second pass must not duplicate the request even though the step
+        # was reset for the resume
+        plan.steps[0].status = "pending"
+        loop.run_to_completion(_echo_registry())
+        assert len(queue.requests) == 1
+
+    def test_custom_approver_name(self):
+        plan = Plan(
+            plan_id="p",
+            name="gated",
+            steps=[
+                PlanStep(
+                    step_id="a",
+                    name="A",
+                    tool="noop",
+                    requires_approval=True,
+                    approver="alice",
+                )
+            ],
+        )
+        queue = ApprovalQueue()
+        queue.add_approver(
+            Approver(
+                name="alice",
+                persona=ApproverPersona.AUTO_APPROVE,
+                decision_latency=timedelta(),
+            )
+        )
+        loop = PlanLoop(plan=plan, approvals=queue, now=APPROVAL_NOW)
+        outcomes = loop.run_to_completion(_echo_registry())
+        assert outcomes[0].status == "completed"
+        assert queue.requests[0].approver == "alice"
+
+    def test_serialization_roundtrip_includes_gate(self):
+        plan = self._plan()
+        restored = Plan.from_dict(plan.to_dict())
+        assert restored.steps[0].requires_approval is True
+        assert restored.steps[0].approver == ""
+
+    def test_denied_step_charges_no_budget(self):
+        plan = Plan(
+            plan_id="p",
+            name="gated",
+            steps=[
+                PlanStep(
+                    step_id="a",
+                    name="A",
+                    tool="noop",
+                    requires_approval=True,
+                    budget_tokens=50,
+                    cost_money=5.0,
+                )
+            ],
+        )
+        loop = PlanLoop(
+            plan=plan,
+            approvals=_approval_queue(ApproverPersona.AUTO_DENY),
+            now=APPROVAL_NOW,
+        )
+        loop.run_to_completion(_echo_registry())
+        assert plan.token_used == 0
+        assert plan.money_spent == 0.0

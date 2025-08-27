@@ -8,9 +8,11 @@ and a perceive-plan-act-observe loop with budgets.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from mnemofold.approvals import ApprovalQueue, ApprovalRequest, ApprovalStatus
 from mnemofold.tools import ToolPolicyError, ToolRegistry, ToolValidationError
 
 
@@ -35,7 +37,9 @@ class PlanStep:
     depends_on: list[str] = field(default_factory=list)
     budget_tokens: int = 0
     cost_money: float = 0.0
-    status: str = "pending"  # pending, running, completed, failed, skipped
+    requires_approval: bool = False
+    approver: str = ""
+    status: str = "pending"  # pending, running, completed, failed, skipped, deferred, denied
 
 
 @dataclass
@@ -74,6 +78,8 @@ class Plan:
                     "depends_on": list(s.depends_on),
                     "budget_tokens": s.budget_tokens,
                     "cost_money": round(s.cost_money, 6),
+                    "requires_approval": s.requires_approval,
+                    "approver": s.approver,
                     "status": s.status,
                 }
                 for s in self.steps
@@ -111,6 +117,8 @@ class Plan:
                     depends_on=sd.get("depends_on", []),
                     budget_tokens=sd.get("budget_tokens", 0),
                     cost_money=sd.get("cost_money", 0.0),
+                    requires_approval=sd.get("requires_approval", False),
+                    approver=sd.get("approver", ""),
                     status=sd.get("status", "pending"),
                 )
             )
@@ -268,6 +276,8 @@ class PlanLoop:
     current_step_index: int = 0
     iteration: int = 0
     max_iterations: int = 100
+    approvals: ApprovalQueue | None = None
+    now: datetime | None = None
     _outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def can_continue(self) -> bool:
@@ -326,11 +336,59 @@ class PlanLoop:
             bound[step.outputs[0]] = output
         self._outputs[step.step_id] = bound
 
+    def _check_approval(self, step: PlanStep) -> str:
+        """Resolve a step's approval gate: 'approved', 'denied', or 'deferred'.
+
+        Steps that do not require approval pass straight through. When a
+        step requires approval but no :class:`ApprovalQueue` is wired, the
+        step is deferred rather than silently run — an unguarded side
+        effect is never executed. When a queue is present, a request is
+        submitted (once) and driven by the scripted personas; a still-open
+        request defers the step.
+        """
+        if not step.requires_approval:
+            return "approved"
+        if self.approvals is None:
+            return "deferred"
+        request_id = f"{self.plan.plan_id}:{step.step_id}"
+        existing = next((r for r in self.approvals.requests if r.request_id == request_id), None)
+        if existing is None:
+            self.approvals.submit(
+                ApprovalRequest(
+                    request_id=request_id,
+                    item_id=step.step_id,
+                    item_kind="plan_step",
+                    summary=f"Execute plan step '{step.name}'",
+                    requester=self.plan.plan_id,
+                    approver=step.approver or "plan-approver",
+                    created_at=self.now,
+                )
+            )
+        if self.now is not None:
+            self.approvals.auto_resolve(self.now)
+            self.approvals.tick_expirations(self.now)
+        request = next((r for r in self.approvals.requests if r.request_id == request_id), None)
+        if request is None:
+            return "deferred"
+        if request.status == ApprovalStatus.APPROVED:
+            return "approved"
+        if request.status in (ApprovalStatus.DENIED, ApprovalStatus.EXPIRED):
+            return "denied"
+        return "deferred"
+
     def run_step(self, registry: ToolRegistry) -> StepOutcome | None:
         step = self.next_runnable()
         if step is None:
             return None
         self.iteration += 1
+        gate = self._check_approval(step)
+        if gate == "denied":
+            step.status = "denied"
+            self.plan.status = PlanStatus.FAILED
+            return StepOutcome(step_id=step.step_id, status="denied", error="approval denied")
+        if gate == "deferred":
+            step.status = "deferred"
+            return StepOutcome(step_id=step.step_id, status="deferred", error="awaiting approval")
         cost = max(0, step.budget_tokens)
         if self.plan.token_used + cost > self.plan.total_budget_tokens:
             step.status = "skipped"
@@ -395,6 +453,9 @@ class PlanLoop:
     def run_to_completion(self, registry: ToolRegistry) -> list[StepOutcome]:
         if self.plan.status in {PlanStatus.DRAFT, PlanStatus.VALID}:
             self.plan.status = PlanStatus.RUNNING
+        for step in self.plan.steps:
+            if step.status == "deferred":
+                step.status = "pending"  # a fresh pass re-asks the approver
         outcomes: list[StepOutcome] = []
         while self.can_continue():
             outcome = self.run_step(registry)
@@ -402,8 +463,16 @@ class PlanLoop:
                 break
             outcomes.append(outcome)
         if self.plan.status not in {PlanStatus.FAILED, PlanStatus.CANCELLED}:
-            unfinished = [s for s in self.plan.steps if s.status in ("pending", "skipped")]
-            self.plan.status = PlanStatus.FAILED if unfinished else PlanStatus.COMPLETED
+            unfinished = [s for s in self.plan.steps if s.status != "completed"]
+            if not unfinished:
+                self.plan.status = PlanStatus.COMPLETED
+            elif any(s.status == "deferred" for s in unfinished) and all(
+                s.status in ("pending", "deferred") for s in unfinished
+            ):
+                # blocked on approvals only: resumable, not failed
+                self.plan.status = PlanStatus.RUNNING
+            else:
+                self.plan.status = PlanStatus.FAILED
         return outcomes
 
 
