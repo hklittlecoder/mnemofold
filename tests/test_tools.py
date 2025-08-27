@@ -505,3 +505,50 @@ class TestReceiptSerialization:
         assert receipt.decision == "allowed"
         assert receipt.retries == 0
         assert receipt.from_cache is False
+
+
+class TestToolSchemas:
+    def test_schema_shape(self):
+        spec = ToolSpec(
+            name="t",
+            description="d",
+            side_effect=SideEffectClass.WRITE,
+            idempotent=True,
+            capabilities={"beta", "alpha"},
+            parameters={"y": {"type": "string"}, "x": {"type": "integer"}},
+            required=["x"],
+            timeout_seconds=15,
+            max_retries=2,
+        )
+        schema = spec.to_schema()
+        assert schema["name"] == "t"
+        assert schema["side_effect"] == "write"
+        assert schema["idempotent"] is True
+        assert schema["capabilities"] == ["alpha", "beta"]
+        assert list(schema["parameters"]) == ["x", "y"]
+        assert schema["required"] == ["x"]
+        assert schema["timeout_seconds"] == 15
+        assert schema["max_retries"] == 2
+
+    def test_schema_is_deterministic(self):
+        spec = ToolSpec(
+            name="t",
+            description="d",
+            parameters={"b": {"type": "string"}, "a": {"type": "integer"}},
+        )
+        assert spec.to_schema() == spec.to_schema()
+
+    def test_registry_schemas_sorted_by_name(self):
+        schemas = build_default_registry().schemas()
+        assert [s["name"] for s in schemas] == ["echo", "noop"]
+
+    def test_schema_reflects_policy_surface(self):
+        spec = ToolSpec(name="danger", description="", side_effect=SideEffectClass.DESTRUCTIVE)
+        schema = spec.to_schema()
+        assert schema["side_effect"] == "destructive"
+        assert schema["idempotent"] is False
+        # the schema shows exactly what the default policy will refuse
+        assert ToolPolicy().violations(spec)
+
+    def test_default_capabilities_empty(self):
+        assert ToolSpec(name="x", description="").to_schema()["capabilities"] == []

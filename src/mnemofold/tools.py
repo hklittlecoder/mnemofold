@@ -36,6 +36,27 @@ class ToolSpec:
         if isinstance(self.side_effect, str):
             self.side_effect = SideEffectClass(self.side_effect)
 
+    def to_schema(self) -> dict[str, Any]:
+        """Declarative JSON-schema-style view of this tool.
+
+        Deterministic (sorted capabilities and parameters) so schemas can
+        be hashed, diffed across versions, and shown to a planner before
+        any invocation happens.
+        """
+        return {
+            "name": self.name,
+            "description": self.description,
+            "side_effect": self.side_effect.value,
+            "idempotent": self.idempotent,
+            "capabilities": sorted(self.capabilities),
+            "timeout_seconds": self.timeout_seconds,
+            "max_retries": self.max_retries,
+            "required": list(self.required),
+            "parameters": {
+                param: dict(sorted(spec.items())) for param, spec in sorted(self.parameters.items())
+            },
+        }
+
 
 class ToolValidationError(ValueError):
     pass
@@ -439,6 +460,10 @@ class ToolRegistry:
 
     def list_tools(self) -> list[ToolSpec]:
         return sorted(self._specs.values(), key=lambda s: s.name)
+
+    def schemas(self) -> list[dict[str, Any]]:
+        """Schemas of all registered tools, sorted by tool name."""
+        return [spec.to_schema() for spec in self.list_tools()]
 
 
 def _echo_impl(message: str = "") -> str:
