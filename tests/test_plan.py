@@ -664,3 +664,94 @@ class TestApprovalGatedSteps:
         loop.run_to_completion(_echo_registry())
         assert plan.token_used == 0
         assert plan.money_spent == 0.0
+
+
+class TestObservePhase:
+    def test_effects_populate_world(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            steps=[
+                PlanStep(step_id="a", name="A", tool="noop", effects=["ready=true", "count=3"]),
+            ],
+        )
+        loop = PlanLoop(plan=plan)
+        loop.run_to_completion(_echo_registry())
+        assert loop.world == {"ready": True, "count": 3}
+
+    def test_bare_effect_sets_true(self):
+        plan = Plan(
+            plan_id="p", name="n", steps=[PlanStep(step_id="a", name="A", effects=["done"])]
+        )
+        loop = PlanLoop(plan=plan)
+        loop.run_to_completion(_echo_registry())
+        assert loop.world["done"] is True
+
+    def test_unparseable_effect_stays_string(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            steps=[PlanStep(step_id="a", name="A", effects=["name=alpha plan"])],
+        )
+        loop = PlanLoop(plan=plan)
+        loop.run_to_completion(_echo_registry())
+        assert loop.world["name"] == "alpha plan"
+
+    def test_precondition_orders_steps_without_dependencies(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            steps=[
+                PlanStep(step_id="gate", name="Gate", tool="noop", preconditions=["ready"]),
+                PlanStep(step_id="setup", name="Setup", tool="noop", effects=["ready=true"]),
+            ],
+        )
+        loop = PlanLoop(plan=plan)
+        outcomes = loop.run_to_completion(_echo_registry())
+        # declared gate-first, but setup must run first to satisfy the world
+        assert [o.step_id for o in outcomes] == ["setup", "gate"]
+        assert plan.status == PlanStatus.COMPLETED
+
+    def test_unsatisfiable_precondition_fails_plan(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            steps=[PlanStep(step_id="a", name="A", tool="noop", preconditions=["never_set"])],
+        )
+        loop = PlanLoop(plan=plan)
+        outcomes = loop.run_to_completion(_echo_registry())
+        assert outcomes == []
+        assert plan.status == PlanStatus.FAILED
+        assert plan.steps[0].status == "pending"
+
+    def test_value_preconditions_match_exactly(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            steps=[
+                PlanStep(step_id="s1", name="S1", tool="noop", effects=["env=prod"]),
+                PlanStep(step_id="s2", name="S2", tool="noop", preconditions=["env=prod"]),
+                PlanStep(step_id="s3", name="S3", tool="noop", preconditions=["env=staging"]),
+            ],
+        )
+        loop = PlanLoop(plan=plan)
+        outcomes = loop.run_to_completion(_echo_registry())
+        assert {o.step_id for o in outcomes} == {"s1", "s2"}
+        assert plan.steps[2].status == "pending"
+        assert plan.status == PlanStatus.FAILED
+
+    def test_toolless_steps_also_observe(self):
+        plan = Plan(plan_id="p", name="n", steps=[PlanStep(step_id="a", name="A", effects=["x=1"])])
+        loop = PlanLoop(plan=plan)
+        loop.run_to_completion(_echo_registry())
+        assert loop.world == {"x": 1}
+
+    def test_preseeded_world_satisfies_preconditions(self):
+        plan = Plan(
+            plan_id="p",
+            name="n",
+            steps=[PlanStep(step_id="a", name="A", tool="noop", preconditions=["env=prod"])],
+        )
+        loop = PlanLoop(plan=plan, world={"env": "prod"})
+        outcomes = loop.run_to_completion(_echo_registry())
+        assert [o.status for o in outcomes] == ["completed"]

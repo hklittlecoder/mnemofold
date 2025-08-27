@@ -7,6 +7,7 @@ and a perceive-plan-act-observe loop with budgets.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -278,6 +279,7 @@ class PlanLoop:
     max_iterations: int = 100
     approvals: ApprovalQueue | None = None
     now: datetime | None = None
+    world: dict[str, Any] = field(default_factory=dict)
     _outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def can_continue(self) -> bool:
@@ -304,9 +306,50 @@ class PlanLoop:
         for step in self.plan.steps:
             if step.status != "pending":
                 continue
-            if all(dep in completed for dep in step.depends_on):
-                return step
+            if not all(dep in completed for dep in step.depends_on):
+                continue
+            if not self.preconditions_met(step):
+                continue
+            return step
         return None
+
+    def preconditions_met(self, step: PlanStep) -> bool:
+        """True when every precondition holds against the observed world.
+
+        A precondition is ``key`` (truthy presence) or ``key=value``
+        (equality after JSON-parsing the value). Empty conditions are
+        ignored, so a step with no preconditions is always eligible.
+        """
+        for condition in step.preconditions:
+            key, sep, raw = condition.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            if not sep:
+                if not self.world.get(key):
+                    return False
+            elif self.world.get(key) != _parse_value(raw.strip()):
+                return False
+        return True
+
+    def observe(self, step: PlanStep) -> None:
+        """Apply a completed step's effects to the world state.
+
+        Effects are ``key=value`` strings (a bare ``key`` sets True).
+        Values are JSON-parsed when possible so numbers and booleans
+        round-trip; otherwise they are kept as strings. This is the
+        observe half of the perceive-plan-act-observe loop: later steps
+        read the world through their preconditions.
+        """
+        for effect in step.effects:
+            key, sep, raw = effect.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            if not sep:
+                self.world[key] = True
+            else:
+                self.world[key] = _parse_value(raw.strip())
 
     def output_of(self, step_id: str, output_name: str) -> Any:
         """A previously bound step output (None when absent)."""
@@ -457,10 +500,13 @@ class PlanLoop:
             if step.status == "deferred":
                 step.status = "pending"  # a fresh pass re-asks the approver
         outcomes: list[StepOutcome] = []
+        steps_by_id = {s.step_id: s for s in self.plan.steps}
         while self.can_continue():
             outcome = self.run_step(registry)
             if outcome is None:
                 break
+            if outcome.status == "completed":
+                self.observe(steps_by_id[outcome.step_id])
             outcomes.append(outcome)
         if self.plan.status not in {PlanStatus.FAILED, PlanStatus.CANCELLED}:
             unfinished = [s for s in self.plan.steps if s.status != "completed"]
@@ -542,3 +588,11 @@ def diff_plans(old: Plan, new: Plan) -> PlanDiff:
         if fields:
             diff.changed.append(StepChange(step_id=step_id, fields=fields))
     return diff
+
+
+def _parse_value(raw: str) -> Any:
+    """Parse an effect/precondition value: JSON when possible, else string."""
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
