@@ -9,9 +9,11 @@ import pytest
 
 from mnemofold.tools import (
     IdempotencyStore,
+    ReceiptLog,
     SideEffectClass,
     ToolPolicy,
     ToolPolicyError,
+    ToolReceipt,
     ToolRegistry,
     ToolSpec,
     ToolValidationError,
@@ -340,3 +342,117 @@ class TestToolInvocationEdges:
     def test_default_registry_echo_roundtrip(self):
         result = build_default_registry().invoke("echo", {"message": "hello"})
         assert result.success and result.output == "hello"
+
+
+class TestToolReceipts:
+    def _registry(self, **kwargs) -> ToolRegistry:
+        registry = ToolRegistry(receipts=ReceiptLog(), rng_seed=3, **kwargs)
+        registry.register(
+            ToolSpec(
+                name="write",
+                description="w",
+                side_effect=SideEffectClass.WRITE,
+                idempotent=True,
+                parameters={"key": {"type": "string"}},
+                required=["key"],
+            ),
+            lambda key: f"wrote {key}",
+        )
+        return registry
+
+    def test_success_receipt_fields(self):
+        registry = self._registry()
+        registry.invoke("write", {"key": "a"})
+        receipts = registry.receipts.receipts()
+        assert len(receipts) == 1
+        receipt = receipts[0]
+        assert isinstance(receipt, ToolReceipt)
+        assert receipt.tool_name == "write"
+        assert receipt.side_effect == "write"
+        assert receipt.success is True
+        assert receipt.decision == "allowed"
+        assert len(receipt.output_digest) == 16
+        assert receipt.from_cache is False
+
+    def test_receipt_digests_output_not_payload(self):
+        registry = self._registry()
+        registry.invoke("write", {"key": "a"})
+        receipt = registry.receipts.receipts()[0]
+        assert "wrote a" not in receipt.output_digest
+
+    def test_cached_hit_receipted(self):
+        registry = self._registry(idempotency=IdempotencyStore())
+        registry.invoke("write", {"key": "a"})
+        registry.invoke("write", {"key": "a"})
+        receipts = registry.receipts.receipts()
+        assert len(receipts) == 2
+        assert receipts[0].from_cache is False
+        assert receipts[1].from_cache is True
+        assert receipts[0].output_digest == receipts[1].output_digest
+
+    def test_failure_receipt_has_error_no_digest(self):
+        registry = ToolRegistry(receipts=ReceiptLog(), rng_seed=3)
+        registry.register(
+            ToolSpec(name="boom", description="", max_retries=0),
+            lambda: (_ for _ in ()).throw(RuntimeError("kaboom")),
+        )
+        registry.invoke("boom", {})
+        receipt = registry.receipts.receipts()[0]
+        assert receipt.success is False
+        assert receipt.error == "kaboom"
+        assert receipt.output_digest == ""
+
+    def test_retried_failure_receipt_counts_retries(self):
+        registry = ToolRegistry(receipts=ReceiptLog(), rng_seed=3)
+        attempts = []
+
+        def always_fail():
+            attempts.append(1)
+            raise RuntimeError("nope")
+
+        registry.register(ToolSpec(name="flaky", description="", max_retries=2), always_fail)
+        registry.invoke("flaky", {})
+        receipt = registry.receipts.receipts()[0]
+        assert receipt.retries == 2
+        assert len(attempts) == 3
+
+    def test_policy_denial_receipted_without_execution(self):
+        calls: list[int] = []
+        registry = ToolRegistry(receipts=ReceiptLog(), policy=ToolPolicy(), rng_seed=3)
+        registry.register(
+            ToolSpec(
+                name="nuke",
+                description="",
+                side_effect=SideEffectClass.DESTRUCTIVE,
+                idempotent=True,
+            ),
+            lambda: calls.append(1),
+        )
+        with pytest.raises(ToolPolicyError):
+            registry.invoke("nuke", {})
+        receipt = registry.receipts.receipts()[0]
+        assert receipt.decision == "denied"
+        assert receipt.success is False
+        assert calls == []
+
+    def test_no_log_configured_is_noop(self):
+        registry = build_default_registry()
+        assert registry.invoke("echo", {"message": "x"}).success
+        assert registry.receipts is None
+
+    def test_receipt_log_digest_deterministic_and_sensitive(self):
+        first = self._registry()
+        second = self._registry()
+        first.invoke("write", {"key": "x"})
+        second.invoke("write", {"key": "x"})
+        assert first.receipts.digest() == second.receipts.digest()
+        second.invoke("write", {"key": "y"})
+        assert first.receipts.digest() != second.receipts.digest()
+
+    def test_for_tool_filter_and_len(self):
+        registry = self._registry()
+        registry.invoke("write", {"key": "a"})
+        registry.invoke("write", {"key": "b"})
+        assert len(registry.receipts) == 2
+        assert len(registry.receipts.for_tool("write")) == 2
+        assert registry.receipts.for_tool("ghost") == []

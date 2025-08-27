@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import time
 from collections.abc import Callable
@@ -121,6 +122,72 @@ class IdempotencyStore:
         return key in self._results
 
 
+def _digest_output(output: Any) -> str:
+    """Stable short digest of a tool output (receipts store digests only)."""
+    canonical = json.dumps(
+        output, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass(slots=True)
+class ToolReceipt:
+    """Policy-gated record of one tool execution attempt.
+
+    Receipts carry an output *digest*, never the raw output, so a receipt
+    log can be shared or replayed without leaking side-effect payloads.
+    ``decision`` records the policy outcome (allowed/denied); denied
+    attempts are receipted too, so refusals are auditable.
+    """
+
+    tool_name: str
+    idempotency_key: str
+    side_effect: str
+    success: bool
+    output_digest: str
+    decision: str
+    error: str = ""
+    retries: int = 0
+    from_cache: bool = False
+
+
+@dataclass
+class ReceiptLog:
+    """Append-only receipt list with a deterministic chained digest."""
+
+    _receipts: list[ToolReceipt] = field(default_factory=list)
+
+    def append(self, receipt: ToolReceipt) -> None:
+        self._receipts.append(receipt)
+
+    def receipts(self) -> list[ToolReceipt]:
+        return list(self._receipts)
+
+    def for_tool(self, name: str) -> list[ToolReceipt]:
+        return [r for r in self._receipts if r.tool_name == name]
+
+    def __len__(self) -> int:
+        return len(self._receipts)
+
+    def digest(self) -> str:
+        payload = [
+            [
+                r.tool_name,
+                r.idempotency_key,
+                r.side_effect,
+                r.success,
+                r.output_digest,
+                r.decision,
+                r.error,
+                r.retries,
+                r.from_cache,
+            ]
+            for r in self._receipts
+        ]
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 _TYPE_MAP: dict[str, type | tuple[type, ...]] = {
     "string": str,
     "integer": int,
@@ -160,6 +227,7 @@ class ToolRegistry:
     _impls: dict[str, Callable[..., Any]] = field(default_factory=dict)
     policy: ToolPolicy | None = None
     idempotency: IdempotencyStore | None = None
+    receipts: ReceiptLog | None = None
     rng_seed: int = 0
     _rng: random.Random = field(default_factory=random.Random)
 
@@ -198,6 +266,14 @@ class ToolRegistry:
         if self.policy is not None:
             violations = self.policy.violations(spec)
             if violations:
+                self._record_receipt(
+                    name,
+                    self._idem_key(name, args),
+                    spec,
+                    success=False,
+                    decision="denied",
+                    error="; ".join(violations),
+                )
                 raise ToolPolicyError("; ".join(violations))
         errors = self.validate_args(name, args)
         if errors:
@@ -214,6 +290,16 @@ class ToolRegistry:
         if cacheable and store is not None:
             hit = store.get(idem_key)
             if hit is not None:
+                self._record_receipt(
+                    name,
+                    idem_key,
+                    spec,
+                    success=True,
+                    decision="allowed",
+                    output=hit.output,
+                    retries=hit.retries,
+                    from_cache=True,
+                )
                 return ToolResult(
                     tool_name=hit.tool_name,
                     success=hit.success,
@@ -240,10 +326,28 @@ class ToolRegistry:
                 )
                 if cacheable and store is not None:
                     store.put(idem_key, result)
+                self._record_receipt(
+                    name,
+                    idem_key,
+                    spec,
+                    success=True,
+                    decision="allowed",
+                    output=result.output,
+                    retries=retries,
+                )
                 return result
             except Exception as e:
                 if retries >= spec.max_retries:
                     elapsed = (time.monotonic() - start) * 1000
+                    self._record_receipt(
+                        name,
+                        idem_key,
+                        spec,
+                        success=False,
+                        decision="allowed",
+                        error=str(e),
+                        retries=retries,
+                    )
                     return ToolResult(
                         tool_name=name,
                         success=False,
@@ -254,6 +358,36 @@ class ToolRegistry:
                     )
                 retries += 1
                 time.sleep(_retry_delay(retries, rng=self._rng))
+
+    def _record_receipt(
+        self,
+        name: str,
+        idem_key: str,
+        spec: ToolSpec,
+        *,
+        success: bool,
+        decision: str,
+        output: Any = None,
+        error: str = "",
+        retries: int = 0,
+        from_cache: bool = False,
+    ) -> None:
+        """Append a receipt for one execution attempt (no-op when unhooked)."""
+        if self.receipts is None:
+            return
+        self.receipts.append(
+            ToolReceipt(
+                tool_name=name,
+                idempotency_key=idem_key,
+                side_effect=spec.side_effect.value,
+                success=success,
+                output_digest=_digest_output(output) if success else "",
+                error=error,
+                decision=decision,
+                retries=retries,
+                from_cache=from_cache,
+            )
+        )
 
     def _idem_key(self, name: str, args: dict[str, Any]) -> str:
         payload = {"tool": name, "args": dict(sorted(args.items()))}
