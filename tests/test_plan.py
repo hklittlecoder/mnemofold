@@ -755,3 +755,91 @@ class TestObservePhase:
         loop = PlanLoop(plan=plan, world={"env": "prod"})
         outcomes = loop.run_to_completion(_echo_registry())
         assert [o.status for o in outcomes] == ["completed"]
+
+
+class TestPlanLoopMatrix:
+    """Money, tokens, approvals, preconditions, and outputs in one plan."""
+
+    def _matrix_plan(self) -> Plan:
+        return Plan(
+            plan_id="mx",
+            name="matrix",
+            money_budget=10.0,
+            total_budget_tokens=100,
+            steps=[
+                PlanStep(
+                    step_id="setup",
+                    name="Setup",
+                    tool="noop",
+                    budget_tokens=10,
+                    cost_money=2.0,
+                    effects=["env=ready"],
+                ),
+                PlanStep(
+                    step_id="deploy",
+                    name="Deploy",
+                    tool="echo",
+                    inputs={"message": "ship"},
+                    outputs=["out"],
+                    preconditions=["env=ready"],
+                    requires_approval=True,
+                    depends_on=["setup"],
+                    budget_tokens=20,
+                    cost_money=5.0,
+                ),
+                PlanStep(
+                    step_id="expensive",
+                    name="Expensive",
+                    tool="noop",
+                    depends_on=["deploy"],
+                    budget_tokens=10,
+                    cost_money=8.0,
+                ),
+            ],
+        )
+
+    def _run(self):
+        queue = _approval_queue(ApproverPersona.AUTO_APPROVE)
+        plan = self._matrix_plan()
+        loop = PlanLoop(plan=plan, approvals=queue, now=APPROVAL_NOW)
+        outcomes = loop.run_to_completion(_echo_registry())
+        return plan, loop, outcomes, queue
+
+    def test_mixed_plan_end_to_end(self):
+        plan, loop, outcomes, queue = self._run()
+        statuses = {o.step_id: o.status for o in outcomes}
+        assert statuses == {
+            "setup": "completed",
+            "deploy": "completed",
+            "expensive": "skipped",  # 8.0 does not fit the 3.0 remaining
+        }
+        assert plan.money_spent == 7.0
+        assert plan.token_used == 30
+        assert loop.world["env"] == "ready"
+        assert loop.output_of("deploy", "out") == "ship"
+        assert plan.status == PlanStatus.FAILED  # a skipped step leaves work undone
+        assert queue.requests[0].status == ApprovalStatus.APPROVED
+
+    def test_matrix_run_is_deterministic(self):
+        def run_once():
+            plan, loop, outcomes, _queue = self._run()
+            return (
+                [(o.step_id, o.status, o.tokens_spent, o.money_spent) for o in outcomes],
+                plan.money_spent,
+                plan.token_used,
+                dict(loop.world),
+            )
+
+        assert run_once() == run_once()
+
+    def test_denied_approval_short_circuits_downstream(self):
+        queue = _approval_queue(ApproverPersona.AUTO_DENY)
+        plan = self._matrix_plan()
+        loop = PlanLoop(plan=plan, approvals=queue, now=APPROVAL_NOW)
+        outcomes = loop.run_to_completion(_echo_registry())
+        statuses = {o.step_id: o.status for o in outcomes}
+        assert statuses["setup"] == "completed"
+        assert statuses["deploy"] == "denied"
+        assert "expensive" not in statuses  # never became runnable
+        assert plan.money_spent == 2.0
+        assert plan.status == PlanStatus.FAILED
