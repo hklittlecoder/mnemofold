@@ -456,3 +456,52 @@ class TestToolReceipts:
         assert len(registry.receipts) == 2
         assert len(registry.receipts.for_tool("write")) == 2
         assert registry.receipts.for_tool("ghost") == []
+
+
+class TestReceiptSerialization:
+    def _log_with_receipts(self) -> ReceiptLog:
+        registry = ToolRegistry(receipts=ReceiptLog(), rng_seed=3)
+        registry.register(ToolSpec(name="ok", description=""), lambda: "fine")
+        registry.register(
+            ToolSpec(name="bad", description="", max_retries=0),
+            lambda: (_ for _ in ()).throw(RuntimeError("x")),
+        )
+        registry.invoke("ok", {})
+        registry.invoke("bad", {})
+        assert registry.receipts is not None
+        return registry.receipts
+
+    def test_receipt_dict_roundtrip(self):
+        log = self._log_with_receipts()
+        for receipt in log.receipts():
+            assert ToolReceipt.from_dict(receipt.to_dict()) == receipt
+
+    def test_jsonl_roundtrip_preserves_digest(self):
+        log = self._log_with_receipts()
+        restored = ReceiptLog.from_jsonl(log.to_jsonl())
+        assert restored.receipts() == log.receipts()
+        assert restored.digest() == log.digest()
+
+    def test_jsonl_is_line_oriented_and_stable(self):
+        log = self._log_with_receipts()
+        text = log.to_jsonl()
+        assert len(text.splitlines()) == len(log)
+        assert log.to_jsonl() == text
+
+    def test_empty_log_serializes_empty(self):
+        log = ReceiptLog()
+        assert log.to_jsonl() == ""
+        assert len(ReceiptLog.from_jsonl("")) == 0
+
+    def test_from_dict_defaults(self):
+        minimal = {
+            "tool_name": "t",
+            "idempotency_key": "k",
+            "side_effect": "none",
+            "success": True,
+        }
+        receipt = ToolReceipt.from_dict(minimal)
+        assert receipt.output_digest == ""
+        assert receipt.decision == "allowed"
+        assert receipt.retries == 0
+        assert receipt.from_cache is False

@@ -150,6 +150,33 @@ class ToolReceipt:
     retries: int = 0
     from_cache: bool = False
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool_name": self.tool_name,
+            "idempotency_key": self.idempotency_key,
+            "side_effect": self.side_effect,
+            "success": self.success,
+            "output_digest": self.output_digest,
+            "decision": self.decision,
+            "error": self.error,
+            "retries": self.retries,
+            "from_cache": self.from_cache,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ToolReceipt:
+        return cls(
+            tool_name=data["tool_name"],
+            idempotency_key=data["idempotency_key"],
+            side_effect=data["side_effect"],
+            success=bool(data["success"]),
+            output_digest=data.get("output_digest", ""),
+            decision=data.get("decision", "allowed"),
+            error=data.get("error", ""),
+            retries=int(data.get("retries", 0)),
+            from_cache=bool(data.get("from_cache", False)),
+        )
+
 
 @dataclass
 class ReceiptLog:
@@ -186,6 +213,22 @@ class ReceiptLog:
         ]
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def to_jsonl(self) -> str:
+        """Serialize receipts as JSONL (one canonical JSON object per line)."""
+        return "".join(
+            json.dumps(r.to_dict(), sort_keys=True, separators=(",", ":")) + "\n"
+            for r in self._receipts
+        )
+
+    @classmethod
+    def from_jsonl(cls, text: str) -> ReceiptLog:
+        """Rebuild a receipt log from :meth:`to_jsonl` output."""
+        log = cls()
+        for line in text.splitlines():
+            if line.strip():
+                log.append(ToolReceipt.from_dict(json.loads(line)))
+        return log
 
 
 _TYPE_MAP: dict[str, type | tuple[type, ...]] = {
