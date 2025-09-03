@@ -552,3 +552,54 @@ class TestToolSchemas:
 
     def test_default_capabilities_empty(self):
         assert ToolSpec(name="x", description="").to_schema()["capabilities"] == []
+
+
+class TestToolTimeouts:
+    def _slow_spec(self, timeout: float, retries: int = 0) -> ToolSpec:
+        return ToolSpec(name="slow", description="", timeout_seconds=timeout, max_retries=retries)
+
+    def test_timeout_fails_with_clear_error(self):
+        registry = ToolRegistry(rng_seed=1, enforce_timeouts=True)
+        registry.register(self._slow_spec(0.05), lambda: time.sleep(0.5))
+        result = registry.invoke("slow", {})
+        assert result.success is False
+        assert "timeout" in result.error
+
+    def test_timeout_receipt_records_failure(self):
+        registry = ToolRegistry(rng_seed=1, enforce_timeouts=True, receipts=ReceiptLog())
+        registry.register(self._slow_spec(0.05), lambda: time.sleep(0.5))
+        registry.invoke("slow", {})
+        receipts = registry.receipts.receipts()
+        assert receipts[0].success is False
+        assert "timeout" in receipts[0].error
+
+    def test_timeout_retries_then_gives_up(self):
+        registry = ToolRegistry(rng_seed=1, enforce_timeouts=True)
+        attempts: list[int] = []
+
+        def slow() -> None:
+            attempts.append(1)
+            time.sleep(0.5)
+
+        registry.register(self._slow_spec(0.05, retries=2), slow)
+        result = registry.invoke("slow", {})
+        assert result.success is False
+        assert result.retries == 2
+        assert len(attempts) == 3
+
+    def test_not_enforced_by_default(self):
+        registry = ToolRegistry(rng_seed=1)
+        registry.register(self._slow_spec(0.05), lambda: time.sleep(0.15) or "done")
+        result = registry.invoke("slow", {})
+        assert result.success is True
+        assert result.output == "done"
+
+    def test_fast_tool_unaffected_by_enforcement(self):
+        registry = ToolRegistry(rng_seed=1, enforce_timeouts=True)
+        registry.register(ToolSpec(name="quick", description="", timeout_seconds=5), lambda: 42)
+        assert registry.invoke("quick", {}).output == 42
+
+    def test_zero_timeout_disables_enforcement(self):
+        registry = ToolRegistry(rng_seed=1, enforce_timeouts=True)
+        registry.register(ToolSpec(name="s", description="", timeout_seconds=0), lambda: "ok")
+        assert registry.invoke("s", {}).output == "ok"
