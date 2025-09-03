@@ -7,6 +7,7 @@ import json
 import random
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -27,7 +28,7 @@ class ToolSpec:
     side_effect: SideEffectClass = SideEffectClass.NONE
     parameters: dict[str, Any] = field(default_factory=dict)
     required: list[str] = field(default_factory=list)
-    timeout_seconds: int = 30
+    timeout_seconds: float = 30.0
     max_retries: int = 0
     idempotent: bool = False
     capabilities: set[str] = field(default_factory=set)
@@ -64,6 +65,10 @@ class ToolValidationError(ValueError):
 
 class ToolPolicyError(RuntimeError):
     """Raised when a tool invocation violates the active policy."""
+
+
+class ToolTimeoutError(RuntimeError):
+    """Raised when a tool exceeds its enforced wall-clock timeout."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +297,7 @@ class ToolRegistry:
     policy: ToolPolicy | None = None
     idempotency: IdempotencyStore | None = None
     receipts: ReceiptLog | None = None
+    enforce_timeouts: bool = False
     rng_seed: int = 0
     _rng: random.Random = field(default_factory=random.Random)
 
@@ -378,7 +384,10 @@ class ToolRegistry:
         start = time.monotonic()
         while True:
             try:
-                output = impl(**args)
+                if self.enforce_timeouts and spec.timeout_seconds > 0:
+                    output = self._invoke_with_timeout(impl, args, spec.timeout_seconds)
+                else:
+                    output = impl(**args)
                 elapsed = (time.monotonic() - start) * 1000
                 result = ToolResult(
                     tool_name=name,
@@ -422,6 +431,24 @@ class ToolRegistry:
                     )
                 retries += 1
                 time.sleep(_retry_delay(retries, rng=self._rng))
+
+    def _invoke_with_timeout(
+        self, impl: Callable[..., Any], args: dict[str, Any], timeout: float
+    ) -> Any:
+        """Run impl in a worker thread bounded by a wall-clock timeout.
+
+        On overrun the call raises :class:`ToolTimeoutError` (which the
+        retry loop treats like any other failure). The abandoned worker
+        is not waited on, so a hung tool cannot block the registry.
+        """
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            future = pool.submit(lambda: impl(**args))
+            return future.result(timeout=timeout)
+        except TimeoutError as exc:
+            raise ToolTimeoutError(f"tool exceeded timeout of {timeout}s") from exc
+        finally:
+            pool.shutdown(wait=False)
 
     def _record_receipt(
         self,
