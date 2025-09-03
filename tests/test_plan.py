@@ -843,3 +843,46 @@ class TestPlanLoopMatrix:
         assert "expensive" not in statuses  # never became runnable
         assert plan.money_spent == 2.0
         assert plan.status == PlanStatus.FAILED
+
+
+class TestPlanDigest:
+    def _plan(self, name: str = "p") -> Plan:
+        return Plan(
+            plan_id="p1",
+            name=name,
+            steps=[
+                PlanStep(
+                    step_id="a",
+                    name="A",
+                    tool="echo",
+                    inputs={"message": "x"},
+                    outputs=["o"],
+                    budget_tokens=5,
+                    cost_money=1.0,
+                ),
+                PlanStep(step_id="b", name="B", depends_on=["a"]),
+            ],
+        )
+
+    def test_digest_stable_for_equal_plans(self):
+        assert self._plan().digest() == self._plan().digest()
+
+    def test_digest_changes_with_definition(self):
+        assert self._plan().digest() != self._plan(name="other").digest()
+
+    def test_digest_tracks_execution_state(self):
+        plan = self._plan()
+        before = plan.digest()
+        PlanLoop(plan=plan).run_to_completion(_echo_registry())
+        # statuses and spend are part of to_dict, so the digest moves
+        assert plan.digest() != before
+
+    def test_digest_is_sha256_hex(self):
+        digest = self._plan().digest()
+        assert len(digest) == 64
+        assert all(c in "0123456789abcdef" for c in digest)
+
+    def test_roundtrip_preserves_digest(self):
+        plan = self._plan()
+        restored = Plan.from_dict(plan.to_dict())
+        assert restored.digest() == plan.digest()

@@ -7,6 +7,7 @@ and a perceive-plan-act-observe loop with budgets.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -124,6 +125,18 @@ class Plan:
                 )
             )
         return plan
+
+    def digest(self) -> str:
+        """SHA-256 over the canonical JSON of :meth:`to_dict`.
+
+        Captures the plan definition and current execution state, so two
+        independently built identical plans digest equal. Used by golden
+        tests and cross-run reproducibility checks.
+        """
+        canonical = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass
