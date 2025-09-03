@@ -886,3 +886,100 @@ class TestPlanDigest:
         plan = self._plan()
         restored = Plan.from_dict(plan.to_dict())
         assert restored.digest() == plan.digest()
+
+
+class TestPlanSerializationGolden:
+    """Literal golden for the plan wire format.
+
+    The expected dict below is the contract: adding, removing, or
+    renaming a serialized field must be a deliberate edit here, so the
+    plan schema cannot drift silently.
+    """
+
+    def _golden_plan(self) -> Plan:
+        return Plan(
+            plan_id="golden-1",
+            name="release",
+            version=3,
+            total_budget_tokens=5000,
+            step_budget=25,
+            money_budget=12.5,
+            metadata={"env": "prod"},
+            steps=[
+                PlanStep(
+                    step_id="build",
+                    name="Build",
+                    tool="echo",
+                    inputs={"message": "building"},
+                    outputs=["log"],
+                    preconditions=["env=prod"],
+                    effects=["built=true"],
+                    depends_on=[],
+                    budget_tokens=100,
+                    cost_money=2.5,
+                ),
+                PlanStep(
+                    step_id="ship",
+                    name="Ship",
+                    tool="noop",
+                    depends_on=["build"],
+                    requires_approval=True,
+                    approver="release-manager",
+                    cost_money=10.0,
+                ),
+            ],
+        )
+
+    def test_to_dict_matches_literal(self):
+        expected = {
+            "plan_id": "golden-1",
+            "name": "release",
+            "version": 3,
+            "status": "draft",
+            "total_budget_tokens": 5000,
+            "step_budget": 25,
+            "money_budget": 12.5,
+            "money_spent": 0.0,
+            "metadata": {"env": "prod"},
+            "steps": [
+                {
+                    "step_id": "build",
+                    "name": "Build",
+                    "tool": "echo",
+                    "inputs": {"message": "building"},
+                    "outputs": ["log"],
+                    "preconditions": ["env=prod"],
+                    "effects": ["built=true"],
+                    "depends_on": [],
+                    "budget_tokens": 100,
+                    "cost_money": 2.5,
+                    "requires_approval": False,
+                    "approver": "",
+                    "status": "pending",
+                },
+                {
+                    "step_id": "ship",
+                    "name": "Ship",
+                    "tool": "noop",
+                    "inputs": {},
+                    "outputs": [],
+                    "preconditions": [],
+                    "effects": [],
+                    "depends_on": ["build"],
+                    "budget_tokens": 0,
+                    "cost_money": 10.0,
+                    "requires_approval": True,
+                    "approver": "release-manager",
+                    "status": "pending",
+                },
+            ],
+        }
+        assert self._golden_plan().to_dict() == expected
+
+    def test_roundtrip_is_lossless(self):
+        plan = self._golden_plan()
+        restored = Plan.from_dict(plan.to_dict())
+        assert restored.to_dict() == plan.to_dict()
+        assert restored.digest() == plan.digest()
+        assert restored.steps[1].requires_approval is True
+        assert restored.steps[0].effects == ["built=true"]
