@@ -8,7 +8,9 @@ from mnemofold.evaluation import (
     Scorecard,
     aggregate_scorecards,
     as_of_accuracy,
+    brier_score,
     budget_adherence,
+    calibration_report,
     citation_validity,
     coverage_score,
     deletion_resurrection_check,
@@ -548,3 +550,49 @@ class TestMetricThresholdSemantics:
         assert agg.scenario == "aggregate"
         assert agg.metrics == []
         assert agg.overall_pass()
+
+
+class TestBrierScore:
+    def test_perfect_predictions_score_zero(self):
+        assert brier_score([1.0, 0.0], [True, False]) == 0.0
+
+    def test_maximally_wrong_predictions_score_one(self):
+        assert brier_score([0.0, 1.0], [True, False]) == 1.0
+
+    def test_half_predictions_score_quarter(self):
+        assert brier_score([0.5, 0.5], [True, False]) == 0.25
+
+    def test_out_of_range_probabilities_are_clamped(self):
+        assert brier_score([2.0, -1.0], [True, False]) == 0.0
+
+    def test_empty_inputs_score_zero(self):
+        assert brier_score([], []) == 0.0
+
+
+class TestCalibrationReport:
+    def test_bins_summarize_predicted_vs_observed(self):
+        report = calibration_report([0.05, 0.15, 0.95], [False, True, True], bins=2)
+        assert [(b.lower, b.upper, b.count) for b in report] == [(0.0, 0.5, 2), (0.5, 1.0, 1)]
+        assert report[0].mean_predicted == 0.1
+        assert report[0].observed_rate == 0.5
+        assert report[1].mean_predicted == 0.95
+        assert report[1].observed_rate == 1.0
+
+    def test_empty_bins_are_omitted(self):
+        report = calibration_report([0.9], [True], bins=10)
+        assert len(report) == 1
+        assert report[0].lower == 0.9
+        assert report[0].upper == 1.0
+
+    def test_probability_one_lands_in_last_bin(self):
+        report = calibration_report([1.0], [True], bins=4)
+        assert report[0].lower == 0.75
+        assert report[0].count == 1
+
+    def test_out_of_range_inputs_are_clamped_into_bins(self):
+        report = calibration_report([-0.5, 1.5], [False, True], bins=2)
+        assert [(b.lower, b.count) for b in report] == [(0.0, 1), (0.5, 1)]
+
+    def test_nonpositive_bins_rejected(self):
+        with pytest.raises(ValueError):
+            calibration_report([0.5], [True], bins=0)

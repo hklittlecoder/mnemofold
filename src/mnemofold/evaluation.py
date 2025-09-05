@@ -218,6 +218,68 @@ def coverage_score(
     return round(len(required_items & covered_items) / len(required_items), 6)
 
 
+def brier_score(probabilities: list[float], outcomes: list[bool]) -> float:
+    """Mean squared error between predicted probabilities and 0/1 outcomes.
+
+    Lower is better; 0.0 is perfectly calibrated. Probabilities are
+    clamped to [0, 1]. Empty inputs give 0.0. This is the standard Brier
+    score, used here to check whether triage/confidence scores behave like
+    probabilities against planted labels.
+    """
+    if not probabilities:
+        return 0.0
+    total = 0.0
+    for p, outcome in zip(probabilities, outcomes, strict=False):
+        clamped = min(1.0, max(0.0, p))
+        total += (clamped - (1.0 if outcome else 0.0)) ** 2
+    return round(total / len(probabilities), 6)
+
+
+@dataclass(slots=True)
+class CalibrationBin:
+    """One equal-width calibration bucket: predicted vs observed rate."""
+
+    lower: float
+    upper: float
+    count: int
+    mean_predicted: float
+    observed_rate: float
+
+
+def calibration_report(
+    probabilities: list[float], outcomes: list[bool], bins: int = 10
+) -> list[CalibrationBin]:
+    """Bucket predictions into equal-width bins over [0, 1].
+
+    For each non-empty bin, reports the mean predicted probability and
+    the observed positive rate; a well-calibrated scorer has the two
+    tracking each other along the diagonal. Empty bins are omitted.
+    """
+    if bins <= 0:
+        raise ValueError("bins must be positive")
+    buckets: list[list[tuple[float, float]]] = [[] for _ in range(bins)]
+    for p, outcome in zip(probabilities, outcomes, strict=False):
+        clamped = min(1.0, max(0.0, p))
+        index = min(bins - 1, int(clamped * bins))
+        buckets[index].append((clamped, 1.0 if outcome else 0.0))
+    report: list[CalibrationBin] = []
+    for i, bucket in enumerate(buckets):
+        if not bucket:
+            continue
+        mean_predicted = sum(pred for pred, _ in bucket) / len(bucket)
+        observed = sum(obs for _, obs in bucket) / len(bucket)
+        report.append(
+            CalibrationBin(
+                lower=round(i / bins, 6),
+                upper=round((i + 1) / bins, 6),
+                count=len(bucket),
+                mean_predicted=round(mean_predicted, 6),
+                observed_rate=round(observed, 6),
+            )
+        )
+    return report
+
+
 def aggregate_scorecards(cards: list[Scorecard]) -> Scorecard:
     """Aggregate multiple scenario scorecards into one summary.
 
