@@ -223,13 +223,17 @@ class Folder:
     ) -> list[MemoryItem]:
         """Promote episodic items with high access/salience to semantic.
 
-        Skips items that already have a semantic version (ensures
-        idempotence when folding is run multiple times).
+        Skips items that already have a semantic version, and items whose
+        semantic version was merged away in an earlier fold (marked via
+        ``metadata["fold_merged_into"]``), so repeated folds are stable:
+        no re-promotion churn, no inflated access counts.
         """
         promoted: list[MemoryItem] = []
         for item in episodic_items:
             sem_id = item.item_id + "_sem"
-            if store.get(sem_id) is not None:
+            if store.peek(sem_id) is not None:
+                continue
+            if item.metadata.get("fold_merged_into"):
                 continue
             if item.access_count >= 3 or item.salience >= 0.6:
                 # Create a semantic version
@@ -303,6 +307,12 @@ class Folder:
 
                 store.remove(loser.item_id)
                 merged_ids.add(loser.item_id)
+                if loser.item_id.endswith("_sem"):
+                    # Mark the episodic origin so a later fold does not
+                    # re-promote it just to merge it again.
+                    origin = store.peek(loser.item_id[: -len("_sem")])
+                    if origin is not None:
+                        origin.metadata["fold_merged_into"] = winner.item_id
 
                 report.merges.append(
                     MergeResult(
