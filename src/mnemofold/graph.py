@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -267,6 +268,103 @@ class WorkstreamGraph:
             return True
 
         return all(not (nid not in visited and not dfs(nid)) for nid in self.nodes)
+
+    def subgraph(self, node_ids: Iterable[str]) -> WorkstreamGraph:
+        """Induced subgraph over the requested ids (unknown ids ignored).
+
+        Copies the selected nodes and every active edge whose endpoints
+        are both selected, so the result never has dangling edges.
+        Deactivated nodes are excluded even when explicitly requested.
+        """
+        selected = {
+            nid for nid in node_ids if (node := self.nodes.get(nid)) is not None and node.active
+        }
+        result = WorkstreamGraph()
+        for nid in sorted(selected):
+            node = self.nodes[nid]
+            result.add_node(Node.from_dict(node.to_dict()))
+        for edge in sorted(self.edges.values(), key=lambda e: e.edge_id):
+            if not edge.active:
+                continue
+            if edge.source_id in selected and edge.target_id in selected:
+                result.add_edge(Edge.from_dict(edge.to_dict()))
+        return result
+
+    def shortest_path(self, source_id: str, target_id: str) -> list[str] | None:
+        """Fewest-active-edge chain between two nodes, endpoints included.
+
+        Edges are treated as undirected: workstream relationships carry
+        meaning in both directions when answering "how are these two
+        related". Returns None when either endpoint is missing or
+        inactive, or when no chain of active edges connects them. BFS
+        expands neighbors in sorted order, so the same graph always
+        yields the same path.
+        """
+        source = self.nodes.get(source_id)
+        target = self.nodes.get(target_id)
+        if source is None or target is None or not source.active or not target.active:
+            return None
+        if source_id == target_id:
+            return [source_id]
+        adjacency: dict[str, set[str]] = {
+            nid: set() for nid, node in self.nodes.items() if node.active
+        }
+        for edge in self.edges.values():
+            if not edge.active:
+                continue
+            if edge.source_id in adjacency and edge.target_id in adjacency:
+                adjacency[edge.source_id].add(edge.target_id)
+                adjacency[edge.target_id].add(edge.source_id)
+        previous: dict[str, str] = {source_id: ""}
+        queue = [source_id]
+        while queue:
+            current = queue.pop(0)
+            for nxt in sorted(adjacency[current]):
+                if nxt in previous:
+                    continue
+                previous[nxt] = current
+                if nxt == target_id:
+                    path = [target_id]
+                    while path[-1] != source_id:
+                        path.append(previous[path[-1]])
+                    path.reverse()
+                    return path
+                queue.append(nxt)
+        return None
+
+    def connected_components(self) -> list[list[str]]:
+        """Active nodes grouped by undirected active-edge reachability.
+
+        Deterministic: nodes are sorted inside each component and the
+        components are sorted by their first node. The result partitions
+        the active node set — every active node appears exactly once.
+        """
+        adjacency: dict[str, set[str]] = {
+            nid: set() for nid, node in self.nodes.items() if node.active
+        }
+        for edge in self.edges.values():
+            if not edge.active:
+                continue
+            if edge.source_id in adjacency and edge.target_id in adjacency:
+                adjacency[edge.source_id].add(edge.target_id)
+                adjacency[edge.target_id].add(edge.source_id)
+        seen: set[str] = set()
+        components: list[list[str]] = []
+        for start in sorted(adjacency):
+            if start in seen:
+                continue
+            component: list[str] = []
+            stack = [start]
+            seen.add(start)
+            while stack:
+                current = stack.pop()
+                component.append(current)
+                for nxt in sorted(adjacency[current]):
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        stack.append(nxt)
+            components.append(sorted(component))
+        return sorted(components)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the graph to a dict."""
