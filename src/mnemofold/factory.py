@@ -148,12 +148,30 @@ class WorkHistoryFactory:
         self._rng: random.Random = random.Random(seed)
         self._events: list[SyntheticEvent] = []
         self._planted: list[PlantedItem] = []
+        self._injected: list[SyntheticEvent] = []
 
     def add_persona(self, persona: Persona) -> None:
         self.personas.append(persona)
 
     def add_project(self, name: str) -> None:
         self.projects.append(name)
+
+    def inject_event(
+        self, event_type: str, timestamp: str, payload: dict[str, Any]
+    ) -> SyntheticEvent:
+        """Add a custom event to every future generated history.
+
+        Injected events merge into the seeded stream by timestamp before
+        ids are assigned; seeded events keep their exact payloads and
+        relative order, so planted ground truth is never disturbed.
+        Regenerating replays the same injections, and the manifest
+        checksum covers the combined stream.
+        """
+        injected = SyntheticEvent(
+            event_id="", event_type=event_type, timestamp=timestamp, payload=dict(payload)
+        )
+        self._injected.append(injected)
+        return injected
 
     def generate(self) -> tuple[list[SyntheticEvent], HistoryManifest]:
         self._rng = random.Random(self.seed)
@@ -189,6 +207,7 @@ class WorkHistoryFactory:
         self._plant_decisions()
         self._plant_contradictions()
 
+        self._events.extend(self._injected)
         self._events.sort(key=lambda e: e.timestamp)
         self._assign_ids()
 
