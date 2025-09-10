@@ -16,6 +16,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from mnemofold.deletion import DeletionEngine, DeletionReason, DeletionReport
 from mnemofold.events import Event, EventType
@@ -187,6 +188,28 @@ class Workspace:
             digest=self.projection_digest(),
         )
 
+    def snapshot(self) -> dict[str, Any]:
+        """Serializable point-in-time view of every projection.
+
+        Groups memory ids by tier and lists ledger statuses, tombstones,
+        and the journal head so two snapshots can be diffed after an
+        import, a fold, or a rebuild. Side-effect free: projections are
+        read without touching access statistics.
+        """
+        return {
+            "memories": {
+                tier.value: sorted(item.item_id for item in self.store.items_by_tier(tier))
+                for tier in MemoryTier
+            },
+            "commitments": {
+                c.commitment_id: c.status.value
+                for c in sorted(self.ledger.all_commitments(), key=lambda c: c.commitment_id)
+            },
+            "tombstones": sorted(t.event_id for t in self.journal.iter_tombstones()),
+            "head": self.journal.head_checksum(),
+            "digest": self.projection_digest(),
+        }
+
     # -- mutations -----------------------------------------------------------
 
     def ingest_events(self, events: list[Event], now: str = "") -> int:
@@ -303,3 +326,48 @@ class Workspace:
         if item is not None and now:
             self.trace.record_recall(now, {"item_id": item_id})
         return item
+
+
+def diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic diff between two :meth:`Workspace.snapshot` dicts.
+
+    Reports added/removed memory ids per tier, added/removed commitments
+    with their status changes, and newly tombstoned events. ``empty`` is
+    True exactly when the two projections are identical — the shape
+    audits and migration tests rely on.
+    """
+    memory_diff: dict[str, dict[str, list[str]]] = {}
+    tiers = sorted(set(before.get("memories", {})) | set(after.get("memories", {})))
+    for tier in tiers:
+        old = set(before.get("memories", {}).get(tier, []))
+        new = set(after.get("memories", {}).get(tier, []))
+        if old != new:
+            memory_diff[tier] = {"added": sorted(new - old), "removed": sorted(old - new)}
+    old_commits: dict[str, str] = before.get("commitments", {})
+    new_commits: dict[str, str] = after.get("commitments", {})
+    status_changes = [
+        {"commitment_id": cid, "before": old_commits[cid], "after": new_commits[cid]}
+        for cid in sorted(set(old_commits) & set(new_commits))
+        if old_commits[cid] != new_commits[cid]
+    ]
+    diff: dict[str, Any] = {
+        "memories": memory_diff,
+        "commitments": {
+            "added": sorted(set(new_commits) - set(old_commits)),
+            "removed": sorted(set(old_commits) - set(new_commits)),
+            "status_changes": status_changes,
+        },
+        "tombstones_added": sorted(
+            set(after.get("tombstones", [])) - set(before.get("tombstones", []))
+        ),
+        "digest_changed": before.get("digest") != after.get("digest"),
+    }
+    diff["empty"] = (
+        not memory_diff
+        and not diff["commitments"]["added"]
+        and not diff["commitments"]["removed"]
+        and not status_changes
+        and not diff["tombstones_added"]
+        and not diff["digest_changed"]
+    )
+    return diff
