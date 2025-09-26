@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mnemofold.decay import DecayEngine
 from mnemofold.deletion import DeletionEngine, DeletionReason, DeletionReport
 from mnemofold.events import Event, EventType
 from mnemofold.fold import Folder, FoldReport
@@ -104,6 +105,7 @@ class Workspace:
         self.deletion: DeletionEngine = build_deletion_engine(self.engine)
         self.ledger = CommitmentLedger()
         self._extractor = CommitmentExtractor()
+        self.decay_engine = DecayEngine()
         self.rebuild()
 
     # -- lifecycle -----------------------------------------------------------
@@ -252,6 +254,18 @@ class Workspace:
             {"action": "fold", "fold_id": report.fold_id, "digest": report.digest()},
         )
         return report
+
+    def apply_decay(self, now: str) -> dict[str, int]:
+        """Apply per-tier retention decay to the projected memories.
+
+        Pinned items, legal-hold tags, and engine holds are protected
+        (see :class:`DecayEngine`). Decay mutates only the derived
+        projections, never the journal; the counters are receipted into
+        the trace for replay audits.
+        """
+        stats = self.decay_engine.apply_decay(self.store, now)
+        self.trace.record_receipt(now, {"action": "decay", **stats})
+        return stats
 
     def remember(
         self,

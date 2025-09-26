@@ -59,3 +59,20 @@ class TestWorkspaceFold:
                 item.salience = 0.9
             second = ws.fold("2025-01-02T02:00:00+00:00")
             assert second.digest() == first.digest()
+
+
+class TestWorkspaceDecay:
+    def test_decay_receipts_counters_and_protects_holds(self, tmp_path: Path):
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events(_notes(2))
+            items = sorted(ws.store.items_by_tier(MemoryTier.EPISODIC), key=lambda i: i.item_id)
+            ws.decay_engine.place_hold(items[0].item_id, reason="audit")
+            stats = ws.apply_decay("2025-06-01T00:00:00+00:00")
+            assert stats["protected_skipped"] >= 1
+            assert ws.store.peek(items[0].item_id) is not None
+            demoted = ws.store.peek(items[1].item_id)
+            assert demoted is not None
+            assert demoted.tier != MemoryTier.EPISODIC
+            receipts = _receipts(tmp_path / "ws", "decay")
+            assert len(receipts) == 1
+            assert receipts[0]["protected_skipped"] == stats["protected_skipped"]
