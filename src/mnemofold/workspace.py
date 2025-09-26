@@ -20,6 +20,7 @@ from typing import Any
 
 from mnemofold.deletion import DeletionEngine, DeletionReason, DeletionReport
 from mnemofold.events import Event, EventType
+from mnemofold.fold import Folder, FoldReport
 from mnemofold.ingest import CommitmentExtractor
 from mnemofold.ledger import Commitment, CommitmentLedger
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
@@ -234,6 +235,23 @@ class Workspace:
         if stamp:
             self.trace.record_receipt(stamp, {"action": "ingest", "added": added})
         return added
+
+    def fold(self, timestamp: str, *, similarity_threshold: float = 0.75) -> FoldReport:
+        """Run one deterministic folding pass over projected memories.
+
+        Folding is a derived view: the journal keeps the raw events, so
+        a rebuild re-projects episodes and re-folding with the same
+        timestamp reproduces the same report digest. The receipt (fold
+        id and digest) is mirrored into the trace, letting a replay
+        verify that consolidation happened identically.
+        """
+        folder = Folder(similarity_threshold=similarity_threshold)
+        report = folder.fold(self.store, timestamp)
+        self.trace.record_receipt(
+            timestamp,
+            {"action": "fold", "fold_id": report.fold_id, "digest": report.digest()},
+        )
+        return report
 
     def remember(
         self,
