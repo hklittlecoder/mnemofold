@@ -76,3 +76,44 @@ class TestWorkspaceDecay:
             receipts = _receipts(tmp_path / "ws", "decay")
             assert len(receipts) == 1
             assert receipts[0]["protected_skipped"] == stats["protected_skipped"]
+
+
+class TestWorkspaceTriage:
+    def _items(self) -> list:
+        from mnemofold.triage import TriageItem
+
+        return [
+            TriageItem(
+                item_id=f"inbox-{i}",
+                title=f"message {i}",
+                sender="ana@team.example",
+                received_at="2025-01-02T08:00:00+00:00",
+                content="release blocking risk" if i == 0 else "newsletter digest",
+                has_deadline=i == 0,
+                deadline="2025-01-02T17:00:00+00:00" if i == 0 else "",
+                has_explicit_ask=i == 0,
+            )
+            for i in range(3)
+        ]
+
+    def test_triage_conserves_items_and_receipts_totals(self, tmp_path: Path):
+        with Workspace(tmp_path / "ws") as ws:
+            results, plan = ws.triage(self._items(), "2025-01-02T09:00:00+00:00")
+            assert len(results) == 3
+            assert plan.total() == 3
+            assert _receipts(tmp_path / "ws", "triage") == [
+                {
+                    "action": "triage",
+                    "scored": 3,
+                    "act_now": len(plan.act_now),
+                    "review": len(plan.review),
+                    "defer": len(plan.defer),
+                }
+            ]
+
+    def test_triage_is_deterministic_for_same_now(self, tmp_path: Path):
+        with Workspace(tmp_path / "ws") as ws:
+            first, _ = ws.triage(self._items(), "2025-01-02T09:00:00+00:00")
+            second, _ = ws.triage(self._items(), "2025-01-02T09:00:00+00:00")
+            assert [r.score for r in first] == [r.score for r in second]
+            assert [r.item_id for r in first] == [r.item_id for r in second]

@@ -36,6 +36,7 @@ from mnemofold.retrieval import (
     forget as forget_item,
 )
 from mnemofold.storage import Journal
+from mnemofold.triage import BatchPlan, TriageBatcher, TriageItem, TriageResult, TriageScorer
 
 
 @dataclass(slots=True)
@@ -266,6 +267,35 @@ class Workspace:
         stats = self.decay_engine.apply_decay(self.store, now)
         self.trace.record_receipt(now, {"action": "decay", **stats})
         return stats
+
+    def triage(
+        self,
+        items: list[TriageItem],
+        now: str,
+        *,
+        max_act_now: int = 3,
+        max_review: int = 10,
+    ) -> tuple[list[TriageResult], BatchPlan]:
+        """Score inbox items and route them through the batching rules.
+
+        Scoring is deterministic for a given ``now``; the batch plan
+        conserves every scored item across act_now/review/defer. Batch
+        totals are receipted into the trace so a replay can confirm the
+        same routing happened.
+        """
+        results = TriageScorer().batch_score(items, now)
+        plan = TriageBatcher(max_act_now=max_act_now, max_review=max_review).batch(results)
+        self.trace.record_receipt(
+            now,
+            {
+                "action": "triage",
+                "scored": len(results),
+                "act_now": len(plan.act_now),
+                "review": len(plan.review),
+                "defer": len(plan.defer),
+            },
+        )
+        return results, plan
 
     def remember(
         self,
