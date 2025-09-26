@@ -117,3 +117,28 @@ class TestWorkspaceTriage:
             second, _ = ws.triage(self._items(), "2025-01-02T09:00:00+00:00")
             assert [r.score for r in first] == [r.score for r in second]
             assert [r.item_id for r in first] == [r.item_id for r in second]
+
+
+class TestWorkspaceContextPack:
+    def test_pack_stays_within_budget_and_cites_live_memories(self, tmp_path: Path):
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events(_notes(4))
+            pack = ws.context_pack(
+                "release planning",
+                budget_tokens=40,
+                now="2025-01-02T09:00:00+00:00",
+            )
+            assert pack.total_tokens <= 40
+            for item in pack.items:
+                assert ws.store.peek(item.item_id) is not None
+            receipts = _receipts(tmp_path / "ws", "context")
+            assert len(receipts) == 1
+            assert receipts[0]["tokens"] == pack.total_tokens
+
+    def test_forgotten_memories_never_enter_the_pack(self, tmp_path: Path):
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events(_notes(3))
+            victim = sorted(ws.store.items_by_tier(MemoryTier.EPISODIC), key=lambda i: i.item_id)[0]
+            ws.forget(victim.item_id, now="2025-01-02T00:00:00+00:00", reason="test")
+            pack = ws.context_pack("release planning", budget_tokens=500)
+            assert victim.item_id not in {item.item_id for item in pack.items}

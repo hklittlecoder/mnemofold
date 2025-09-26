@@ -18,6 +18,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mnemofold.context import (
+    ContextItem,
+    ContextPack,
+    ContextPacker,
+    PackingProfile,
+    estimate_tokens,
+)
 from mnemofold.decay import DecayEngine
 from mnemofold.deletion import DeletionEngine, DeletionReason, DeletionReport
 from mnemofold.events import Event, EventType
@@ -296,6 +303,45 @@ class Workspace:
             },
         )
         return results, plan
+
+    def context_pack(
+        self,
+        query: str,
+        *,
+        budget_tokens: int,
+        top_k: int = 10,
+        profile: PackingProfile = PackingProfile.GENERAL,
+        now: str = "",
+    ) -> ContextPack:
+        """Retrieve candidates and pack them under a token budget.
+
+        Candidates come from the live retrieval engine, so every packed
+        item cites a non-forgotten memory. Selection is the exact 0/1
+        knapsack DP: the pack never exceeds ``budget_tokens``.
+        """
+        results = self.engine.search_parsed(parse_query(query), top_k=top_k)
+        items = [
+            ContextItem(
+                item_id=result.item_id,
+                content=result.snippet or result.title,
+                title=result.title,
+                token_estimate=estimate_tokens(result.snippet or result.title),
+                priority=result.score,
+            )
+            for result in results
+        ]
+        pack = ContextPacker(budget=budget_tokens, profile=profile).pack(items)
+        if now:
+            self.trace.record_receipt(
+                now,
+                {
+                    "action": "context",
+                    "query": query,
+                    "items": len(pack),
+                    "tokens": pack.total_tokens,
+                },
+            )
+        return pack
 
     def remember(
         self,
