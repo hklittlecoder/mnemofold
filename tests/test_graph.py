@@ -199,3 +199,48 @@ class TestInvariants:
         g.deactivate_node("p1")
         assert g.get_node("p1") is None
         assert g.edge_count() == 0
+
+
+class TestGraphSerializationGolden:
+    def _sample(self) -> WorkstreamGraph:
+        graph = WorkstreamGraph()
+        graph.add_node(Node("n1", NodeType.PROJECT, "alpha"))
+        graph.add_node(Node("n2", NodeType.PERSON, "Ana"))
+        graph.add_edge(Edge("e1", EdgeType.OWNS, "n2", "n1"))
+        return graph
+
+    def test_to_dict_is_pinned_literal(self):
+        assert self._sample().to_dict() == {
+            "nodes": [
+                {
+                    "node_id": "n1",
+                    "node_type": "project",
+                    "label": "alpha",
+                    "properties": {},
+                    "active": True,
+                },
+                {
+                    "node_id": "n2",
+                    "node_type": "person",
+                    "label": "Ana",
+                    "properties": {},
+                    "active": True,
+                },
+            ],
+            "edges": [
+                {
+                    "edge_id": "e1",
+                    "edge_type": "owns",
+                    "source_id": "n2",
+                    "target_id": "n1",
+                    "properties": {},
+                    "active": True,
+                }
+            ],
+        }
+
+    def test_roundtrip_reserializes_identically(self):
+        graph = self._sample()
+        restored = WorkstreamGraph.from_dict(graph.to_dict())
+        assert restored.to_dict() == graph.to_dict()
+        assert restored.get_node("n1").to_dict() == graph.get_node("n1").to_dict()
