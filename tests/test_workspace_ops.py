@@ -161,3 +161,26 @@ class TestWorkspacePrep:
             assert verify_citations(packet, ws.store)
             receipts = _receipts(tmp_path / "ws", "prep")
             assert receipts[0]["items"] == packet.total_items
+
+
+class TestWorkspaceStandup:
+    def test_standup_lists_open_commitments_with_citations(self, tmp_path: Path):
+        from mnemofold.ledger import Commitment
+
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ledger.add(
+                Commitment(
+                    commitment_id="c-standup",
+                    owed_by="ana",
+                    owed_to="team",
+                    description="ship the report",
+                    due_date="2025-01-10T17:00:00+00:00",
+                    created_at="2025-01-01T09:00:00+00:00",
+                )
+            )
+            data = ws.standup("2025-01-02T08:00:00+00:00", now="2025-01-02T08:00:00+00:00")
+            assert any("c-standup" in line for line in data.open_commitments)
+            assert any("c-standup" in cite for cite in data.citations)
+            receipts = _receipts(tmp_path / "ws", "standup")
+            assert receipts[0]["open"] == len(data.open_commitments)
+            assert receipts[0]["overdue"] == len(data.overdue)

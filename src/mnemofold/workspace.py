@@ -43,6 +43,7 @@ from mnemofold.retrieval import (
 from mnemofold.retrieval import (
     forget as forget_item,
 )
+from mnemofold.review import StandupData, StandupGenerator
 from mnemofold.storage import Journal
 from mnemofold.triage import BatchPlan, TriageBatcher, TriageItem, TriageResult, TriageScorer
 
@@ -372,6 +373,31 @@ class Workspace:
                 },
             )
         return packet
+
+    def standup(
+        self,
+        today: str,
+        *,
+        pending_decisions: list[str] | None = None,
+        now: str = "",
+    ) -> StandupData:
+        """Generate today's standup snapshot from the journaled ledger.
+
+        Commitments extracted at ingest time feed the open and overdue
+        lists; every report line cites its commitment id.
+        """
+        data = StandupGenerator(ledger=self.ledger).generate(today, pending_decisions)
+        if now:
+            self.trace.record_receipt(
+                now,
+                {
+                    "action": "standup",
+                    "date": today,
+                    "open": len(data.open_commitments),
+                    "overdue": len(data.overdue),
+                },
+            )
+        return data
 
     def remember(
         self,
