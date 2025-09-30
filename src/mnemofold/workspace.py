@@ -32,6 +32,7 @@ from mnemofold.fold import Folder, FoldReport
 from mnemofold.ingest import CommitmentExtractor
 from mnemofold.ledger import Commitment, CommitmentLedger
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
+from mnemofold.prep import MeetingPrep, MeetingPrepper
 from mnemofold.replay import TraceRecorder
 from mnemofold.retrieval import (
     RetrievalEngine,
@@ -342,6 +343,35 @@ class Workspace:
                 },
             )
         return pack
+
+    def prep(
+        self,
+        meeting_id: str,
+        meeting_title: str,
+        attendees: list[str],
+        *,
+        context_text: str = "",
+        now: str = "",
+    ) -> MeetingPrep:
+        """Assemble a cited meeting-prep packet from projected memories.
+
+        Citations in the packet always resolve to live workspace
+        memories; the receipt records the packet size so replays can
+        confirm the same evidence was gathered.
+        """
+        packet = MeetingPrepper(store=self.store).prepare(
+            meeting_id, meeting_title, attendees, context_text
+        )
+        if now:
+            self.trace.record_receipt(
+                now,
+                {
+                    "action": "prep",
+                    "meeting_id": meeting_id,
+                    "items": packet.total_items,
+                },
+            )
+        return packet
 
     def remember(
         self,

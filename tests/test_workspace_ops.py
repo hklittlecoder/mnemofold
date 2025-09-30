@@ -142,3 +142,22 @@ class TestWorkspaceContextPack:
             ws.forget(victim.item_id, now="2025-01-02T00:00:00+00:00", reason="test")
             pack = ws.context_pack("release planning", budget_tokens=500)
             assert victim.item_id not in {item.item_id for item in pack.items}
+
+
+class TestWorkspacePrep:
+    def test_packet_cites_live_memories(self, tmp_path: Path):
+        from mnemofold.prep import verify_citations
+
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events(_notes(3))
+            packet = ws.prep(
+                "mtg-1",
+                "Release planning",
+                ["Ana", "Bo"],
+                context_text="release planning risks",
+                now="2025-01-02T09:00:00+00:00",
+            )
+            assert packet.items
+            assert verify_citations(packet, ws.store)
+            receipts = _receipts(tmp_path / "ws", "prep")
+            assert receipts[0]["items"] == packet.total_items
