@@ -372,3 +372,45 @@ class TestFoldProperties:
         assert fold_idempotent_check(
             self._store(), Folder(similarity_threshold=0.7), "2025-03-11T00:00:00+00:00"
         )
+
+
+class TestFoldReportGolden:
+    def test_report_dict_is_pinned_literal(self):
+        store = MemoryStore()
+        store.add(MemoryItem("s1", MemoryTier.SEMANTIC, "alpha beta gamma", salience=0.8))
+        store.add(MemoryItem("s2", MemoryTier.SEMANTIC, "alpha beta gamma", salience=0.5))
+        store.add(MemoryItem("s3", MemoryTier.SEMANTIC, "zzz yyy xxx", salience=0.4))
+        report = Folder(similarity_threshold=0.7).fold(
+            store, "2025-04-01T02:00:00+00:00", fold_id="fold-golden"
+        )
+        assert report.to_dict() == {
+            "fold_id": "fold-golden",
+            "timestamp": "2025-04-01T02:00:00+00:00",
+            "items_before": 3,
+            "items_after": 2,
+            "merges": [
+                {
+                    "kept_id": "s1",
+                    "removed_id": "s2",
+                    "reason": "near_duplicate",
+                    "similarity": 1.0,
+                    "provenance": ["s2"],
+                }
+            ],
+            "rejected": [{"a": "s1", "b": "s3", "similarity": 0.0, "reason": "below_threshold"}],
+            "new_semantic": [],
+            "recurrence_proposals": [],
+        }
+
+    def test_markdown_cites_the_merge_and_the_reject(self):
+        store = MemoryStore()
+        store.add(MemoryItem("s1", MemoryTier.SEMANTIC, "alpha beta gamma", salience=0.8))
+        store.add(MemoryItem("s2", MemoryTier.SEMANTIC, "alpha beta gamma", salience=0.5))
+        store.add(MemoryItem("s3", MemoryTier.SEMANTIC, "zzz yyy xxx", salience=0.4))
+        markdown = (
+            Folder(similarity_threshold=0.7)
+            .fold(store, "2025-04-01T02:00:00+00:00", fold_id="fold-golden")
+            .to_markdown()
+        )
+        for needle in ("s1", "s2", "s3", "fold-golden"):
+            assert needle in markdown
