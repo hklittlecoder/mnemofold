@@ -465,3 +465,57 @@ class TestDeriveCommitmentRules:
         second = derive_commitment_rules(self._ledger(), now)
         assert [r.rule_id for r in first] == [r.rule_id for r in second]
         assert all(r.rule_id == f"trg-{r.target_id}" for r in first)
+
+
+class TestCooldownAndDedupeBoundaries:
+    def _rule(self, rule_id: str = "r1", target: str = "t1", **kwargs):
+        from mnemofold.triggers import TriggerKind, TriggerRule
+
+        base: dict = {
+            "kind": TriggerKind.FOLLOW_UP,
+            "target_id": target,
+            "fire_at": datetime(2025, 1, 1, 9, 0, tzinfo=UTC),
+            "cooldown": timedelta(hours=1),
+        }
+        base.update(kwargs)
+        return TriggerRule(rule_id=rule_id, **base)
+
+    def test_rule_refires_exactly_at_cooldown_boundary(self):
+        from mnemofold.triggers import TriggerEngine
+
+        engine = TriggerEngine()
+        engine.add_rule(self._rule())
+        t0 = datetime(2025, 1, 1, 9, 0, tzinfo=UTC)
+        assert len(engine.tick(t0)) == 1
+        assert engine.tick(t0 + timedelta(minutes=59, seconds=59)) == []
+        assert len(engine.tick(t0 + timedelta(hours=1))) == 1
+
+    def test_dedupe_window_spans_distinct_rules_on_same_target(self):
+        from mnemofold.triggers import TriggerEngine
+
+        engine = TriggerEngine()
+        engine.add_rule(self._rule("r1", cooldown=None, dedupe_window=timedelta(hours=2)))
+        engine.add_rule(self._rule("r2", cooldown=None, dedupe_window=timedelta(hours=2)))
+        t0 = datetime(2025, 1, 1, 9, 0, tzinfo=UTC)
+        assert [f.rule_id for f in engine.tick(t0)] == ["r1"]
+        # one hour later both rules sit inside the shared (target, kind) window
+        assert engine.tick(t0 + timedelta(hours=1)) == []
+        assert [f.rule_id for f in engine.fired()] == ["r1"]
+        # at the boundary the first rule fires again; r2 stays deduped behind it
+        assert [f.rule_id for f in engine.tick(t0 + timedelta(hours=2))] == ["r1"]
+
+    def test_quiet_hours_suppress_below_severity_floor(self):
+        from mnemofold.triggers import QuietHours, TriggerEngine, TriggerSeverity
+
+        engine = TriggerEngine(
+            quiet_hours=QuietHours(
+                start_hour=22, end_hour=7, suppress_severity_below=TriggerSeverity.CRITICAL
+            )
+        )
+        engine.add_rule(self._rule("night-info", severity=TriggerSeverity.INFO))
+        engine.add_rule(self._rule("night-crit", severity=TriggerSeverity.CRITICAL))
+        night = datetime(2025, 1, 1, 23, 30, tzinfo=UTC)
+        fired = {f.rule_id: f for f in engine.tick(night)}
+        assert fired["night-info"].suppressed
+        assert fired["night-info"].suppress_reason == "quiet_hours"
+        assert not fired["night-crit"].suppressed
