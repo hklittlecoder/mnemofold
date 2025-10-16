@@ -12,10 +12,12 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+
+from mnemofold.ledger import CommitmentLedger, CommitmentStatus
 
 
 class TriggerKind(StrEnum):
@@ -266,3 +268,62 @@ def read_trigger_log(path: str | Path) -> list[FiredTrigger]:
         prev = obj["hash"]
         out.append(fired_from_dict(obj["entry"]))
     return out
+
+
+def derive_commitment_rules(
+    ledger: CommitmentLedger,
+    now: datetime,
+    *,
+    ahead_days: float = 2.0,
+    cooldown_hours: float = 12.0,
+) -> list[TriggerRule]:
+    """Build reminder rules from open ledger commitments.
+
+    Each open or in-progress commitment yields exactly one rule with a
+    deterministic id (``trg-<commitment_id>``): an overdue commitment
+    becomes a CRITICAL ``OVERDUE_ALERT`` due immediately, otherwise a
+    WARNING ``DEADLINE_REMINDER`` fires ``ahead_days`` before the due
+    date (clamped to ``now`` so it never lies in the past). Terminal
+    commitments and commitments without a parseable due date are
+    skipped. Re-deriving after a rebuild gives the same rule set.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    rules: list[TriggerRule] = []
+    cooldown = timedelta(hours=cooldown_hours)
+    for commitment in sorted(ledger.all_commitments(), key=lambda c: c.commitment_id):
+        if commitment.status in {
+            CommitmentStatus.DONE,
+            CommitmentStatus.CANCELLED,
+            CommitmentStatus.SUPERSEDED,
+        }:
+            continue
+        try:
+            due = datetime.fromisoformat(commitment.due_date)
+        except (ValueError, TypeError):
+            continue
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=UTC)
+        if commitment.is_overdue(now.isoformat()):
+            kind = TriggerKind.OVERDUE_ALERT
+            severity = TriggerSeverity.CRITICAL
+            fire_at = now
+            message = f"commitment {commitment.commitment_id} is overdue since {due.isoformat()}"
+        else:
+            kind = TriggerKind.DEADLINE_REMINDER
+            severity = TriggerSeverity.WARNING
+            fire_at = max(due - timedelta(days=ahead_days), now)
+            message = f"commitment {commitment.commitment_id} is due at {due.isoformat()}"
+        rules.append(
+            TriggerRule(
+                rule_id=f"trg-{commitment.commitment_id}",
+                kind=kind,
+                target_id=commitment.commitment_id,
+                fire_at=fire_at,
+                severity=severity,
+                message=message,
+                cooldown=cooldown,
+                dedupe_window=cooldown,
+            )
+        )
+    return rules

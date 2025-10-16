@@ -395,3 +395,73 @@ class TestTriggerEngineSweep:
             return log
 
         assert run() == run()
+
+
+class TestDeriveCommitmentRules:
+    def _ledger(self):
+        from mnemofold.ledger import Commitment, CommitmentLedger, CommitmentStatus
+
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("c-over", "ana", "team", "ship report", "2025-01-08T17:00:00+00:00"))
+        ledger.add(Commitment("c-soon", "bo", "team", "draft agenda", "2025-01-14T17:00:00+00:00"))
+        ledger.add(
+            Commitment("c-far", "cy", "team", "quarterly numbers", "2025-03-01T17:00:00+00:00")
+        )
+        ledger.add(
+            Commitment(
+                "c-done",
+                "dan",
+                "team",
+                "old task",
+                "2025-01-05T17:00:00+00:00",
+                status=CommitmentStatus.DONE,
+            )
+        )
+        ledger.add(Commitment("c-nodate", "eli", "team", "someday", ""))
+        return ledger
+
+    def test_overdue_commitments_become_critical_alerts(self):
+        from mnemofold.triggers import TriggerKind, TriggerSeverity, derive_commitment_rules
+
+        now = datetime(2025, 1, 10, 9, 0, tzinfo=UTC)
+        rules = {r.target_id: r for r in derive_commitment_rules(self._ledger(), now)}
+        alert = rules["c-over"]
+        assert alert.kind == TriggerKind.OVERDUE_ALERT
+        assert alert.severity == TriggerSeverity.CRITICAL
+        assert alert.fire_at == now
+
+    def test_upcoming_deadlines_fire_ahead_of_due_date(self):
+        from mnemofold.triggers import TriggerKind, derive_commitment_rules
+
+        now = datetime(2025, 1, 10, 9, 0, tzinfo=UTC)
+        rules = {
+            r.target_id: r for r in derive_commitment_rules(self._ledger(), now, ahead_days=2.0)
+        }
+        soon = rules["c-soon"]
+        assert soon.kind == TriggerKind.DEADLINE_REMINDER
+        assert soon.fire_at == datetime(2025, 1, 12, 17, 0, tzinfo=UTC)
+
+    def test_reminder_inside_ahead_window_is_clamped_to_now(self):
+        from mnemofold.triggers import derive_commitment_rules
+
+        now = datetime(2025, 1, 13, 9, 0, tzinfo=UTC)
+        rules = {
+            r.target_id: r for r in derive_commitment_rules(self._ledger(), now, ahead_days=2.0)
+        }
+        assert rules["c-soon"].fire_at == now
+
+    def test_terminal_and_undated_commitments_are_skipped(self):
+        from mnemofold.triggers import derive_commitment_rules
+
+        now = datetime(2025, 1, 10, 9, 0, tzinfo=UTC)
+        ids = {r.target_id for r in derive_commitment_rules(self._ledger(), now)}
+        assert ids == {"c-over", "c-soon", "c-far"}
+
+    def test_rule_ids_are_stable_across_derivation(self):
+        from mnemofold.triggers import derive_commitment_rules
+
+        now = datetime(2025, 1, 10, 9, 0, tzinfo=UTC)
+        first = derive_commitment_rules(self._ledger(), now)
+        second = derive_commitment_rules(self._ledger(), now)
+        assert [r.rule_id for r in first] == [r.rule_id for r in second]
+        assert all(r.rule_id == f"trg-{r.target_id}" for r in first)
