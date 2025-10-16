@@ -43,7 +43,7 @@ from mnemofold.retrieval import (
 from mnemofold.retrieval import (
     forget as forget_item,
 )
-from mnemofold.review import StandupData, StandupGenerator
+from mnemofold.review import StandupData, StandupGenerator, WeeklyReview, WeeklyReviewGenerator
 from mnemofold.storage import Journal
 from mnemofold.triage import BatchPlan, TriageBatcher, TriageItem, TriageResult, TriageScorer
 
@@ -398,6 +398,26 @@ class Workspace:
                 },
             )
         return data
+
+    def weekly_review(self, week_start: str, week_end: str, *, now: str = "") -> WeeklyReview:
+        """Generate the weekly roll-up from ledger transition history.
+
+        ``completed`` reflects transitions inside ``[week_start,
+        week_end)``; overdue and open lists are evaluated as of
+        ``week_end``. Every line cites its commitment id.
+        """
+        review = WeeklyReviewGenerator(ledger=self.ledger).generate(week_start, week_end)
+        if now:
+            self.trace.record_receipt(
+                now,
+                {
+                    "action": "review",
+                    "week_start": week_start,
+                    "completed": len(review.completed),
+                    "overdue": len(review.overdue),
+                },
+            )
+        return review
 
     def remember(
         self,

@@ -184,3 +184,30 @@ class TestWorkspaceStandup:
             receipts = _receipts(tmp_path / "ws", "standup")
             assert receipts[0]["open"] == len(data.open_commitments)
             assert receipts[0]["overdue"] == len(data.overdue)
+
+
+class TestWorkspaceWeeklyReview:
+    def test_review_reports_transitions_inside_the_window(self, tmp_path: Path):
+        from mnemofold.ledger import Commitment, CommitmentStatus
+
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ledger.add(
+                Commitment(
+                    commitment_id="c-week",
+                    owed_by="bo",
+                    owed_to="team",
+                    description="draft the agenda",
+                    due_date="2025-01-08T17:00:00+00:00",
+                    created_at="2025-01-05T09:00:00+00:00",
+                )
+            )
+            ws.ledger.transition("c-week", CommitmentStatus.DONE, "2025-01-07T11:00:00+00:00")
+            review = ws.weekly_review(
+                "2025-01-06T00:00:00+00:00",
+                "2025-01-12T00:00:00+00:00",
+                now="2025-01-12T09:00:00+00:00",
+            )
+            assert any("c-week" in line for line in review.completed)
+            receipts = _receipts(tmp_path / "ws", "review")
+            assert receipts[0]["completed"] == len(review.completed)
+            assert receipts[0]["overdue"] == len(review.overdue)
