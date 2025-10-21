@@ -253,3 +253,32 @@ class TestWorkspaceTriggers:
             )
             fired = ws.triggers_tick("2025-01-10T10:00:00+00:00")
             assert [f.target_id for f in fired] == ["c-new"]
+
+
+class TestWorkspaceExportBundle:
+    def test_bundle_carries_ledger_snapshot_and_manifest(self, tmp_path: Path):
+        import json as jsonlib
+
+        from mnemofold.ledger import CommitmentLedger
+
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events(_notes(2))
+            manifest = ws.export_bundle(tmp_path / "bundle")
+            assert manifest["events"] == 2
+            assert manifest["memories"] == 2
+            assert manifest["journal_head"] == ws.journal.head_checksum()
+            assert manifest["trace_head"] == ws.trace.last_hash()
+            snapshot = jsonlib.loads((tmp_path / "bundle" / "snapshot.json").read_text())
+            assert snapshot["digest"] == ws.projection_digest()
+            reloaded = CommitmentLedger.from_json((tmp_path / "bundle" / "ledger.json").read_text())
+            assert reloaded.total_count() == ws.ledger.total_count()
+
+    def test_bundle_manifest_matches_a_second_export(self, tmp_path: Path):
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ingest_events(_notes(1))
+            first = ws.export_bundle(tmp_path / "b1")
+            second = ws.export_bundle(tmp_path / "b2")
+            assert first == second
+            assert (tmp_path / "b1" / "manifest.json").read_bytes() == (
+                tmp_path / "b2" / "manifest.json"
+            ).read_bytes()

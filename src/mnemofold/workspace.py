@@ -438,6 +438,36 @@ class Workspace:
         self.trace.record_receipt(now, {"action": "triggers", "fired": len(fired)})
         return fired
 
+    def export_bundle(self, directory: str | Path) -> dict[str, Any]:
+        """Write the derived state into a self-describing bundle.
+
+        The journal itself stays put (it is the source of truth); the
+        bundle carries ``ledger.json``, ``snapshot.json``, and a
+        ``manifest.json`` with counts, journal head, trace head, and the
+        projection digest, so a receiver can audit the export without
+        access to the database. Returns the manifest.
+        """
+        target = Path(directory)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "ledger.json").write_text(self.ledger.to_json() + "\n", encoding="utf-8")
+        snap = self.snapshot()
+        (target / "snapshot.json").write_text(
+            json.dumps(snap, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        manifest: dict[str, Any] = {
+            "events": len(self.journal),
+            "memories": sum(len(ids) for ids in snap["memories"].values()),
+            "commitments": len(snap["commitments"]),
+            "tombstones": len(snap["tombstones"]),
+            "journal_head": snap["head"],
+            "trace_head": self.trace.last_hash(),
+            "projection_digest": snap["digest"],
+        }
+        (target / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return manifest
+
     def remember(
         self,
         text: str,
