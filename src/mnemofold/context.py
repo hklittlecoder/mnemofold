@@ -191,6 +191,45 @@ def knapsack_greedy(items: list[ContextItem], budget: int) -> list[int]:
     return sorted(selected)
 
 
+def knapsack_brute_force(
+    items: list[ContextItem], budget: int, values: list[float] | None = None
+) -> list[int]:
+    """Exhaustive reference solver for small instances (2^n subsets).
+
+    Enumerates every subset and keeps the feasible one with maximum
+    total value (``item.priority`` by default, or the ``values``
+    override — matching :func:`knapsack_dp`). Ties break toward the
+    lexicographically smallest index tuple, so the answer itself is
+    deterministic. Exponential on purpose: tests use it on handfuls of
+    items to prove the DP solver optimal.
+    """
+    n = len(items)
+    if n == 0 or budget < 0:
+        return []
+    value_list = values if values is not None else [it.priority for it in items]
+    best_value = 0.0
+    best: tuple[int, ...] = ()
+    for mask in range(1 << n):
+        total_weight = 0
+        total_value = 0.0
+        chosen: list[int] = []
+        feasible = True
+        for i in range(n):
+            if (mask >> i) & 1:
+                total_weight += items[i].token_estimate
+                if total_weight > budget:
+                    feasible = False
+                    break
+                total_value += value_list[i]
+                chosen.append(i)
+        if not feasible:
+            continue
+        if total_value > best_value or (total_value == best_value and tuple(chosen) < best):
+            best_value = total_value
+            best = tuple(chosen)
+    return list(best)
+
+
 @dataclass
 class ContextPacker:
     """Packs items into a budgeted context pack."""

@@ -514,3 +514,49 @@ class TestPackerBoundaries:
             budget=100,
         )
         assert verify_budget(pack) is False
+
+
+class TestKnapsackBruteForce:
+    def _item(self, item_id: str, tokens: int, priority: float):
+        return context_module.ContextItem(
+            item_id=item_id, content="x", token_estimate=tokens, priority=priority
+        )
+
+    def test_brute_force_value_matches_dp_on_random_small_instances(self):
+        rng = random.Random(20250401)
+        for _ in range(40):
+            n = rng.randint(1, 7)
+            items = [
+                self._item(f"i{i}", rng.randint(0, 6), round(rng.uniform(0, 1), 3))
+                for i in range(n)
+            ]
+            budget = rng.randint(0, 10)
+            dp_value = sum(items[i].priority for i in context_module.knapsack_dp(items, budget))
+            brute_value = sum(
+                items[i].priority for i in context_module.knapsack_brute_force(items, budget)
+            )
+            assert dp_value == pytest.approx(brute_value, abs=1e-9)
+
+    def test_brute_force_is_feasible_and_deterministic(self):
+        items = [self._item("a", 3, 0.9), self._item("b", 4, 0.8), self._item("c", 5, 0.7)]
+        first = context_module.knapsack_brute_force(items, 7)
+        assert first == context_module.knapsack_brute_force(items, 7)
+        assert sum(items[i].token_estimate for i in first) <= 7
+        assert first == [0, 1]
+
+    def test_brute_force_respects_value_override(self):
+        items = [self._item("a", 2, 0.1), self._item("b", 2, 0.2)]
+        chosen = context_module.knapsack_brute_force(items, 2, values=[5.0, 1.0])
+        assert chosen == [0]
+        assert context_module.knapsack_dp(items, 2, values=[5.0, 1.0]) == [0]
+
+    def test_brute_force_edges(self):
+        assert context_module.knapsack_brute_force([], 5) == []
+        item = self._item("a", 1, 1.0)
+        assert context_module.knapsack_brute_force([item], -1) == []
+        assert context_module.knapsack_brute_force([item], 0) == []
+
+    def test_zero_weight_items_always_fit(self):
+        items = [self._item("free", 0, 0.5), self._item("paid", 3, 0.9)]
+        assert context_module.knapsack_brute_force(items, 0) == [0]
+        assert sorted(context_module.knapsack_brute_force(items, 3)) == [0, 1]
