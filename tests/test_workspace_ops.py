@@ -211,3 +211,45 @@ class TestWorkspaceWeeklyReview:
             receipts = _receipts(tmp_path / "ws", "review")
             assert receipts[0]["completed"] == len(review.completed)
             assert receipts[0]["overdue"] == len(review.overdue)
+
+
+class TestWorkspaceTriggers:
+    def test_overdue_commitment_fires_and_cooldown_holds(self, tmp_path: Path):
+        from mnemofold.ledger import Commitment
+
+        with Workspace(tmp_path / "ws") as ws:
+            ws.ledger.add(
+                Commitment(
+                    commitment_id="c-late",
+                    owed_by="cy",
+                    owed_to="team",
+                    description="send the numbers",
+                    due_date="2025-01-08T17:00:00+00:00",
+                    created_at="2025-01-05T09:00:00+00:00",
+                )
+            )
+            fired = ws.triggers_tick("2025-01-10T09:00:00+00:00")
+            assert [f.target_id for f in fired] == ["c-late"]
+            assert not fired[0].suppressed
+            # second tick inside the 12h cooldown re-derives but stays quiet
+            assert ws.triggers_tick("2025-01-10T12:00:00+00:00") == []
+            receipts = _receipts(tmp_path / "ws", "triggers")
+            assert [r["fired"] for r in receipts] == [1, 0]
+
+    def test_new_commitments_join_on_the_next_tick(self, tmp_path: Path):
+        from mnemofold.ledger import Commitment
+
+        with Workspace(tmp_path / "ws") as ws:
+            ws.triggers_tick("2025-01-10T09:00:00+00:00")
+            ws.ledger.add(
+                Commitment(
+                    commitment_id="c-new",
+                    owed_by="ana",
+                    owed_to="team",
+                    description="circulate notes",
+                    due_date="2025-01-09T17:00:00+00:00",
+                    created_at="2025-01-05T09:00:00+00:00",
+                )
+            )
+            fired = ws.triggers_tick("2025-01-10T10:00:00+00:00")
+            assert [f.target_id for f in fired] == ["c-new"]

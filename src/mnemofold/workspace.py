@@ -46,6 +46,7 @@ from mnemofold.retrieval import (
 from mnemofold.review import StandupData, StandupGenerator, WeeklyReview, WeeklyReviewGenerator
 from mnemofold.storage import Journal
 from mnemofold.triage import BatchPlan, TriageBatcher, TriageItem, TriageResult, TriageScorer
+from mnemofold.triggers import FiredTrigger, TriggerEngine, derive_commitment_rules
 
 
 @dataclass(slots=True)
@@ -116,6 +117,7 @@ class Workspace:
         self.ledger = CommitmentLedger()
         self._extractor = CommitmentExtractor()
         self.decay_engine = DecayEngine()
+        self.trigger_engine = TriggerEngine()
         self.rebuild()
 
     # -- lifecycle -----------------------------------------------------------
@@ -418,6 +420,23 @@ class Workspace:
                 },
             )
         return review
+
+    def triggers_tick(self, now: str, *, ahead_days: float = 2.0) -> list[FiredTrigger]:
+        """Derive commitment triggers and tick the engine once.
+
+        Rules are re-derived on every call so they track ledger changes
+        without persistent state; rule ids are stable per commitment and
+        the session engine keeps cooldown/dedupe memory across calls.
+        Fired counts are receipted into the trace.
+        """
+        moment = _parse_now(now)
+        known = {rule.rule_id for rule in self.trigger_engine.rules()}
+        for rule in derive_commitment_rules(self.ledger, moment, ahead_days=ahead_days):
+            if rule.rule_id not in known:
+                self.trigger_engine.add_rule(rule)
+        fired = self.trigger_engine.tick(moment)
+        self.trace.record_receipt(now, {"action": "triggers", "fired": len(fired)})
+        return fired
 
     def remember(
         self,
