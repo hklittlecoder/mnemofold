@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
+from mnemofold.textsim import bigram_jaccard
 
 
 @dataclass(slots=True)
@@ -148,24 +149,13 @@ def _content_hash(text: str) -> str:
 
 
 def _text_similarity(a: str, b: str) -> float:
-    """Compute bigram Jaccard similarity of two texts.
+    """Case-insensitive bigram Jaccard similarity of two texts.
 
-    Simple but fast and deterministic. Used for near-duplicate detection.
+    Delegates to the shared primitive so folding and entity resolution
+    rank candidates with the same measure. Used for near-duplicate
+    detection.
     """
-    if not a or not b:
-        return 0.0
-    if a == b:
-        return 1.0
-
-    def bigrams(s: str) -> set[str]:
-        s = s.lower()
-        return {s[i : i + 2] for i in range(len(s) - 1)}
-
-    bg_a = bigrams(a)
-    bg_b = bigrams(b)
-    if not bg_a or not bg_b:
-        return 0.0
-    return len(bg_a & bg_b) / len(bg_a | bg_b)
+    return bigram_jaccard(a, b, fold_case=True)
 
 
 @dataclass

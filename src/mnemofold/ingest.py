@@ -17,6 +17,7 @@ from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
 from mnemofold.events import Event, EventType
+from mnemofold.textsim import bigram_jaccard
 
 
 @dataclass(slots=True)
@@ -217,25 +218,13 @@ class AliasTable:
 
 
 def _name_similarity(a: str, b: str) -> float:
-    """Compute a simple name similarity score (0.0 to 1.0).
+    """Case-sensitive name similarity score (0.0 to 1.0).
 
-    Based on the Jaccard similarity of character bigrams.
+    Character-bigram Jaccard via the shared primitive — the same
+    measure folding uses for near-duplicates, but names keep their
+    case so differently-cased candidates stay distinguishable.
     """
-    if not a or not b:
-        return 0.0
-    if a == b:
-        return 1.0
-
-    def bigrams(s: str) -> set[str]:
-        return {s[i : i + 2] for i in range(len(s) - 1)}
-
-    bg_a = bigrams(a)
-    bg_b = bigrams(b)
-    if not bg_a or not bg_b:
-        return 0.0
-    intersection = len(bg_a & bg_b)
-    union = len(bg_a | bg_b)
-    return intersection / union if union else 0.0
+    return bigram_jaccard(a, b)
 
 
 @dataclass(frozen=True, slots=True)
