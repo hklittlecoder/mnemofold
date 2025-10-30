@@ -74,6 +74,25 @@ class TestConflictResolver:
         assert c1.winner == c2.winner
         assert c1.resolution_reason == "deterministic_tiebreak"
 
+    def test_resolve_many_preserves_order(self):
+        r = ConflictResolver()
+        ev_v = FactEvidence(EvidenceSource.VERIFIED, "2024-01-01T00:00:00+00:00", "s1")
+        ev_u = FactEvidence(EvidenceSource.UNVERIFIED, "2024-06-01T00:00:00+00:00", "s2")
+        candidates = [
+            ("k1", "a", ev_v, "b", ev_u),
+            ("k2", "x", ev_u, "y", ev_v),
+            ("k3", "same", ev_v, "same", ev_u),
+        ]
+        results = r.resolve_many(candidates)
+        assert len(results) == 3
+        assert results[0].fact_key == "k1" and results[0].winner == "a"
+        assert results[1].fact_key == "k2" and results[1].winner == "b"
+        assert results[2].fact_key == "k3" and results[2].resolution_reason == "identical_values"
+
+    def test_resolve_many_empty(self):
+        r = ConflictResolver()
+        assert r.resolve_many([]) == []
+
     def test_apply_resolution_supersedes_loser(self):
         store = TemporalStore[str]()
         store.add(IntervalFact("owner", "alice", "2024-01-01T00:00:00+00:00"))

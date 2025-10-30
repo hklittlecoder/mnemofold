@@ -190,6 +190,18 @@ class ConflictResolver:
             return "source_id"
         return "tiebreak"
 
+    def resolve_many(
+        self,
+        candidates: list[tuple[str, Any, FactEvidence, Any, FactEvidence]],
+    ) -> list[Contradiction]:
+        """Resolve multiple candidate contradictions in one pass.
+
+        ``candidates`` is a list of ``(fact_key, value_a, evidence_a,
+        value_b, evidence_b)`` tuples. Resolution order matches input
+        order so the audit trail is deterministic.
+        """
+        return [self.resolve(key, va, ea, vb, eb) for key, va, ea, vb, eb in candidates]
+
     def apply_resolution(
         self,
         store: TemporalStore,
