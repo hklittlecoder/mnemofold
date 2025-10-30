@@ -62,6 +62,15 @@ make lint         # lint
 make typecheck    # 类型检查
 ```
 
+## 文档
+
+- [架构总览](docs/architecture.md)
+- [使用指南](docs/usage.md)
+- [API 参考](docs/api.md)
+- [存储与日志](docs/storage.md)
+- [工件 Schema 参考](docs/schemas.md)
+- [可复现性](docs/reproducibility.md)
+
 ## 许可
 
 MIT License
