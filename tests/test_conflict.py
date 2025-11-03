@@ -66,6 +66,18 @@ class TestConflictResolver:
         assert c.winner == "b"
         assert c.resolution_reason == "recency"
 
+    def test_source_id_tiebreak_when_other_fields_equal(self):
+        r = ConflictResolver()
+        ev_a = FactEvidence(
+            EvidenceSource.DEFAULT, "2024-01-01T00:00:00+00:00", "alpha", corroboration_count=2
+        )
+        ev_b = FactEvidence(
+            EvidenceSource.DEFAULT, "2024-01-01T00:00:00+00:00", "beta", corroboration_count=2
+        )
+        c = r.resolve("k", "val_a", ev_a, "val_b", ev_b)
+        assert c.resolution_reason == "source_id"
+        assert c.winner == "b"
+
     def test_deterministic_tiebreak(self):
         r = ConflictResolver()
         ev = FactEvidence(EvidenceSource.DEFAULT, "2024-01-01T00:00:00+00:00", "s")
