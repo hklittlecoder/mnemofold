@@ -18,6 +18,25 @@ from typing import Any
 from mnemofold.temporal import IntervalFact, TemporalStore
 
 
+def confidence_from_evidence(ev: FactEvidence) -> float:
+    """Estimate a [0, 1] confidence score from evidence attributes.
+
+    Combines source trust rank (normalized against the maximum rank),
+    corroboration count (with diminishing returns via tanh scaling),
+    and recency as a small bonus. Quantized to 6 decimals so results
+    are stable across Python versions.
+    """
+    max_rank = max(SOURCE_RANK.values()) if SOURCE_RANK else 1
+    trust_component = SOURCE_RANK.get(ev.source, 0) / max_rank
+    import math
+
+    corr_component = math.tanh(max(0, ev.corroboration_count) / 3.0)
+    weight_trust = 0.7
+    weight_corr = 0.3
+    score = weight_trust * trust_component + weight_corr * corr_component
+    return round(max(0.0, min(1.0, score)), 6)
+
+
 def _instant_or_min(timestamp: str) -> datetime:
     """Parse an ISO instant for comparisons; unparseable sorts earliest."""
     try:

@@ -8,6 +8,7 @@ from mnemofold.conflict import (
     Contradiction,
     EvidenceSource,
     FactEvidence,
+    confidence_from_evidence,
     corroborate,
 )
 from mnemofold.temporal import IntervalFact, TemporalStore
@@ -27,6 +28,45 @@ class TestEvidenceSource:
         assert SOURCE_RANK[EvidenceSource.TRUSTED] > SOURCE_RANK[EvidenceSource.DEFAULT]
         assert SOURCE_RANK[EvidenceSource.DEFAULT] > SOURCE_RANK[EvidenceSource.UNVERIFIED]
         assert SOURCE_RANK[EvidenceSource.UNVERIFIED] > SOURCE_RANK[EvidenceSource.SPECULATIVE]
+
+
+class TestConfidenceFromEvidence:
+    def test_bounds_in_unit_interval(self):
+        ev = FactEvidence(EvidenceSource.VERIFIED, "2024-01-01T00:00:00+00:00", "s")
+        assert 0.0 <= confidence_from_evidence(ev) <= 1.0
+
+    def test_higher_trust_increases_confidence(self):
+        ev_v = FactEvidence(EvidenceSource.VERIFIED, "2024-01-01T00:00:00+00:00", "s")
+        ev_s = FactEvidence(EvidenceSource.SPECULATIVE, "2024-01-01T00:00:00+00:00", "s")
+        assert confidence_from_evidence(ev_v) > confidence_from_evidence(ev_s)
+
+    def test_more_corroboration_increases_confidence(self):
+        ev0 = FactEvidence(
+            EvidenceSource.DEFAULT, "2024-01-01T00:00:00+00:00", "s", corroboration_count=0
+        )
+        ev5 = FactEvidence(
+            EvidenceSource.DEFAULT, "2024-01-01T00:00:00+00:00", "s", corroboration_count=5
+        )
+        assert confidence_from_evidence(ev5) > confidence_from_evidence(ev0)
+
+    def test_quantized_to_six_decimals(self):
+        ev = FactEvidence(
+            EvidenceSource.TRUSTED, "2024-01-01T00:00:00+00:00", "s", corroboration_count=2
+        )
+        score = confidence_from_evidence(ev)
+        assert score == round(score, 6)
+
+    def test_diminishing_returns(self):
+        """Adding the Nth corroboration gives less gain than adding the first."""
+
+        def make(count: int) -> FactEvidence:
+            return FactEvidence(
+                EvidenceSource.DEFAULT, "2024-01-01T00:00:00+00:00", "s", corroboration_count=count
+            )
+
+        first_step = confidence_from_evidence(make(1)) - confidence_from_evidence(make(0))
+        later_step = confidence_from_evidence(make(10)) - confidence_from_evidence(make(9))
+        assert first_step > later_step
 
 
 class TestConflictResolver:
