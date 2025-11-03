@@ -33,13 +33,18 @@ class RetentionPolicy:
     grace_days: float = 7.0
     min_salience: float = 0.05
     max_age_days: float = 365.0
+    access_boost: float = 0.15
+    max_access_boosts: int = 4
 
     def decay_factor(self, days: float) -> float:
         return math.exp(-days * math.log(2) / self.half_life_days)
 
     def decayed_salience(self, item: MemoryItem, now: str) -> float:
         age = _age_days(item, now)
-        return item.salience * self.decay_factor(age)
+        boost_count = min(int(item.metadata.get("access_boost_count", 0)), self.max_access_boosts)
+        boosted_half_life = self.half_life_days * (1.0 + boost_count * self.access_boost)
+        factor = math.exp(-age * math.log(2) / max(0.01, boosted_half_life))
+        return item.salience * factor
 
     def should_decay(self, item: MemoryItem, now: str) -> bool:
         if item.pinned:
@@ -48,6 +53,12 @@ class RetentionPolicy:
         if age > self.max_age_days:
             return True
         return self.decayed_salience(item, now) < self.min_salience
+
+    def record_access(self, item: MemoryItem, now: str) -> None:
+        """Bump the access boost counter and reset the last-accessed time."""
+        current = int(item.metadata.get("access_boost_count", 0))
+        item.metadata["access_boost_count"] = min(current + 1, self.max_access_boosts)
+        item.last_accessed = now
 
 
 def _age_days(item: MemoryItem, now: str) -> float:
@@ -177,6 +188,23 @@ class DecayEngine:
     def release_hold(self, item_id: str) -> bool:
         """Release a hold. Returns False when no hold existed."""
         return self._holds.pop(item_id, None) is not None
+
+    def note_access(self, store: MemoryStore, item_id: str, now: str) -> bool:
+        """Record an access for spaced-repetition style boost.
+
+        Returns True when the item was found and boosted. The boost
+        effectively extends half-life, so frequently recalled memories
+        survive longer before they decay out of a tier.
+        """
+        item = store.get(item_id)
+        if item is None:
+            return False
+        policy = self.policies.get(item.tier)
+        if policy is None:
+            item.last_accessed = now
+            return True
+        policy.record_access(item, now)
+        return True
 
     def is_on_hold(self, item_id: str) -> bool:
         return item_id in self._holds

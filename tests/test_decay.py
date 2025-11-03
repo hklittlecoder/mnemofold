@@ -26,6 +26,33 @@ class TestRetentionPolicy:
         item = MemoryItem("i1", MemoryTier.EPISODIC, "x", salience=0.1, pinned=True)
         assert not p.should_decay(item, "2025-01-01T00:00:00+00:00")
 
+    def test_access_boost_extends_half_life(self):
+        p = RetentionPolicy(MemoryTier.SEMANTIC, half_life_days=10.0, access_boost=0.5)
+        item = MemoryItem(
+            "i1",
+            MemoryTier.SEMANTIC,
+            "x",
+            salience=1.0,
+            created_at="2024-01-01T00:00:00+00:00",
+        )
+        before = p.decayed_salience(item, "2024-01-11T00:00:00+00:00")
+        p.record_access(item, "2024-01-11T00:00:00+00:00")
+        after = p.decayed_salience(item, "2024-01-21T00:00:00+00:00")
+        assert after > before
+
+    def test_access_boost_capped(self):
+        p = RetentionPolicy(MemoryTier.SEMANTIC, half_life_days=10.0, max_access_boosts=3)
+        item = MemoryItem(
+            "i1",
+            MemoryTier.SEMANTIC,
+            "x",
+            salience=1.0,
+            created_at="2024-01-01T00:00:00+00:00",
+        )
+        for _ in range(10):
+            p.record_access(item, "2024-01-01T00:00:00+00:00")
+        assert int(item.metadata["access_boost_count"]) == 3
+
 
 class TestDecayEngine:
     def test_decay_demotes_items(self):
