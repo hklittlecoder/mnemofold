@@ -160,6 +160,7 @@ class WeeklyReview:
     due_next_week: list[str] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
     citations: list[str] = field(default_factory=list)
+    stats: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -225,6 +226,15 @@ class WeeklyReviewGenerator:
                     line = f"{c.description} is due within a day [{c.commitment_id}]"
                     if line not in review.risks:
                         review.risks.append(line)
+
+        review.stats = {
+            "completed_count": len(review.completed),
+            "overdue_count": len(review.overdue),
+            "still_open_count": len(review.still_open),
+            "due_next_week_count": len(review.due_next_week),
+            "risk_count": len(review.risks),
+            "citation_count": len(set(review.citations)),
+        }
         return review
 
 
@@ -260,6 +270,19 @@ _WEEKLY_SECTIONS = (
 def render_weekly_markdown(review: WeeklyReview) -> str:
     """Deterministic Markdown for a weekly review."""
     lines = [f"# Weekly Review — {review.week_start} → {review.week_end}", ""]
+    if review.stats:
+        lines.append("## Summary")
+        lines.append("")
+        stats_items = [
+            ("Completed", review.stats.get("completed_count", 0)),
+            ("Overdue", review.stats.get("overdue_count", 0)),
+            ("Still open", review.stats.get("still_open_count", 0)),
+            ("Due next week", review.stats.get("due_next_week_count", 0)),
+            ("Risks", review.stats.get("risk_count", 0)),
+        ]
+        for label, value in stats_items:
+            lines.append(f"- **{label}**: {value}")
+        lines.append("")
     for title, attribute in _WEEKLY_SECTIONS:
         items: list[str] = getattr(review, attribute)
         lines.append(f"## {title} ({len(items)})")

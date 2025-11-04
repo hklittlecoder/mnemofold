@@ -21,6 +21,40 @@ from mnemofold.review import (
 )
 
 
+class TestWeeklyStats:
+    def _ledger(self):
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("c1", "a", "b", "Write report", "2024-01-20T00:00:00+00:00"))
+        ledger.add(Commitment("c2", "b", "a", "Review design", "2024-01-25T00:00:00+00:00"))
+        ledger.add(Commitment("c3", "c", "a", "Deploy", "2024-01-10T00:00:00+00:00"))
+        ledger.transition("c1", CommitmentStatus.DONE, "2024-01-18T12:00:00+00:00")
+        return ledger
+
+    def test_stats_include_counts(self):
+        gen = WeeklyReviewGenerator(self._ledger())
+        review = gen.generate("2024-01-15T00:00:00+00:00", "2024-01-22T00:00:00+00:00")
+        assert "completed_count" in review.stats
+        assert "overdue_count" in review.stats
+        assert "citation_count" in review.stats
+        assert review.stats["completed_count"] == 1
+
+    def test_stats_match_list_lengths(self):
+        gen = WeeklyReviewGenerator(self._ledger())
+        review = gen.generate("2024-01-15T00:00:00+00:00", "2024-01-22T00:00:00+00:00")
+        assert review.stats["completed_count"] == len(review.completed)
+        assert review.stats["overdue_count"] == len(review.overdue)
+        assert review.stats["still_open_count"] == len(review.still_open)
+        assert review.stats["risk_count"] == len(review.risks)
+
+    def test_markdown_includes_summary_section(self):
+        gen = WeeklyReviewGenerator(self._ledger())
+        review = gen.generate("2024-01-15T00:00:00+00:00", "2024-01-22T00:00:00+00:00")
+        md = render_weekly_markdown(review)
+        assert "## Summary" in md
+        assert "Completed" in md
+        assert "1" in md
+
+
 class TestStandupGenerator:
     def _ledger(self):
         ledger = CommitmentLedger()
