@@ -111,24 +111,25 @@ class DecayEngine:
             return True
         return bool(item.tags & self.protected_tags)
 
+    def _demotion_ladder(self) -> list[tuple[MemoryTier, MemoryTier]]:
+        """Ordered list of (from_tier, to_tier) pairs for demotion traversal."""
+        return [
+            (MemoryTier.WORKING, MemoryTier.EPISODIC),
+            (MemoryTier.EPISODIC, MemoryTier.SEMANTIC),
+            (MemoryTier.SEMANTIC, MemoryTier.PROCEDURAL),
+        ]
+
     def apply_decay(self, store: MemoryStore, now: str) -> dict[str, int]:
         stats = {"demoted": 0, "tombstoned": 0, "purged": 0, "protected_skipped": 0}
-        tiers = [MemoryTier.WORKING, MemoryTier.EPISODIC, MemoryTier.SEMANTIC]
-        tier_below = {
-            MemoryTier.WORKING: MemoryTier.EPISODIC,
-            MemoryTier.EPISODIC: MemoryTier.SEMANTIC,
-            MemoryTier.SEMANTIC: MemoryTier.PROCEDURAL,
-        }
-        for tier in tiers:
-            for item in list(store.items_by_tier(tier)):
+        for from_tier, to_tier in self._demotion_ladder():
+            for item in list(store.items_by_tier(from_tier)):
                 if self.is_protected(item):
                     stats["protected_skipped"] += 1
                     continue
-                policy = self.policies.get(tier)
+                policy = self.policies.get(from_tier)
                 if policy and policy.should_decay(item, now):
-                    item.tier = tier_below[tier]
+                    item.tier = to_tier
                     stats["demoted"] += 1
-        # Handle procedural tier (bottom): tombstone then purge
         proc_policy = self.policies.get(MemoryTier.PROCEDURAL)
         if proc_policy:
             for item in list(store.items_by_tier(MemoryTier.PROCEDURAL)):
