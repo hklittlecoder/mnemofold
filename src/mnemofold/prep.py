@@ -227,13 +227,26 @@ class CoverageReport:
     expected: int
     covered: int
     missing: list[str] = field(default_factory=list)
+    per_category: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def ratio(self) -> float:
         return round(self.covered / self.expected, 6) if self.expected else 1.0
 
+    @property
+    def category_coverage(self) -> float:
+        """Fraction of expected categories with at least one hit."""
+        if not self.per_category:
+            return 1.0
+        cats_with_hit = sum(1 for _, covered in self.per_category.values() if covered > 0)
+        return round(cats_with_hit / len(self.per_category), 6)
 
-def measure_coverage(prep: MeetingPrep, expected_ids: list[str]) -> CoverageReport:
+
+def measure_coverage(
+    prep: MeetingPrep,
+    expected_ids: list[str],
+    expected_categories: dict[str, str] | None = None,
+) -> CoverageReport:
     """Measure how many expected source ids a packet actually cites.
 
     ``expected_ids`` is the planted ground truth for a synthetic meeting:
@@ -241,12 +254,28 @@ def measure_coverage(prep: MeetingPrep, expected_ids: list[str]) -> CoverageRepo
     of expected ids present in the packet's cited sources; missing ids are
     reported so shortfalls are visible, never averaged away. An empty
     expectation yields ratio 1.0 (nothing required, nothing missed).
+
+    When ``expected_categories`` is provided as ``{item_id: category}``,
+    the report also tracks per-category hit counts and the fraction of
+    categories with at least one covered item.
     """
     cited = set(prep.cited_sources)
     unique_expected = sorted(set(expected_ids))
     missing = [eid for eid in unique_expected if eid not in cited]
+    per_category: dict[str, tuple[int, int]] = {}
+    if expected_categories:
+        cat_expected: dict[str, int] = {}
+        cat_covered: dict[str, int] = {}
+        for eid in unique_expected:
+            cat = expected_categories.get(eid, "other")
+            cat_expected[cat] = cat_expected.get(cat, 0) + 1
+            if eid in cited:
+                cat_covered[cat] = cat_covered.get(cat, 0) + 1
+        for cat in sorted(cat_expected):
+            per_category[cat] = (cat_expected[cat], cat_covered.get(cat, 0))
     return CoverageReport(
         expected=len(unique_expected),
         covered=len(unique_expected) - len(missing),
         missing=missing,
+        per_category=per_category,
     )

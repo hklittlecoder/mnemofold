@@ -217,6 +217,30 @@ class TestPrepCoverage:
         assert report.expected == 2
         assert report.covered == 2
 
+    def test_category_coverage_tracks_per_category_hits(self):
+        prep = MeetingPrepper(store=self._store()).prepare("m", "alpha sync", ["alice"])
+        cats = {"alice": "person", "commit1": "commitment", "missing_one": "decision"}
+        report = measure_coverage(
+            prep, ["alice", "commit1", "missing_one"], expected_categories=cats
+        )
+        assert "person" in report.per_category
+        assert report.per_category["person"] == (1, 1)
+        assert report.per_category["commitment"] == (1, 1)
+        assert report.per_category["decision"] == (1, 0)
+        assert 0.0 < report.category_coverage < 1.0
+
+    def test_category_coverage_full_when_all_hit(self):
+        prep = MeetingPrepper(store=self._store()).prepare("m", "alpha sync", ["alice"])
+        cats = {"alice": "person", "commit1": "commitment"}
+        report = measure_coverage(prep, ["alice", "commit1"], expected_categories=cats)
+        assert report.category_coverage == 1.0
+
+    def test_category_coverage_empty_defaults_to_one(self):
+        prep = MeetingPrepper(store=self._store()).prepare("m", "alpha sync", ["alice"])
+        report = measure_coverage(prep, ["alice", "commit1"])
+        assert report.category_coverage == 1.0
+        assert report.per_category == {}
+
 
 class TestPrepPacketProperties:
     def _store(self, n: int = 6) -> MemoryStore:
