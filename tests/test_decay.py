@@ -72,6 +72,41 @@ class TestDecayEngine:
         assert stats["demoted"] > 0
         assert len(store.items_by_tier(MemoryTier.SEMANTIC)) > 0
 
+    def test_note_access_delays_decay(self):
+        store = MemoryStore()
+        boosted = MemoryItem(
+            "b1",
+            MemoryTier.EPISODIC,
+            "boosted",
+            salience=0.3,
+            created_at="2024-01-01T00:00:00+00:00",
+            last_accessed="2024-01-01T00:00:00+00:00",
+        )
+        unboosted = MemoryItem(
+            "u1",
+            MemoryTier.EPISODIC,
+            "unboosted",
+            salience=0.3,
+            created_at="2024-01-01T00:00:00+00:00",
+            last_accessed="2024-01-01T00:00:00+00:00",
+        )
+        store.add(boosted)
+        store.add(unboosted)
+        engine = DecayEngine()
+        for day in range(20):
+            engine.note_access(store, "b1", f"2024-01-{day + 1:02d}T00:00:00+00:00")
+        engine.apply_decay(store, "2024-02-01T00:00:00+00:00")
+        assert store.get("b1") is not None
+        assert store.get("b1").tier == MemoryTier.EPISODIC
+        boosted_tier = store.get("b1").tier
+        unboosted_tier = store.get("u1").tier if store.get("u1") else MemoryTier.PROCEDURAL
+        assert boosted_tier >= unboosted_tier
+
+    def test_note_access_missing_item_returns_false(self):
+        store = MemoryStore()
+        engine = DecayEngine()
+        assert not engine.note_access(store, "nope", "2024-01-01T00:00:00+00:00")
+
     def test_protected_not_decayed(self):
         store = MemoryStore()
         prot = MemoryItem(
