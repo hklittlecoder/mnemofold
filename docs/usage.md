@@ -59,7 +59,10 @@ print(pack.to_markdown())
 - **收件箱分诊** `mnemofold.triage`：透明信号加权评分、图导出的发件人
   重要度、安静时段、批量分桶（act_now / review / defer）。
 - **会议准备** `mnemofold.prep`：证据式议程（每条议程引用记忆 id）、
-  对植入真值的覆盖率测量。
+  对植入真值的覆盖率测量。`measure_coverage(prep, expected_ids,
+  expected_categories=...)` 同时返回条目级覆盖率与类别级覆盖率
+  （`category_coverage`，即至少命中一条的类别占比），用于区分"漏了
+  一个决策"和"整个决策类都没找到"两种缺口。
 - **站立会与周报** `mnemofold.review`：确定性报告，逐条引用承诺 id，
   可组合为自包含 HTML 页面（`mnemofold.reports.assemble_report_page`）。
 
