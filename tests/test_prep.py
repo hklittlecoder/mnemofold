@@ -320,3 +320,19 @@ class TestPrepPacketProperties:
         second = MeetingPrepper(store=self._store()).prepare("mtg", "budget planning", [])
         assert first.to_markdown() == second.to_markdown()
         assert first.to_html() == second.to_html()
+
+    def test_html_escapes_item_content(self):
+        store = MemoryStore()
+        store.add(
+            MemoryItem(
+                item_id="bad",
+                tier=MemoryTier.SEMANTIC,
+                content="hello <b>bold</b> world budget",
+                title="ok",
+                tags={"note"},
+            )
+        )
+        prep = MeetingPrepper(store=store).prepare("m", "budget", [])
+        page = prep.to_html()
+        assert "<b>bold</b>" not in page
+        assert "&lt;b&gt;bold&lt;/b&gt;" in page
