@@ -71,7 +71,55 @@ def test_unknown_tool():
 
 def test_list_tools():
     reg = build_default_registry()
-    assert len(reg.list_tools()) >= 2
+    assert [s.name for s in reg.list_tools()] == ["echo", "noop"]
+
+
+class TestRegistryFiltering:
+    def _registry_with_caps(self) -> ToolRegistry:
+        reg = ToolRegistry()
+        reg.register(
+            ToolSpec("ls", "list files", SideEffectClass.READ, capabilities={"file_io", "read"}),
+            lambda: [],
+        )
+        reg.register(
+            ToolSpec("cat", "read file", SideEffectClass.READ, capabilities={"file_io", "read"}),
+            lambda _: "",
+        )
+        reg.register(
+            ToolSpec(
+                "write", "write file", SideEffectClass.WRITE, capabilities={"file_io", "write"}
+            ),
+            lambda _, __: None,
+        )
+        reg.register(
+            ToolSpec("send_mail", "send email", SideEffectClass.WRITE, capabilities={"mail"}),
+            lambda **_kw: None,
+        )
+        return reg
+
+    def test_filter_by_capability(self):
+        reg = self._registry_with_caps()
+        file_tools = reg.tools_with_capability("file_io")
+        assert [s.name for s in file_tools] == ["cat", "ls", "write"]
+
+    def test_filter_by_unknown_capability_returns_empty(self):
+        reg = self._registry_with_caps()
+        assert reg.tools_with_capability("not_here") == []
+
+    def test_filter_by_side_effect_class(self):
+        reg = self._registry_with_caps()
+        writers = reg.tools_by_side_effect(SideEffectClass.WRITE)
+        assert {s.name for s in writers} == {"send_mail", "write"}
+
+    def test_filter_by_side_effect_string(self):
+        reg = self._registry_with_caps()
+        readers = reg.tools_by_side_effect("read")
+        assert {s.name for s in readers} == {"cat", "ls"}
+
+    def test_filter_results_sorted_by_name(self):
+        reg = self._registry_with_caps()
+        file = reg.tools_with_capability("file_io")
+        assert file == sorted(file, key=lambda s: s.name)
 
 
 class TestToolPolicy:

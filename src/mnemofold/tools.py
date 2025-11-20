@@ -488,6 +488,24 @@ class ToolRegistry:
     def list_tools(self) -> list[ToolSpec]:
         return sorted(self._specs.values(), key=lambda s: s.name)
 
+    def tools_with_capability(self, capability: str) -> list[ToolSpec]:
+        """All tools that declare the given capability tag.
+
+        Capabilities let a planner or policy surface only tools relevant
+        to a task (e.g. ``"file_io"``, ``"calendar"``) without exposing
+        the whole registry. Results are sorted by tool name.
+        """
+        matches = [s for s in self._specs.values() if capability in s.capabilities]
+        return sorted(matches, key=lambda s: s.name)
+
+    def tools_by_side_effect(self, effect: SideEffectClass | str) -> list[ToolSpec]:
+        """All tools with a particular side-effect class, sorted by name."""
+        eff = SideEffectClass(effect) if isinstance(effect, str) else effect
+        return sorted(
+            [s for s in self._specs.values() if s.side_effect == eff],
+            key=lambda s: s.name,
+        )
+
     def schemas(self) -> list[dict[str, Any]]:
         """Schemas of all registered tools, sorted by tool name."""
         return [spec.to_schema() for spec in self.list_tools()]
