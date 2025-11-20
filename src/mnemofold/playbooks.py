@@ -217,5 +217,67 @@ class PlaybookLibrary:
             status = PlaybookStatus(status)
         return [pb for pb in self._playbooks.values() if pb.status == status]
 
+    def diff_versions(self, pid_a: str, pid_b: str) -> dict[str, Any]:
+        """Compute a step-level diff between two playbook versions.
+
+        Returns added/removed/modified step ids plus per-change details
+        (title, tool, precondition count). The comparison is symmetric:
+        swapping ``a`` and ``b`` swaps added and removed. Metadata and
+        status changes are listed separately so callers can tell a
+        substantive procedure edit from a status-only bump.
+        """
+        a = self._playbooks.get(pid_a)
+        b = self._playbooks.get(pid_b)
+        if a is None or b is None:
+            missing = [p for p in (pid_a, pid_b) if self._playbooks.get(p) is None]
+            return {"error": "missing_playbooks", "missing": missing}
+
+        steps_a = {s.step_id: s for s in a.steps}
+        steps_b = {s.step_id: s for s in b.steps}
+        added = sorted(set(steps_b) - set(steps_a))
+        removed = sorted(set(steps_a) - set(steps_b))
+        common = sorted(set(steps_a) & set(steps_b))
+        modified: list[dict[str, Any]] = []
+        for sid in common:
+            sa, sb = steps_a[sid], steps_b[sid]
+            changes: list[str] = []
+            if sa.title != sb.title:
+                changes.append("title")
+            if sa.tool != sb.tool:
+                changes.append("tool")
+            if sa.description != sb.description:
+                changes.append("description")
+            if sa.timeout_seconds != sb.timeout_seconds:
+                changes.append("timeout")
+            if set(sa.preconditions) != set(sb.preconditions):
+                changes.append("preconditions")
+            if sa.inputs != sb.inputs:
+                changes.append("inputs")
+            if changes:
+                modified.append({"step_id": sid, "changes": changes})
+
+        meta_changes: list[str] = []
+        if a.status != b.status:
+            meta_changes.append("status")
+        if a.name != b.name:
+            meta_changes.append("name")
+        if a.description != b.description:
+            meta_changes.append("description")
+        if a.version != b.version:
+            meta_changes.append("version")
+        if a.confidence != b.confidence:
+            meta_changes.append("confidence")
+        if set(a.tags) != set(b.tags):
+            meta_changes.append("tags")
+
+        return {
+            "a": pid_a,
+            "b": pid_b,
+            "steps_added": added,
+            "steps_removed": removed,
+            "steps_modified": modified,
+            "meta_changes": sorted(meta_changes),
+        }
+
     def total_count(self) -> int:
         return len(self._playbooks)

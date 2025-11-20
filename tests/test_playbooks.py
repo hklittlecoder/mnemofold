@@ -281,3 +281,79 @@ class TestPlaybookSuggestion:
         first = [pb.playbook_id for pb in self._library().suggest({"release", "ops"})]
         second = [pb.playbook_id for pb in self._library().suggest({"release", "ops"})]
         assert first == second
+
+
+class TestPlaybookDiff:
+    def _make_steps(self, n: int) -> list[PlaybookStep]:
+        return [
+            PlaybookStep(step_id=f"s{i}", title=f"Step {i}", tool=f"tool_{i}") for i in range(n)
+        ]
+
+    def test_identical_versions_have_empty_diff(self):
+        library = PlaybookLibrary()
+        steps = self._make_steps(3)
+        library.add(Playbook("pb1", "Deploy", steps=list(steps)))
+        library.add(Playbook("pb2", "Deploy", steps=list(steps)))
+        diff = library.diff_versions("pb1", "pb2")
+        assert diff["steps_added"] == []
+        assert diff["steps_removed"] == []
+        assert diff["steps_modified"] == []
+
+    def test_added_and_removed_steps(self):
+        library = PlaybookLibrary()
+        library.add(Playbook("old", "Deploy", steps=self._make_steps(2)))
+        library.add(Playbook("new", "Deploy", steps=self._make_steps(3)))
+        diff = library.diff_versions("old", "new")
+        assert diff["steps_added"] == ["s2"]
+        assert diff["steps_removed"] == []
+        reversed_diff = library.diff_versions("new", "old")
+        assert reversed_diff["steps_added"] == []
+        assert reversed_diff["steps_removed"] == ["s2"]
+
+    def test_modified_step_detected(self):
+        library = PlaybookLibrary()
+        old_steps = [PlaybookStep(step_id="s1", title="Run tests", tool="pytest")]
+        new_steps = [PlaybookStep(step_id="s1", title="Run all tests", tool="pytest -x")]
+        library.add(Playbook("pb_old", "T", steps=old_steps))
+        library.add(Playbook("pb_new", "T", steps=new_steps))
+        diff = library.diff_versions("pb_old", "pb_new")
+        assert len(diff["steps_modified"]) == 1
+        assert diff["steps_modified"][0]["step_id"] == "s1"
+        assert "title" in diff["steps_modified"][0]["changes"]
+        assert "tool" in diff["steps_modified"][0]["changes"]
+
+    def test_meta_changes_detected(self):
+        library = PlaybookLibrary()
+        steps = self._make_steps(1)
+        library.add(
+            Playbook(
+                "v1",
+                "Deploy",
+                status=PlaybookStatus.PROPOSED,
+                steps=steps,
+                tags={"alpha"},
+                confidence=0.3,
+            )
+        )
+        library.add(
+            Playbook(
+                "v2",
+                "Deploy v2",
+                status=PlaybookStatus.APPROVED,
+                steps=steps,
+                tags={"alpha", "stable"},
+                confidence=0.8,
+            )
+        )
+        diff = library.diff_versions("v1", "v2")
+        assert "status" in diff["meta_changes"]
+        assert "name" in diff["meta_changes"]
+        assert "confidence" in diff["meta_changes"]
+        assert "tags" in diff["meta_changes"]
+
+    def test_diff_missing_playbook_returns_error(self):
+        library = PlaybookLibrary()
+        library.add(Playbook("pb1", "T"))
+        diff = library.diff_versions("pb1", "nope")
+        assert diff.get("error") == "missing_playbooks"
+        assert "nope" in diff["missing"]
