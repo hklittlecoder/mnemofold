@@ -243,6 +243,35 @@ def test_budget_snapshot_no_money_budget_returns_none_remaining():
     assert snap["remaining_money"] is None
 
 
+def test_budget_snapshot_updates_after_step_run():
+    build_default_registry()
+    plan = Plan(
+        plan_id="p",
+        name="run",
+        total_budget_tokens=1000,
+        steps=[
+            PlanStep(
+                step_id="echo1",
+                name="say hi",
+                tool="echo",
+                inputs={"message": "hi"},
+                budget_tokens=50,
+            ),
+        ],
+    )
+    loop = PlanLoop(plan=plan)
+    before = loop.budget_snapshot()
+    assert before["steps_completed"] == 0
+    assert before["tokens_used"] == 0
+    loop.plan.steps[0].status = "completed"
+    loop.plan.token_used = 50
+    loop.plan.money_spent = 0.0
+    after = loop.budget_snapshot()
+    assert after["steps_completed"] == 1
+    assert after["tokens_used"] == 50
+    assert after["tokens_remaining"] == 950
+
+
 def test_plan_loop_max_iterations():
     plan = Plan(plan_id="p", name="iters")
     loop = PlanLoop(plan=plan, iteration=100, max_iterations=100)
