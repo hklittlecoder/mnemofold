@@ -122,6 +122,46 @@ class TestRegistryFiltering:
         assert file == sorted(file, key=lambda s: s.name)
 
 
+class TestSpecValidation:
+    def test_negative_timeout_rejected(self):
+        reg = ToolRegistry()
+        with pytest.raises(ToolValidationError, match="timeout"):
+            reg.register(ToolSpec("bad", "x", timeout_seconds=-1), lambda: None)
+
+    def test_negative_retries_rejected(self):
+        reg = ToolRegistry()
+        with pytest.raises(ToolValidationError, match="max_retries"):
+            reg.register(ToolSpec("bad", "x", max_retries=-1), lambda: None)
+
+    def test_empty_name_rejected(self):
+        reg = ToolRegistry()
+        with pytest.raises(ToolValidationError, match="name"):
+            reg.register(ToolSpec("", "x"), lambda: None)
+
+    def test_required_param_not_declared_is_error(self):
+        reg = ToolRegistry()
+        spec = ToolSpec(
+            "t",
+            "d",
+            parameters={"x": {"type": "string"}},
+            required=["x", "y"],
+        )
+        errors = reg.validate_spec(spec)
+        assert any("'y'" in e for e in errors)
+
+    def test_valid_spec_passes(self):
+        reg = ToolRegistry()
+        spec = ToolSpec(
+            "good",
+            "d",
+            parameters={"x": {"type": "string"}},
+            required=["x"],
+            timeout_seconds=30,
+            max_retries=2,
+        )
+        assert reg.validate_spec(spec) == []
+
+
 class TestToolPolicy:
     def _registry(self, policy: ToolPolicy | None = None) -> ToolRegistry:
         registry = ToolRegistry(policy=policy)

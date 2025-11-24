@@ -306,8 +306,31 @@ class ToolRegistry:
         self._rng = random.Random(self.rng_seed)
 
     def register(self, spec: ToolSpec, impl: Callable[..., Any]) -> None:
+        errors = self.validate_spec(spec)
+        if errors:
+            raise ToolValidationError("invalid tool spec: " + "; ".join(errors))
         self._specs[spec.name] = spec
         self._impls[spec.name] = impl
+
+    def validate_spec(self, spec: ToolSpec) -> list[str]:
+        """Check a tool spec for structural issues.
+
+        Rejects negative timeouts, negative retries, side-effect tools that
+        claim idempotency but lack a way to deduplicate, and required params
+        that aren't declared in the parameter schema. Errors are returned in
+        a deterministic order so tests can pin them.
+        """
+        errors: list[str] = []
+        if spec.timeout_seconds < 0:
+            errors.append("timeout_seconds must be non-negative")
+        if spec.max_retries < 0:
+            errors.append("max_retries must be non-negative")
+        if not spec.name:
+            errors.append("tool name must not be empty")
+        for required in spec.required:
+            if required not in spec.parameters:
+                errors.append(f"required param '{required}' not declared in parameters")
+        return errors
 
     def get_spec(self, name: str) -> ToolSpec | None:
         return self._specs.get(name)
