@@ -314,6 +314,38 @@ class PlanLoop:
     def steps_failed(self) -> int:
         return sum(1 for s in self.plan.steps if s.status == "failed")
 
+    def budget_snapshot(self) -> dict[str, Any]:
+        """Current budget state, with floats quantized for stable serialization.
+
+        Returns remaining and spent values for every budget dimension
+        (steps, tokens, money) so reports and approval workflows can
+        render progress without reading plan internals directly. Money
+        is expressed as ``remaining_money`` = budget - spent (infinite
+        when no money budget is set).
+        """
+        total_steps = len(self.plan.steps)
+        completed = self.steps_completed()
+        tokens_total = self.plan.total_budget_tokens
+        tokens_used = self.plan.token_used
+        money_total = self.plan.money_budget
+        money_spent = self.plan.money_spent
+        remaining_money: float | None = None
+        if money_total > 0:
+            remaining_money = round(max(0.0, money_total - money_spent), 6)
+        return {
+            "steps_total": total_steps,
+            "steps_completed": completed,
+            "steps_remaining": total_steps - completed,
+            "tokens_total": tokens_total,
+            "tokens_used": tokens_used,
+            "tokens_remaining": max(0, tokens_total - tokens_used),
+            "money_total": round(money_total, 6),
+            "money_spent": round(money_spent, 6),
+            "remaining_money": remaining_money,
+            "iterations": self.iteration,
+            "status": str(self.plan.status),
+        }
+
     def next_runnable(self) -> PlanStep | None:
         completed = {s.step_id for s in self.plan.steps if s.status == "completed"}
         for step in self.plan.steps:

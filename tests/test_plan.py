@@ -210,6 +210,39 @@ def test_plan_loop_token_budget():
     assert loop.can_continue() is False
 
 
+def test_budget_snapshot_initial_state():
+    plan = Plan(
+        plan_id="p",
+        name="budget-snap",
+        total_budget_tokens=1000,
+        money_budget=10.0,
+        steps=[
+            PlanStep(step_id="a", name="A"),
+            PlanStep(step_id="b", name="B"),
+            PlanStep(step_id="c", name="C"),
+        ],
+    )
+    loop = PlanLoop(plan=plan)
+    snap = loop.budget_snapshot()
+    assert snap["steps_total"] == 3
+    assert snap["steps_completed"] == 0
+    assert snap["tokens_total"] == 1000
+    assert snap["tokens_used"] == 0
+    assert snap["tokens_remaining"] == 1000
+    assert abs(snap["money_total"] - 10.0) < 1e-9
+    assert snap["money_spent"] == 0.0
+    assert snap["remaining_money"] is not None
+    assert abs(snap["remaining_money"] - 10.0) < 1e-9
+    assert snap["status"] == str(PlanStatus.DRAFT)
+
+
+def test_budget_snapshot_no_money_budget_returns_none_remaining():
+    plan = Plan(plan_id="p", name="free", total_budget_tokens=100)
+    loop = PlanLoop(plan=plan)
+    snap = loop.budget_snapshot()
+    assert snap["remaining_money"] is None
+
+
 def test_plan_loop_max_iterations():
     plan = Plan(plan_id="p", name="iters")
     loop = PlanLoop(plan=plan, iteration=100, max_iterations=100)
