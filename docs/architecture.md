@@ -40,7 +40,10 @@ mnemofold 是一条从"原始工作事件"到"带引用的助手输出"的确定
 - **录制回放 (replay)**：校验和 JSONL 追踪，字节一致的回放与检查点恢复
 - **策略与隐私 (privacy)**：PII 检测、脱敏、分层读写规则、访问日志
 - **删除语义 (deletion)**：right-to-forget 级联与墓碑，防止已删内容复活
-- **工具与计划 (tools / plan)**：声明式工具规范、DAG 校验的计划与执行循环
+- **工具与计划 (tools / plan)**：声明式工具规范（带能力标签、副作用分级、
+  幂等键、超时与重试抖动）、DAG 校验的计划与 perceive-plan-act-observe
+  循环，以及步骤 / token / synthetic-money 三重预算与 `budget_snapshot()`
+  进度查询
 - **审批 (approvals)**：待审批队列、角色化审批者、升级链
 - **评估 (evaluation)**：对植入真值的 recall/precision、预算遵循、引用有效性等
 - **显著性 (salience / salience_torch)**：NumPy 透明特征评分；可选 torch MLP 对照
