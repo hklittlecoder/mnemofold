@@ -197,6 +197,37 @@ class TriggerEngine:
             counts[key] = counts.get(key, 0) + 1
         return counts
 
+    def summary_report(self) -> dict[str, Any]:
+        """Deterministic summary of all trigger activity.
+
+        Breaks down total fired, active (non-suppressed), and suppressed
+        counts by kind, severity, and suppression reason. Floats are not
+        produced here — all values are counts so the report is stable
+        across runs with the same inputs.
+        """
+        total = len(self._fired)
+        active = sum(1 for f in self._fired if not f.suppressed)
+        suppressed = total - active
+        by_kind: dict[str, int] = {}
+        by_severity: dict[str, int] = {}
+        by_suppress_reason: dict[str, int] = {}
+        for f in self._fired:
+            k = f.kind.value
+            by_kind[k] = by_kind.get(k, 0) + 1
+            s = f.severity.value
+            by_severity[s] = by_severity.get(s, 0) + 1
+            if f.suppressed and f.suppress_reason:
+                r = f.suppress_reason
+                by_suppress_reason[r] = by_suppress_reason.get(r, 0) + 1
+        return {
+            "total_fired": total,
+            "active": active,
+            "suppressed": suppressed,
+            "by_kind": dict(sorted(by_kind.items())),
+            "by_severity": dict(sorted(by_severity.items())),
+            "by_suppress_reason": dict(sorted(by_suppress_reason.items())),
+        }
+
 
 # --- Persistent trigger log -----------------------------------------------------
 

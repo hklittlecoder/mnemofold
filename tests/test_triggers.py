@@ -226,6 +226,46 @@ def test_counts_by_kind():
     assert counts["stale_thread"] == 1
 
 
+def test_summary_report_breaks_down_activity():
+    engine = TriggerEngine()
+    engine.add_rule(
+        TriggerRule("r1", TriggerKind.OVERDUE_ALERT, "c1", NOW, severity=TriggerSeverity.CRITICAL)
+    )
+    engine.add_rule(
+        TriggerRule("r2", TriggerKind.STALE_THREAD, "t1", NOW, severity=TriggerSeverity.INFO)
+    )
+    engine.add_rule(
+        TriggerRule("r3", TriggerKind.OVERDUE_ALERT, "c2", NOW, severity=TriggerSeverity.WARNING)
+    )
+    engine.tick(NOW)
+    summary = engine.summary_report()
+    assert summary["total_fired"] == 3
+    assert summary["active"] == 3
+    assert summary["suppressed"] == 0
+    assert summary["by_kind"]["overdue_alert"] == 2
+    assert summary["by_kind"]["stale_thread"] == 1
+    assert "critical" in summary["by_severity"]
+    assert summary["by_suppress_reason"] == {}
+    assert summary["by_kind"] == dict(sorted(summary["by_kind"].items()))
+
+
+def test_summary_report_includes_suppression_reasons():
+    qh = QuietHours(start_hour=0, end_hour=23, suppress_severity_below=TriggerSeverity.CRITICAL)
+    engine = TriggerEngine(quiet_hours=qh)
+    engine.add_rule(
+        TriggerRule("r1", TriggerKind.OVERDUE_ALERT, "c1", NOW, severity=TriggerSeverity.INFO)
+    )
+    engine.add_rule(
+        TriggerRule("r2", TriggerKind.STALE_THREAD, "t1", NOW, severity=TriggerSeverity.WARNING)
+    )
+    engine.tick(NOW)
+    summary = engine.summary_report()
+    assert summary["suppressed"] == 2
+    assert summary["active"] == 0
+    assert "quiet_hours" in summary["by_suppress_reason"]
+    assert summary["by_suppress_reason"]["quiet_hours"] == 2
+
+
 def _fired(rule_id="r1", kind=TriggerKind.OVERDUE_ALERT, suppressed=False) -> FiredTrigger:
     return FiredTrigger(
         rule_id=rule_id,
