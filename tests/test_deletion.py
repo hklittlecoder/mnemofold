@@ -165,3 +165,29 @@ def test_summary_dict_groups_by_kind():
     assert summary["error_count"] == len(report.errors)
     assert isinstance(summary["deleted_by_kind"], dict)
     assert summary["deleted_by_kind"] == dict(sorted(summary["deleted_by_kind"].items()))
+
+
+def test_mixed_kind_cascade_summary():
+    targets = {
+        "person_alice": GraphDeletionTarget(
+            "person_alice", "person", outgoing_relations=["doc_memo", "commit_c1"]
+        ),
+        "doc_memo": GraphDeletionTarget("doc_memo", "document"),
+        "commit_c1": GraphDeletionTarget("commit_c1", "commitment"),
+    }
+    deleted: set[str] = set()
+
+    def get_target(k):
+        return targets.get(k)
+
+    def delete_item(k, kind, reason, now):
+        deleted.add(k)
+        return True
+
+    engine = DeletionEngine(get_target=get_target, delete_item=delete_item)
+    report = engine.delete("person_alice", DeletionReason.FORGET, NOW)
+    summary = report.summary_dict()
+    assert summary["deleted_by_kind"]["person"] == 1
+    assert summary["deleted_by_kind"]["document"] == 1
+    assert summary["deleted_by_kind"]["commitment"] == 1
+    assert summary["total_deleted"] == 3
