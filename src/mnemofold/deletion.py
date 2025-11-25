@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 
 class DeletionReason(StrEnum):
@@ -56,6 +57,27 @@ class DeletionReport:
     @property
     def total_deleted(self) -> int:
         return len(self.deleted)
+
+    def summary_dict(self) -> dict[str, Any]:
+        """Deterministic summary dict for logging and test assertions.
+
+        Breaks down deletions by kind and includes counts of blocked
+        items and errors. Useful for property tests that want to check
+        a cascade touched the right categories without enumerating
+        every individual entry.
+        """
+        by_kind: dict[str, int] = {}
+        for entry in self.deleted:
+            by_kind[entry.kind] = by_kind.get(entry.kind, 0) + 1
+        return {
+            "requested_key": self.requested_key,
+            "reason": str(self.reason),
+            "requested_at": self.requested_at.isoformat(),
+            "total_deleted": self.total_deleted,
+            "blocked_count": len(self.blocked),
+            "error_count": len(self.errors),
+            "deleted_by_kind": dict(sorted(by_kind.items())),
+        }
 
 
 class TombstoneIndex:

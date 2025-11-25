@@ -152,3 +152,16 @@ def test_deletion_report_properties():
     assert depths["b"] == 1
     assert depths["c"] == 2
     assert depths["d"] == 1
+
+
+def test_summary_dict_groups_by_kind():
+    engine, targets, deleted = _make_fixture()
+    report = engine.delete("a", DeletionReason.FORGET, NOW)
+    summary = report.summary_dict()
+    assert summary["requested_key"] == "a"
+    assert summary["total_deleted"] == report.total_deleted
+    assert "deleted_by_kind" in summary
+    assert summary["blocked_count"] == len(report.blocked)
+    assert summary["error_count"] == len(report.errors)
+    assert isinstance(summary["deleted_by_kind"], dict)
+    assert summary["deleted_by_kind"] == dict(sorted(summary["deleted_by_kind"].items()))
