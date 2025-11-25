@@ -49,6 +49,14 @@ class Playbook:
             self.status = PlaybookStatus(self.status)
         if isinstance(self.tags, list):
             self.tags = set(self.tags)
+        if not self.playbook_id:
+            raise ValueError("playbook_id must not be empty")
+        if not self.name:
+            raise ValueError("name must not be empty")
+        if self.version < 1:
+            raise ValueError("version must be >= 1")
+        if self.confidence < 0.0 or self.confidence > 1.0:
+            raise ValueError("confidence must be in [0, 1]")
 
     def total_steps(self) -> int:
         return len(self.steps)

@@ -22,6 +22,24 @@ class TestPlaybook:
         assert Playbook("p", "n", status=PlaybookStatus.APPROVED).can_run()
         assert not Playbook("p", "n", status=PlaybookStatus.PROPOSED).can_run()
 
+    def test_empty_id_rejected(self):
+        with pytest.raises(ValueError, match="playbook_id"):
+            Playbook("", "name")
+
+    def test_empty_name_rejected(self):
+        with pytest.raises(ValueError, match="name"):
+            Playbook("pb1", "")
+
+    def test_version_zero_rejected(self):
+        with pytest.raises(ValueError, match="version"):
+            Playbook("pb1", "name", version=0)
+
+    def test_confidence_out_of_range_rejected(self):
+        with pytest.raises(ValueError, match="confidence"):
+            Playbook("pb1", "name", confidence=-0.1)
+        with pytest.raises(ValueError, match="confidence"):
+            Playbook("pb1", "name", confidence=1.5)
+
 
 class TestPlaybookLibrary:
     def test_add_get(self):
