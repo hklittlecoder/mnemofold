@@ -241,6 +241,15 @@ class CoverageReport:
         cats_with_hit = sum(1 for _, covered in self.per_category.values() if covered > 0)
         return round(cats_with_hit / len(self.per_category), 6)
 
+    def recall_by_category(self, category: str) -> float:
+        """Recall for a specific expected category, or 1.0 if none expected."""
+        if category not in self.per_category:
+            return 1.0
+        expected, covered = self.per_category[category]
+        if expected == 0:
+            return 1.0
+        return round(covered / expected, 6)
+
 
 def measure_coverage(
     prep: MeetingPrep,

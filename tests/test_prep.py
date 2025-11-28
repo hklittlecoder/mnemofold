@@ -241,6 +241,19 @@ class TestPrepCoverage:
         assert report.category_coverage == 1.0
         assert report.per_category == {}
 
+    def test_recall_by_category_per_category(self):
+        prep = MeetingPrepper(store=self._store()).prepare("m", "alpha sync", ["alice"])
+        cats = {"alice": "person", "commit1": "commitment", "miss_d": "decision"}
+        report = measure_coverage(prep, ["alice", "commit1", "miss_d"], expected_categories=cats)
+        assert report.recall_by_category("person") == 1.0
+        assert report.recall_by_category("commitment") == 1.0
+        assert report.recall_by_category("decision") == 0.0
+
+    def test_recall_by_category_unknown_returns_one(self):
+        prep = MeetingPrepper(store=self._store()).prepare("m", "alpha sync", ["alice"])
+        report = measure_coverage(prep, ["alice"], expected_categories={"alice": "person"})
+        assert report.recall_by_category("nonexistent_category") == 1.0
+
 
 class TestPrepPacketProperties:
     def _store(self, n: int = 6) -> MemoryStore:
