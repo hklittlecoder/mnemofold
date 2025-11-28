@@ -185,6 +185,18 @@ class TestPlaybookSerialization:
         pb = self._playbook()
         assert Playbook.from_dict(pb.to_dict()) == pb
 
+    def test_from_dict_rejects_empty_id(self):
+        data = self._playbook().to_dict()
+        data["playbook_id"] = ""
+        with pytest.raises(ValueError, match="playbook_id"):
+            Playbook.from_dict(data)
+
+    def test_from_dict_rejects_bad_version(self):
+        data = self._playbook().to_dict()
+        data["version"] = 0
+        with pytest.raises(ValueError, match="version"):
+            Playbook.from_dict(data)
+
     def test_roundtrip_preserves_steps(self):
         pb = self._playbook()
         restored = Playbook.from_dict(pb.to_dict())
