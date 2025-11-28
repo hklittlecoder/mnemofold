@@ -75,6 +75,25 @@ class TestStandupGenerator:
         data = gen.generate("2024-01-15T00:00:00+00:00")
         assert any("c3" in s for s in data.overdue)
 
+    def test_every_overdue_line_cites_commitment_id(self):
+        gen = StandupGenerator(self._ledger())
+        data = gen.generate("2024-01-20T00:00:00+00:00")
+        for line in data.overdue:
+            assert "[" in line and "]" in line
+            cid = line[line.rindex("[") + 1 : line.rindex("]")]
+            assert cid in data.citations
+
+    def test_completed_items_come_from_today(self):
+        ledger = CommitmentLedger()
+        ledger.add(Commitment("done_yesterday", "a", "b", "Old", "2024-01-10T00:00:00+00:00"))
+        ledger.add(Commitment("done_today", "a", "b", "New", "2024-01-18T00:00:00+00:00"))
+        ledger.transition("done_yesterday", CommitmentStatus.DONE, "2024-01-14T10:00:00+00:00")
+        ledger.transition("done_today", CommitmentStatus.DONE, "2024-01-15T09:00:00+00:00")
+        gen = StandupGenerator(ledger)
+        data = gen.generate("2024-01-15T12:00:00+00:00")
+        assert any("done_today" in s for s in data.completed)
+        assert not any("done_yesterday" in s for s in data.completed)
+
 
 class TestRendering:
     def test_markdown(self):
