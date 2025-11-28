@@ -74,6 +74,22 @@ class TestPlaybookLibrary:
         assert new.status == PlaybookStatus.DRAFT
         assert new.total_steps() == 2
 
+    def test_export_by_tag_filters_and_sorts(self):
+        lib = PlaybookLibrary()
+        lib.add(Playbook("z_deploy", "Deploy prod", tags={"deploy", "ops"}, confidence=0.9))
+        lib.add(Playbook("a_onboard", "Onboard", tags={"onboarding", "hr"}))
+        lib.add(Playbook("b_rollback", "Rollback", tags={"deploy", "ops"}))
+        lib.add(Playbook("misc", "Other", tags={"misc"}))
+        deploy = lib.export_by_tag("deploy")
+        assert len(deploy) == 2
+        assert [p["playbook_id"] for p in deploy] == ["b_rollback", "z_deploy"]
+        assert all("deploy" in p["tags"] for p in deploy)
+
+    def test_export_by_tag_empty_when_no_match(self):
+        lib = PlaybookLibrary()
+        lib.add(Playbook("p1", "n", tags={"a"}))
+        assert lib.export_by_tag("nope") == []
+
 
 class TestPlaybookLifecycle:
     def _library(self) -> PlaybookLibrary:

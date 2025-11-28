@@ -287,5 +287,16 @@ class PlaybookLibrary:
             "meta_changes": sorted(meta_changes),
         }
 
+    def export_by_tag(self, tag: str) -> list[dict[str, Any]]:
+        """Return all playbooks carrying ``tag`` as deterministic dicts.
+
+        Results are sorted by playbook id so the same library always
+        produces the same export order. Useful for serializing subsets
+        of the library (e.g. all "release" playbooks) without dumping
+        the whole thing.
+        """
+        matches = [pb for pb in self._playbooks.values() if tag in pb.tags]
+        return [pb.to_dict() for pb in sorted(matches, key=lambda p: p.playbook_id)]
+
     def total_count(self) -> int:
         return len(self._playbooks)
