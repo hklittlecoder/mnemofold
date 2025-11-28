@@ -156,6 +156,38 @@ class TestSalienceScorer:
         assert len(scores) == 0
         assert isinstance(scores, np.ndarray)
 
+    def test_percentile_ranks_spread_across_0_to_100(self):
+        scorer = SalienceScorer()
+        items = [
+            SalienceFeatures(is_pinned=True, is_decision=True, is_owner=True),
+            SalienceFeatures(is_pinned=True),
+            SalienceFeatures(),
+        ]
+        ranks = scorer.percentile_ranks(items)
+        assert len(ranks) == 3
+        assert max(ranks) == 100.0
+        assert min(ranks) == 0.0
+        assert all(0.0 <= r <= 100.0 for r in ranks)
+        # Highest-salience item has rank 100
+        scores = scorer.score_batch(items)
+        top_idx = int(np.argmax(scores))
+        assert ranks[top_idx] == 100.0
+
+    def test_percentile_ranks_ties_share_rank(self):
+        scorer = SalienceScorer()
+        items = [SalienceFeatures(), SalienceFeatures(), SalienceFeatures()]
+        ranks = scorer.percentile_ranks(items)
+        assert all(r == ranks[0] for r in ranks)
+        assert ranks[0] == 100.0
+
+    def test_percentile_ranks_single_item(self):
+        scorer = SalienceScorer()
+        assert scorer.percentile_ranks([SalienceFeatures()]) == [100.0]
+
+    def test_percentile_ranks_empty(self):
+        scorer = SalienceScorer()
+        assert scorer.percentile_ranks([]) == []
+
 
 class TestDeadlineProximity:
     def test_future_deadline(self):

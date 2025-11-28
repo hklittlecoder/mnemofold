@@ -147,6 +147,31 @@ class SalienceScorer:
         scores = self.score_batch(items)
         return list(np.argsort(-scores))
 
+    def percentile_ranks(self, items: list[SalienceFeatures]) -> list[float]:
+        """Percentile rank of each item within the batch, in [0, 100].
+
+        Highest-scoring item gets 100.0; lowest gets 0.0. Ties receive
+        the same percentile (the highest rank among the tied group).
+        Quantized to 6 decimals for deterministic output. An empty or
+        single-item batch returns all 100.0.
+        """
+        if len(items) <= 1:
+            return [100.0] * len(items)
+        scores = self.score_batch(items)
+        order = np.argsort(-scores)
+        ranks = np.empty(len(items), dtype=np.float64)
+        n = len(items)
+        i = 0
+        while i < n:
+            j = i
+            while j < n and scores[order[j]] == scores[order[i]]:
+                j += 1
+            percentile = 100.0 * (1.0 - i / max(1, n - 1))
+            for k in range(i, j):
+                ranks[order[k]] = round(percentile, 6)
+            i = j
+        return [round(float(r), 6) for r in ranks]
+
     def _norm_deadline(self, f: SalienceFeatures) -> float:
         """Normalize deadline proximity: closer deadline = higher score.
 
