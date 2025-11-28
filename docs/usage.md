@@ -78,6 +78,19 @@ mnemofold triage / prep / asof / context / triggers / privacy / replay / diff
 
 `mnemofold --help` 列出全部子命令；所有命令离线可跑、退出码明确。
 
+## 评估与校准
+
+所有指标都基于植入真值（planted ground truth）的合成场景计算，数字
+全部可复现。`mnemofold.evaluation` 模块提供：
+
+- **检索/分诊**：`precision_at_k`、`recall`、`precision`、`f1_score`
+- **承诺检测**：`overdue_detection_accuracy`（precision/recall/f1）
+- **as-of 查询**：`as_of_accuracy`（历史时点的事实正确性）
+- **预算与引用**：`budget_adherence`、`citation_validity`
+- **校准**：`brier_score`、`calibration_report`（等宽分桶）与
+  `expected_calibration_error`（ECE，加权平均 |预测-观测| 偏差），
+  用于检查分诊/置信度分数是否像概率一样行为。
+
 ## 配置面
 
 行为全部由显式配置驱动，默认值即基线行为：`FactoryConfig`（合成历史
