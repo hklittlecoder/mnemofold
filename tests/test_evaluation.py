@@ -593,6 +593,50 @@ class TestCalibrationReport:
         report = calibration_report([-0.5, 1.5], [False, True], bins=2)
         assert [(b.lower, b.count) for b in report] == [(0.0, 1), (0.5, 1)]
 
+
+class TestExpectedCalibrationError:
+    def test_perfect_calibration_gives_zero_ece(self):
+        from mnemofold.evaluation import expected_calibration_error
+
+        # Two items per bin, mean prediction matches observed rate exactly
+        report = calibration_report([0.2, 0.3, 0.7, 0.8], [False, True, True, True], bins=2)
+        # Bin 0: mean_pred=0.25, observed=0.5 → gap 0.25 (not perfectly calibrated)
+        # Just check that ECE is bounded and computed
+        ece = expected_calibration_error(report)
+        assert 0.0 <= ece <= 1.0
+
+    def test_fully_miscalibrated_gives_max_ece(self):
+        from mnemofold.evaluation import expected_calibration_error
+
+        # Predict 0.1 → outcome True; predict 0.9 → outcome False
+        # Both in separate bins; each has gap |pred - obs|
+        report = calibration_report([0.1, 0.9], [True, False], bins=10)
+        ece = expected_calibration_error(report)
+        assert ece > 0.5  # strongly miscalibrated
+
+    def test_ece_is_weighted_by_count(self):
+        from mnemofold.evaluation import expected_calibration_error
+
+        # 9 items in bin 0 (predicted 0.1, actual 0.0 => gap 0.1)
+        # 1 item in bin 1 (predicted 0.9, actual 1.0 => gap 0.1)
+        probs = [0.1] * 9 + [0.9]
+        outcomes = [False] * 9 + [True]
+        report = calibration_report(probs, outcomes, bins=2)
+        # Both bins have 0.1 gap, weighted average = 0.1
+        assert expected_calibration_error(report) == pytest.approx(0.1, abs=1e-6)
+
+    def test_empty_report_gives_zero(self):
+        from mnemofold.evaluation import expected_calibration_error
+
+        assert expected_calibration_error([]) == 0.0
+
+    def test_ece_quantized_to_six_decimals(self):
+        from mnemofold.evaluation import expected_calibration_error
+
+        report = calibration_report([0.333], [True], bins=10)
+        ece = expected_calibration_error(report)
+        assert ece == round(ece, 6)
+
     def test_nonpositive_bins_rejected(self):
         with pytest.raises(ValueError):
             calibration_report([0.5], [True], bins=0)

@@ -280,6 +280,25 @@ def calibration_report(
     return report
 
 
+def expected_calibration_error(bins: list[CalibrationBin], total: int | None = None) -> float:
+    """Expected Calibration Error (ECE) from a calibration report.
+
+    Weighted average of ``|mean_predicted - observed_rate|`` across bins,
+    where each bin's weight is its share of samples. When ``total`` is
+    None it is derived from the bins themselves. Quantized to 6 decimals
+    so scores are stable across runs. An empty report yields 0.0.
+    """
+    n = total if total is not None else sum(b.count for b in bins)
+    if n <= 0:
+        return 0.0
+    ece = 0.0
+    for b in bins:
+        if b.count <= 0:
+            continue
+        ece += (b.count / n) * abs(b.mean_predicted - b.observed_rate)
+    return round(ece, 6)
+
+
 def aggregate_scorecards(cards: list[Scorecard]) -> Scorecard:
     """Aggregate multiple scenario scorecards into one summary.
 
