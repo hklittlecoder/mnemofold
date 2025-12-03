@@ -332,6 +332,54 @@ class WorkstreamGraph:
                 queue.append(nxt)
         return None
 
+    def reachable_nodes(self, start_id: str, edge_types: set[EdgeType] | None = None) -> set[str]:
+        """All active nodes reachable from ``start_id`` via active edges.
+
+        When ``edge_types`` is provided, only edges of those types are
+        traversed (useful for walking provenance edges without following
+        every relationship). The starting node is always included when
+        it exists and is active. Uses BFS with sorted neighbor order so
+        results are deterministic; returns an empty set for a missing or
+        inactive start node.
+        """
+        start = self.nodes.get(start_id)
+        if start is None or not start.active:
+            return set()
+        adjacency: dict[str, set[str]] = {
+            nid: set() for nid, node in self.nodes.items() if node.active
+        }
+        for edge in self.edges.values():
+            if not edge.active:
+                continue
+            if edge_types is not None and edge.edge_type not in edge_types:
+                continue
+            if edge.source_id in adjacency and edge.target_id in adjacency:
+                adjacency[edge.source_id].add(edge.target_id)
+                adjacency[edge.target_id].add(edge.source_id)
+        visited: set[str] = {start_id}
+        queue = [start_id]
+        while queue:
+            current = queue.pop(0)
+            for nxt in sorted(adjacency.get(current, set())):
+                if nxt in visited:
+                    continue
+                visited.add(nxt)
+                queue.append(nxt)
+        return visited
+
+    def degree(self, node_id: str) -> int:
+        """Count of active edges incident to the given node."""
+        node = self.nodes.get(node_id)
+        if node is None or not node.active:
+            return 0
+        count = 0
+        for edge in self.edges.values():
+            if not edge.active:
+                continue
+            if edge.source_id == node_id or edge.target_id == node_id:
+                count += 1
+        return count
+
     def connected_components(self) -> list[list[str]]:
         """Active nodes grouped by undirected active-edge reachability.
 

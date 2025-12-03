@@ -70,6 +70,43 @@ class TestConnectedComponents:
         assert WorkstreamGraph().connected_components() == []
 
 
+class TestReachableNodes:
+    def test_reachable_from_start_includes_component(self):
+        graph = _chain_graph()
+        reachable = graph.reachable_nodes("a")
+        assert reachable == {"a", "b", "c"}
+
+    def test_reachable_from_lonely_is_just_self(self):
+        graph = _chain_graph()
+        reachable = graph.reachable_nodes("lonely")
+        assert reachable == {"lonely"}
+
+    def test_reachable_unknown_node_returns_empty(self):
+        graph = _chain_graph()
+        assert graph.reachable_nodes("nope") == set()
+
+    def test_reachable_filters_by_edge_type(self):
+        graph = WorkstreamGraph()
+        for nid in ("a", "b", "c"):
+            graph.add_node(_node(nid))
+        graph.add_edge(_edge("a", "b", EdgeType.PARTICIPATES))
+        graph.add_edge(_edge("b", "c", EdgeType.REFERENCES))
+        # Following only PARTICIPATES edges: a reaches b, but not c
+        reachable = graph.reachable_nodes("a", edge_types={EdgeType.PARTICIPATES})
+        assert reachable == {"a", "b"}
+
+    def test_degree_counts_incident_edges(self):
+        graph = _chain_graph()
+        assert graph.degree("a") == 1
+        assert graph.degree("b") == 2
+        assert graph.degree("c") == 1
+        assert graph.degree("lonely") == 0
+
+    def test_degree_missing_node_is_zero(self):
+        graph = _chain_graph()
+        assert graph.degree("nope") == 0
+
+
 class TestSubgraph:
     def test_induced_subgraph_keeps_internal_edges_only(self):
         sub = _chain_graph().subgraph(["a", "b"])
