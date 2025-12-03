@@ -16,8 +16,10 @@ from mnemofold.triage import (
     TriageResult,
     TriageScorer,
     attach_graph_importance,
+    group_by_priority,
     precision_at_k,
     sender_degrees,
+    triage_summary,
 )
 
 
@@ -176,6 +178,54 @@ class TestPrecisionAtK:
     def test_zero_k(self):
 
         assert precision_at_k([], {}, 0) == 0.0
+
+
+class TestGroupByPriority:
+    def test_all_priority_levels_present_even_when_empty(self):
+        results = [
+            TriageResult("a", 0.9, TriagePriority.HIGH),
+            TriageResult("b", 0.3, TriagePriority.LOW),
+        ]
+        groups = group_by_priority(results)
+        assert set(groups.keys()) == set(TriagePriority)
+        assert len(groups[TriagePriority.HIGH]) == 1
+        assert len(groups[TriagePriority.LOW]) == 1
+        assert groups[TriagePriority.URGENT] == []
+
+    def test_preserves_score_order_within_band(self):
+        results = [
+            TriageResult("a", 0.9, TriagePriority.HIGH),
+            TriageResult("b", 0.85, TriagePriority.HIGH),
+            TriageResult("c", 0.2, TriagePriority.LOW),
+        ]
+        groups = group_by_priority(results)
+        assert [r.item_id for r in groups[TriagePriority.HIGH]] == ["a", "b"]
+
+    def test_empty_input_produces_all_empty_bands(self):
+        groups = group_by_priority([])
+        assert all(len(v) == 0 for v in groups.values())
+
+
+class TestTriageSummary:
+    def test_total_and_by_priority_counts(self):
+        results = [
+            TriageResult("a", 0.95, TriagePriority.URGENT),
+            TriageResult("b", 0.8, TriagePriority.HIGH),
+            TriageResult("c", 0.5, TriagePriority.NORMAL),
+            TriageResult("d", 0.2, TriagePriority.LOW),
+        ]
+        summary = triage_summary(results)
+        assert summary["total"] == 4
+        assert summary["by_priority"]["urgent"] == 1
+        assert summary["by_priority"]["high"] == 1
+        assert summary["by_priority"]["normal"] == 1
+        assert summary["by_priority"]["low"] == 1
+        assert summary["urgent_fraction"] == 0.25
+
+    def test_empty_results_zero_fraction(self):
+        summary = triage_summary([])
+        assert summary["total"] == 0
+        assert summary["urgent_fraction"] == 0.0
 
 
 class TestQuietHoursReclassification:
@@ -422,9 +472,9 @@ class TestPrecisionAtKOnFactory:
         assert k == 3  # this seed plants exactly three commitment mails
         results = TriageScorer().batch_score(items, self.NOW)
         # measured: two of the three planted mails land in the top three
-        assert precision_at_k(results, labels, k) == 2 / 3
+        assert precision_at_k(results, labels, k) == round(2 / 3, 6)
         # measured: still two planted mails inside the top five
-        assert precision_at_k(results, labels, 5) == 2 / 5
+        assert precision_at_k(results, labels, 5) == round(2 / 5, 6)
 
     def test_reversed_ranking_scores_baseline_zero(self):
         items, labels = self._corpus()

@@ -209,7 +209,36 @@ def precision_at_k(results: list[TriageResult], labels: dict[str, bool], k: int)
         return 0.0
     top_k = results[:k]
     relevant = sum(1 for r in top_k if labels.get(r.item_id, False))
-    return relevant / len(top_k)
+    return round(relevant / len(top_k), 6)
+
+
+def group_by_priority(
+    results: list[TriageResult],
+) -> dict[TriagePriority, list[TriageResult]]:
+    """Group triage results by priority band, preserving score order.
+
+    Returns a dict keyed by every priority level (empty lists for bands
+    with no items), so callers can iterate all bands without checking
+    for missing keys. Within each band, items are kept in the same
+    order as the input (i.e. by descending score for a sorted input).
+    """
+    groups: dict[TriagePriority, list[TriageResult]] = {level: [] for level in TriagePriority}
+    for result in results:
+        groups[result.priority].append(result)
+    return groups
+
+
+def triage_summary(results: list[TriageResult]) -> dict[str, Any]:
+    """Counts-by-priority summary for logging and reports.
+
+    Quantized and key-ordered for deterministic output.
+    """
+    groups = group_by_priority(results)
+    return {
+        "total": len(results),
+        "by_priority": {level.value: len(groups[level]) for level in TriagePriority},
+        "urgent_fraction": round(len(groups[TriagePriority.URGENT]) / max(1, len(results)), 6),
+    }
 
 
 # --- Graph-derived sender importance -------------------------------------------
