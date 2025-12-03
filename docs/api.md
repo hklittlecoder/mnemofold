@@ -76,7 +76,12 @@
 
 ### `mnemofold.graph`
 - `WorkstreamGraph.add_node / add_edge / neighbors / nodes_by_type /
-  check_no_dangling_edges / check_provenance_acyclic / to_dict / from_dict`。
+  edges_by_type / outgoing_edges / incoming_edges`。
+- 遍历与结构：`shortest_path(source, target)`（BFS，节点对间最短边数链）、
+  `reachable_nodes(start, edge_types=None)`（按边类型过滤的可达集）、
+  `degree(node_id)`、`connected_components()`、`subgraph(node_ids)`
+  （诱导子图，仅保留内部边）。
+- 不变量检查：`check_no_dangling_edges / check_provenance_acyclic`。
 
 ### `mnemofold.salience`
 - `SalienceScorer.score / feature_vector`；`FEATURE_NAMES` 为 NumPy 与
