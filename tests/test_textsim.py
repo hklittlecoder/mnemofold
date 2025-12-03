@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from mnemofold.textsim import bigram_jaccard, char_bigrams
+from mnemofold.textsim import (
+    bigram_jaccard,
+    char_bigrams,
+    rank_candidates,
+)
 
 
 class TestCharBigrams:
@@ -44,3 +48,43 @@ class TestBigramJaccard:
     def test_symmetry(self, text):
         other = "beta variant"
         assert bigram_jaccard(text, other) == bigram_jaccard(other, text)
+
+
+class TestRankCandidates:
+    def test_ranks_by_descending_score(self):
+        candidates = {
+            "a": "release plan",
+            "b": "release plans",
+            "c": "unrelated thing",
+        }
+        ranked = rank_candidates("release plan", candidates)
+        assert ranked[0].candidate_id == "a"
+        assert ranked[0].score == 1.0
+        assert ranked[-1].score <= ranked[0].score
+
+    def test_threshold_filters_low_scores(self):
+        candidates = {"a": "hello world", "b": "xyz"}
+        ranked = rank_candidates("hello world", candidates, threshold=0.9)
+        assert all(m.score >= 0.9 for m in ranked)
+        assert len(ranked) == 1
+
+    def test_top_k_limits_results(self):
+        candidates = {f"c{i}": f"target phrase {i}" for i in range(10)}
+        ranked = rank_candidates("target phrase 0", candidates, top_k=3)
+        assert len(ranked) == 3
+
+    def test_tie_break_is_alphabetical_by_id(self):
+        candidates = {"b": "abc", "a": "abc"}
+        ranked = rank_candidates("abc", candidates)
+        assert ranked[0].candidate_id == "a"
+        assert ranked[1].candidate_id == "b"
+        assert ranked[0].score == ranked[1].score
+
+    def test_empty_candidates_returns_empty(self):
+        assert rank_candidates("q", {}) == []
+
+    def test_fold_case_option_passed_through(self):
+        candidates = {"upper": "HELLO", "lower": "hello"}
+        folded = rank_candidates("hello", candidates, fold_case=True)
+        assert folded[0].score == 1.0
+        assert len([m for m in folded if m.score == 1.0]) == 2
