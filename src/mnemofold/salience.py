@@ -120,6 +120,18 @@ class SalienceScorer:
         normalized = self._normalized(features)
         return [round(normalized[name], 6) for name in FEATURE_NAMES]
 
+    def normalized_weights(self) -> dict[str, float]:
+        """Weights normalized so they sum to 1.0.
+
+        Useful for reporting and for comparing weight profiles across
+        configurations. Quantized to 6 decimals.
+        """
+        result = {}
+        for name in FEATURE_NAMES:
+            raw = getattr(self.weights, name)
+            result[name] = round(raw / self._weight_sum, 6)
+        return result
+
     def _normalized(self, features: SalienceFeatures) -> dict[str, float]:
         """Normalize every raw feature into [0, 1], keyed by FEATURE_NAMES."""
         return {

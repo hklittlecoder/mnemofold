@@ -188,6 +188,30 @@ class TestSalienceScorer:
         scorer = SalienceScorer()
         assert scorer.percentile_ranks([]) == []
 
+    def test_normalized_weights_sum_to_one(self):
+        scorer = SalienceScorer()
+        nw = scorer.normalized_weights()
+        assert abs(sum(nw.values()) - 1.0) < 1e-5
+        assert all(v == round(v, 6) for v in nw.values())
+        for name in FEATURE_NAMES:
+            assert name in nw
+            assert 0.0 <= nw[name] <= 1.0
+
+    def test_normalized_weights_preserve_ratios(self):
+        custom = SalienceWeights(
+            deadline_proximity=2.0,
+            pinning=1.0,
+            ownership=0.0,
+            decision_weight=0.0,
+            recurrence=0.0,
+            recency=0.0,
+            priority=0.0,
+        )
+        scorer = SalienceScorer(weights=custom)
+        nw = scorer.normalized_weights()
+        assert nw["deadline_proximity"] > nw["pinning"]
+        assert nw["ownership"] == 0.0
+
 
 class TestDeadlineProximity:
     def test_future_deadline(self):
