@@ -9,11 +9,12 @@ references, supersedes, contradicts.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
+
+from mnemofold.canon import canonical_json
 
 
 class NodeType(StrEnum):
@@ -123,7 +124,7 @@ class Edge:
 
 
 def _canonical_json(obj: Any) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return canonical_json(obj, ensure_ascii=False)
 
 
 def node_checksum(node: Node) -> str:

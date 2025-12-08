@@ -7,7 +7,6 @@ and a perceive-plan-act-observe loop with budgets.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,6 +14,7 @@ from enum import StrEnum
 from typing import Any
 
 from mnemofold.approvals import ApprovalQueue, ApprovalRequest, ApprovalStatus
+from mnemofold.canon import sha256_hex
 from mnemofold.tools import ToolPolicyError, ToolRegistry, ToolValidationError
 
 
@@ -133,10 +133,7 @@ class Plan:
         independently built identical plans digest equal. Used by golden
         tests and cross-run reproducibility checks.
         """
-        canonical = json.dumps(
-            self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return sha256_hex(self.to_dict())
 
 
 @dataclass

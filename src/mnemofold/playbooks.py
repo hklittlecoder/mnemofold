@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
+
+from mnemofold.canon import sha256_hex
 
 
 class PlaybookStatus(StrEnum):
@@ -180,10 +180,7 @@ class Playbook:
 
     def digest(self) -> str:
         """SHA-256 over the canonical JSON form (stable across runs)."""
-        canonical = json.dumps(
-            self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return sha256_hex(self.to_dict())
 
 
 @dataclass
