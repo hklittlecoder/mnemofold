@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from mnemofold.canon import canonical_json
+
 
 class SideEffectClass(StrEnum):
     NONE = "none"
@@ -156,6 +158,12 @@ def _digest_output(output: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
+def _chain_link(prev_head: str, receipt: ToolReceipt) -> str:
+    """One link of the receipt chain: H(prev_head || canonical receipt)."""
+    payload = prev_head + canonical_json(receipt.to_dict())
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 @dataclass(slots=True)
 class ToolReceipt:
     """Policy-gated record of one tool execution attempt.
@@ -206,12 +214,20 @@ class ToolReceipt:
 
 @dataclass
 class ReceiptLog:
-    """Append-only receipt list with a deterministic chained digest."""
+    """Append-only receipt list with a deterministic chained digest.
+
+    Beyond the order-sensitive :meth:`digest` over the whole list, the
+    log maintains a running chain head: every append hashes the previous
+    head together with the new receipt, so :meth:`verify_chain` can
+    prove that a head value still matches the exact sequence held.
+    """
 
     _receipts: list[ToolReceipt] = field(default_factory=list)
+    _head: str = ""
 
     def append(self, receipt: ToolReceipt) -> None:
         self._receipts.append(receipt)
+        self._head = _chain_link(self._head, receipt)
 
     def receipts(self) -> list[ToolReceipt]:
         return list(self._receipts)
@@ -239,6 +255,23 @@ class ReceiptLog:
         ]
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def head(self) -> str:
+        """Chained head digest; the empty string for an empty log."""
+        return self._head
+
+    def verify_chain(self, expected_head: str) -> bool:
+        """Recompute the chain from scratch and compare to ``expected_head``.
+
+        Catches dropped, reordered or edited receipts: every link hashes
+        the previous head together with one receipt's canonical form, so
+        any change downstream of an edit shifts the head. An empty log
+        verifies only against the empty string.
+        """
+        head = ""
+        for receipt in self._receipts:
+            head = _chain_link(head, receipt)
+        return head == expected_head
 
     def to_jsonl(self) -> str:
         """Serialize receipts as JSONL (one canonical JSON object per line)."""
