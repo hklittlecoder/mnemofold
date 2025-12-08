@@ -10,6 +10,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from mnemofold.canon import canonical_json
@@ -124,6 +125,32 @@ class ToolResult:
     retries: int = 0
     cached: bool = False
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable form; timing floats quantized for stable bytes."""
+        return {
+            "tool_name": self.tool_name,
+            "success": self.success,
+            "output": self.output,
+            "error": self.error,
+            "execution_time_ms": round(self.execution_time_ms, 6),
+            "idempotency_key": self.idempotency_key,
+            "retries": self.retries,
+            "cached": self.cached,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ToolResult:
+        return cls(
+            tool_name=data["tool_name"],
+            success=bool(data["success"]),
+            output=data.get("output"),
+            error=data.get("error", ""),
+            execution_time_ms=float(data.get("execution_time_ms", 0.0)),
+            idempotency_key=data.get("idempotency_key", ""),
+            retries=int(data.get("retries", 0)),
+            cached=bool(data.get("cached", False)),
+        )
+
 
 @dataclass
 class IdempotencyStore:
@@ -148,6 +175,38 @@ class IdempotencyStore:
 
     def __contains__(self, key: str) -> bool:
         return key in self._results
+
+    def to_jsonl(self) -> str:
+        """Serialize cached results, one canonical JSON object per line.
+
+        Lines are emitted in sorted key order so the same logical store
+        always produces byte-identical output, regardless of insertion
+        order. Outputs that are not JSON-native fall back to ``str``.
+        """
+        lines = []
+        for key in sorted(self._results):
+            record = {"key": key, "result": self._results[key].to_dict()}
+            lines.append(json.dumps(record, sort_keys=True, separators=(",", ":"), default=str))
+        return "".join(line + "\n" for line in lines)
+
+    @classmethod
+    def from_jsonl(cls, text: str) -> IdempotencyStore:
+        """Rebuild a store from :meth:`to_jsonl` output."""
+        store = cls()
+        for line in text.splitlines():
+            if line.strip():
+                record = json.loads(line)
+                store.put(record["key"], ToolResult.from_dict(record["result"]))
+        return store
+
+    def save(self, path: str | Path) -> None:
+        """Write the store to ``path`` as UTF-8 JSONL."""
+        Path(path).write_text(self.to_jsonl(), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: str | Path) -> IdempotencyStore:
+        """Load a store previously written by :meth:`save`."""
+        return cls.from_jsonl(Path(path).read_text(encoding="utf-8"))
 
 
 def _digest_output(output: Any) -> str:
