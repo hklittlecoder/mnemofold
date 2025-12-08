@@ -40,6 +40,75 @@ class TestPlaybook:
         with pytest.raises(ValueError, match="confidence"):
             Playbook("pb1", "name", confidence=1.5)
 
+    def test_validate_linear_deps_ok(self):
+        pb = Playbook(
+            "pb1",
+            "Release",
+            steps=[
+                PlaybookStep("build", "Build", preconditions=[]),
+                PlaybookStep("test", "Test", preconditions=["build"]),
+                PlaybookStep("deploy", "Deploy", preconditions=["test"]),
+            ],
+        )
+        assert pb.validate() == []
+
+    def test_validate_dangling_precondition_fails(self):
+        pb = Playbook(
+            "pb1",
+            "Release",
+            steps=[
+                PlaybookStep("a", "A", preconditions=["nonexistent"]),
+            ],
+        )
+        errs = pb.validate()
+        assert any("nonexistent" in e for e in errs)
+
+    def test_validate_duplicate_step_ids_fails(self):
+        pb = Playbook(
+            "pb1",
+            "Release",
+            steps=[
+                PlaybookStep("a", "A1"),
+                PlaybookStep("a", "A2"),
+            ],
+        )
+        errs = pb.validate()
+        assert any("duplicate" in e for e in errs)
+
+    def test_validate_empty_step_id_fails(self):
+        pb = Playbook(
+            "pb1",
+            "Release",
+            steps=[PlaybookStep("", "bad")],
+        )
+        errs = pb.validate()
+        assert any("empty" in e for e in errs)
+
+    def test_validate_cycle_detected(self):
+        pb = Playbook(
+            "pb1",
+            "Release",
+            steps=[
+                PlaybookStep("a", "A", preconditions=["b"]),
+                PlaybookStep("b", "B", preconditions=["a"]),
+            ],
+        )
+        errs = pb.validate()
+        assert any("cycle" in e for e in errs)
+
+    def test_validate_self_loop_detected(self):
+        pb = Playbook(
+            "pb1",
+            "Release",
+            steps=[PlaybookStep("a", "A", preconditions=["a"])],
+        )
+        errs = pb.validate()
+        assert any("cycle" in e for e in errs)
+
+    def test_validate_empty_steps_ok(self):
+        pb = Playbook("pb1", "Empty")
+        assert pb.validate() == []
+
 
 class TestPlaybookLibrary:
     def test_add_get(self):

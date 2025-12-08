@@ -64,6 +64,62 @@ class Playbook:
     def can_run(self) -> bool:
         return self.status in {PlaybookStatus.APPROVED, PlaybookStatus.ACTIVE}
 
+    def validate(self) -> list[str]:
+        """Structural validation of steps and their preconditions.
+
+        Checks:
+        * all step ids are non-empty and unique
+        * every precondition references a step that exists
+        * no dependency cycles (via DFS)
+
+        Returns a list of error strings; empty means valid.
+        """
+        errors: list[str] = []
+        step_ids: list[str] = [s.step_id for s in self.steps]
+
+        for i, sid in enumerate(step_ids):
+            if not sid:
+                errors.append(f"step {i}: empty step_id")
+
+        if len(step_ids) != len(set(step_ids)):
+            seen: set[str] = set()
+            for sid in step_ids:
+                if sid in seen:
+                    errors.append(f"duplicate step_id: {sid!r}")
+                seen.add(sid)
+
+        id_set = set(step_ids)
+        for step in self.steps:
+            for pre in step.preconditions:
+                if pre not in id_set:
+                    errors.append(
+                        f"step {step.step_id!r}: precondition references unknown step {pre!r}"
+                    )
+
+        # Cycle detection via DFS
+        adj: dict[str, list[str]] = {s.step_id: list(s.preconditions) for s in self.steps}
+        white, gray, black = 0, 1, 2
+        color: dict[str, int] = {s.step_id: white for s in self.steps}
+
+        def dfs(node: str) -> bool:
+            color[node] = gray
+            for nxt in adj.get(node, []):
+                if nxt not in color:
+                    continue
+                if color[nxt] == gray:
+                    return True
+                if color[nxt] == white and dfs(nxt):
+                    return True
+            color[node] = black
+            return False
+
+        for sid in step_ids:
+            if color[sid] == white and dfs(sid):
+                errors.append(f"dependency cycle involving step {sid!r}")
+                break
+
+        return errors
+
     def to_dict(self) -> dict[str, Any]:
         """Deterministic dict form; tags sorted, confidence quantized."""
         return {
