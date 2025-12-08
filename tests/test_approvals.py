@@ -409,6 +409,38 @@ class TestApprovalQueueEdges:
         q.decide("r1", True, NOW)
         assert [r.request_id for r in q.pending()] == ["r2"]
 
+    def test_bulk_decide_approves_multiple(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r1"))
+        q.submit(self._request("r2"))
+        q.submit(self._request("r3"))
+        decided = q.bulk_decide(["r1", "r3"], True, NOW, note="batch ok")
+        assert {r.request_id for r in decided} == {"r1", "r3"}
+        assert all(r.status == ApprovalStatus.APPROVED for r in decided)
+        assert q.requests[1].status == ApprovalStatus.PENDING  # r2 untouched
+
+    def test_bulk_decide_skips_unknown_and_already_decided(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r1"))
+        q.decide("r1", True, NOW)
+        decided = q.bulk_decide(["r1", "ghost"], False, NOW)
+        assert decided == []
+
+    def test_bulk_decide_order_is_sorted(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r3"))
+        q.submit(self._request("r1"))
+        q.submit(self._request("r2"))
+        decided = q.bulk_decide(["r3", "r1", "r2"], True, NOW)
+        assert [r.request_id for r in decided] == ["r1", "r2", "r3"]
+
+    def test_bulk_decide_deny(self):
+        q = ApprovalQueue()
+        q.submit(self._request("r1"))
+        decided = q.bulk_decide(["r1"], False, NOW, note="nope")
+        assert decided[0].status == ApprovalStatus.DENIED
+        assert decided[0].decision_note == "nope"
+
     def test_expire_boundary_is_inclusive(self):
         q = ApprovalQueue()
         q.submit(self._request("r1", expires_after=timedelta(hours=1)))

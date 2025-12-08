@@ -219,6 +219,27 @@ class ApprovalQueue:
                 escalated.append(moved)
         return TickReport(expired=expired, resolved=resolved, escalated=escalated)
 
+    def bulk_decide(
+        self,
+        request_ids: list[str],
+        approved: bool,
+        now: datetime,
+        note: str = "",
+    ) -> list[ApprovalRequest]:
+        """Decide multiple requests at once; return successfully decided ones.
+
+        Only currently-pending requests are affected; ids that are not
+        found or already decided are silently skipped (callers that need
+        per-id resolution can compare the returned list length).
+        Decisions are applied in request-id order for determinism.
+        """
+        decided: list[ApprovalRequest] = []
+        for rid in sorted(request_ids):
+            result = self.decide(rid, approved, now, note=note)
+            if result is not None:
+                decided.append(result)
+        return decided
+
     def audit_metrics(self) -> dict[str, int]:
         """Count of requests by status plus total escalations, for dashboards."""
         counts: dict[str, int] = {}
