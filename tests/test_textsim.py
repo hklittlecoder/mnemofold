@@ -7,6 +7,7 @@ import pytest
 from mnemofold.textsim import (
     bigram_jaccard,
     char_bigrams,
+    near_duplicate_clusters,
     rank_candidates,
 )
 
@@ -88,3 +89,51 @@ class TestRankCandidates:
         folded = rank_candidates("hello", candidates, fold_case=True)
         assert folded[0].score == 1.0
         assert len([m for m in folded if m.score == 1.0]) == 2
+
+
+class TestNearDuplicateClusters:
+    def test_identical_items_cluster_together(self):
+        items = {"a": "release plan", "b": "release plan", "c": "unrelated"}
+        clusters = near_duplicate_clusters(items, threshold=0.9)
+        # two clusters: [a, b] and [c]
+        assert len(clusters) == 2
+        assert {"a", "b"} in [set(c) for c in clusters]
+        assert ["c"] in clusters
+
+    def test_single_linkage_chain(self):
+        # a is close to b, b is close to c, a is far from c
+        items = {
+            "a": "release plan v1",
+            "b": "release plan v2",
+            "c": "release plan v3",
+        }
+        clusters = near_duplicate_clusters(items, threshold=0.6)
+        # all three should end up in one cluster via single linkage
+        assert len(clusters) == 1
+        assert set(clusters[0]) == {"a", "b", "c"}
+
+    def test_empty_items_are_singletons(self):
+        items = {"a": "", "b": "", "c": "hello"}
+        clusters = near_duplicate_clusters(items, threshold=0.0)
+        # empty strings never match anything, each is its own cluster
+        assert len(clusters) == 3
+
+    def test_threshold_controls_cluster_size(self):
+        items = {"a": "hello world", "b": "hello worlds", "c": "goodbye"}
+        clusters = near_duplicate_clusters(items, threshold=0.95)
+        assert len(clusters) == 3  # all separate above the 0.909 a/b score
+        clusters_low = near_duplicate_clusters(items, threshold=0.3)
+        assert len(clusters_low) <= 2  # a and b merge at low threshold
+
+    def test_empty_input(self):
+        assert near_duplicate_clusters({}, threshold=0.5) == []
+
+    def test_cluster_order_is_deterministic(self):
+        items = {"z": "aaa", "a": "aaa", "m": "bbb"}
+        clusters = near_duplicate_clusters(items, threshold=0.9)
+        # clusters ordered by smallest id
+        assert clusters[0][0] == "a"
+        assert clusters[-1][0] == "m"
+        # each cluster internally sorted
+        for c in clusters:
+            assert c == sorted(c)

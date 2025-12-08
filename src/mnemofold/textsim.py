@@ -74,3 +74,54 @@ def rank_candidates(
     if top_k is not None:
         matches = matches[:top_k]
     return matches
+
+
+def near_duplicate_clusters(
+    items: dict[str, str],
+    *,
+    threshold: float,
+    fold_case: bool = False,
+) -> list[list[str]]:
+    """Single-linkage clusters of items whose pairwise Jaccard >= threshold.
+
+    Uses a union-find over pairs above ``threshold``. Order within each
+    cluster and the order of clusters themselves are deterministic
+    (sorted by the smallest id in each cluster, then alphabetically
+    inside each cluster).
+
+    Empty items are always placed in their own singleton cluster (they
+    match nothing, including other empty items).
+    """
+    ids = sorted(items.keys())
+    parent: dict[str, str] = {i: i for i in ids}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            if ra < rb:
+                parent[rb] = ra
+            else:
+                parent[ra] = rb
+
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            a, b = ids[i], ids[j]
+            if not items[a] or not items[b]:
+                continue
+            score = bigram_jaccard(items[a], items[b], fold_case=fold_case)
+            if score >= threshold:
+                union(a, b)
+
+    clusters_map: dict[str, list[str]] = {}
+    for i in ids:
+        root = find(i)
+        clusters_map.setdefault(root, []).append(i)
+
+    clusters = sorted(clusters_map.values(), key=lambda c: (c[0], len(c)))
+    return [sorted(c) for c in clusters]
