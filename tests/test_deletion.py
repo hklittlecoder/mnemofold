@@ -1,9 +1,12 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from mnemofold.deletion import (
     DeletionEngine,
     DeletionReason,
     GraphDeletionTarget,
+    ResurrectionError,
     Tombstone,
     TombstoneIndex,
 )
@@ -191,3 +194,30 @@ def test_mixed_kind_cascade_summary():
     assert summary["deleted_by_kind"]["document"] == 1
     assert summary["deleted_by_kind"]["commitment"] == 1
     assert summary["total_deleted"] == 3
+
+
+def test_guard_resurrect_blocks_tombstoned_keys():
+    engine, _targets, _deleted = _make_fixture()
+    engine.delete("a", DeletionReason.FORGET, NOW)
+    with pytest.raises(ResurrectionError):
+        engine.guard_resurrect("b")
+
+
+def test_guard_resurrect_allows_unknown_keys():
+    engine, _targets, _deleted = _make_fixture()
+    engine.guard_resurrect("never_existed")  # does not raise
+
+
+def test_guard_resurrect_error_includes_kind_and_reason():
+    engine, _targets, _deleted = _make_fixture()
+    engine.delete("c", DeletionReason.USER_REQUEST, NOW)
+    with pytest.raises(ResurrectionError) as excinfo:
+        engine.guard_resurrect("c")
+    msg = str(excinfo.value)
+    assert "c" in msg
+    assert "node" in msg
+    assert "user_request" in msg
+
+
+def test_resurrection_error_is_value_error_subclass():
+    assert issubclass(ResurrectionError, ValueError)

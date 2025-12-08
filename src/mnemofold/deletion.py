@@ -203,8 +203,27 @@ class DeletionEngine:
     def is_deleted(self, key: str) -> bool:
         return self.tombstones.has(key)
 
+    def guard_resurrect(self, key: str) -> None:
+        """Raise if ``key`` is tombstoned — blocks re-derivation.
+
+        Callers that re-derive facts, edges, or index entries from
+        surviving source material MUST check this before inserting,
+        otherwise a deleted item could quietly reappear through a
+        different code path.
+        """
+        ts = self.tombstones.get(key)
+        if ts is not None:
+            raise ResurrectionError(
+                f"refusing to resurrect tombstoned key {key!r} "
+                f"(kind={ts.kind}, reason={ts.reason.value})"
+            )
+
     def audit_report(self) -> dict[str, int]:
         counts: dict[str, int] = {}
         for ts in self.tombstones.all():
             counts[ts.reason.value] = counts.get(ts.reason.value, 0) + 1
         return counts
+
+
+class ResurrectionError(ValueError):
+    """Raised when an operation would bring deleted content back."""
