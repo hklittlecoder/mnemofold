@@ -431,3 +431,53 @@ class WorkstreamGraph:
         for ed in d.get("edges", []):
             g.add_edge(Edge.from_dict(ed))
         return g
+
+
+@dataclass(slots=True)
+class GraphAudit:
+    """Structured verdict of every structural invariant check.
+
+    ``ok`` is the single answer callers need: no dangling edges and an
+    acyclic provenance layer. The counts let reports show how much of
+    the graph is inactive without a second traversal.
+    """
+
+    dangling_edges: list[str] = field(default_factory=list)
+    provenance_acyclic: bool = True
+    node_count: int = 0
+    edge_count: int = 0
+    inactive_nodes: int = 0
+    inactive_edges: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return not self.dangling_edges and self.provenance_acyclic
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "dangling_edges": list(self.dangling_edges),
+            "provenance_acyclic": self.provenance_acyclic,
+            "node_count": self.node_count,
+            "edge_count": self.edge_count,
+            "inactive_nodes": self.inactive_nodes,
+            "inactive_edges": self.inactive_edges,
+            "ok": self.ok,
+        }
+
+
+def audit_graph(graph: WorkstreamGraph) -> GraphAudit:
+    """Run every structural invariant check and return one report.
+
+    Combines dangling-edge detection, provenance acyclicity and
+    activity counts so callers (CLI checks, fold reports, CI gates)
+    get a single structured verdict instead of running each check by
+    hand and re-deriving the counts.
+    """
+    return GraphAudit(
+        dangling_edges=sorted(graph.check_no_dangling_edges()),
+        provenance_acyclic=graph.check_provenance_acyclic(),
+        node_count=len(graph.nodes),
+        edge_count=len(graph.edges),
+        inactive_nodes=sum(1 for n in graph.nodes.values() if not n.active),
+        inactive_edges=sum(1 for e in graph.edges.values() if not e.active),
+    )
