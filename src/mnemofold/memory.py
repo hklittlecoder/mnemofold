@@ -291,3 +291,42 @@ class MemoryStore:
         if hold is None or moment is None:
             return False
         return moment < hold
+
+    def extend_retention(self, item_id: str, until: str, reason: str = "") -> bool:
+        """Set or extend a retention hold, recording an audit trail.
+
+        ``until`` must be a parseable ISO instant. The previous hold (if
+        any) is appended to ``metadata['retention_history']`` so holds
+        can be reviewed later; shortening a hold is allowed (legal
+        holds get released) and recorded the same way. Returns False
+        for unknown items or unparseable instants, leaving state
+        untouched.
+        """
+        item = self._items.get(item_id)
+        if item is None or _moment(until) is None:
+            return False
+        history = item.metadata.setdefault("retention_history", [])
+        history.append({"previous": item.retain_until, "until": until, "reason": reason})
+        item.retain_until = until
+        return True
+
+    def clear_retention(self, item_id: str, reason: str = "") -> bool:
+        """Remove a retention hold, keeping the history entry.
+
+        Returns False when the item is unknown or carries no hold, so
+        callers can tell a real release from a no-op.
+        """
+        item = self._items.get(item_id)
+        if item is None or not item.retain_until:
+            return False
+        history = item.metadata.setdefault("retention_history", [])
+        history.append({"previous": item.retain_until, "until": "", "reason": reason})
+        item.retain_until = ""
+        return True
+
+    def retention_history(self, item_id: str) -> list[dict[str, Any]]:
+        """Audit trail of hold changes, oldest first."""
+        item = self._items.get(item_id)
+        if item is None:
+            return []
+        return list(item.metadata.get("retention_history", []))
