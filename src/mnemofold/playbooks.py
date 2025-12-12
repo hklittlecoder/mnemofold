@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
+from mnemofold.approvals import ApprovalQueue, ApprovalRequest, ApprovalStatus
 from mnemofold.canon import sha256_hex
+from mnemofold.tools import ToolPolicyError, ToolRegistry, ToolValidationError
 
 
 class PlaybookStatus(StrEnum):
@@ -353,3 +356,202 @@ class PlaybookLibrary:
 
     def total_count(self) -> int:
         return len(self._playbooks)
+
+
+@dataclass(slots=True)
+class PlaybookStepResult:
+    """Outcome of executing one playbook step."""
+
+    step_id: str
+    tool: str
+    success: bool
+    output: Any = None
+    error: str = ""
+    skipped: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "step_id": self.step_id,
+            "tool": self.tool,
+            "success": self.success,
+            "output": self.output,
+            "error": self.error,
+            "skipped": self.skipped,
+        }
+
+
+@dataclass(slots=True)
+class PlaybookRunReport:
+    """What one gated playbook execution did.
+
+    ``status`` is one of ``completed`` (every step ran), ``failed`` (a
+    step errored and execution stopped there), ``not_approved`` (the
+    request was denied, expired or is still pending), ``blocked`` (the
+    playbook cannot run or is structurally invalid) and
+    ``unknown_request``.
+    """
+
+    playbook_id: str
+    request_id: str
+    status: str
+    step_results: list[PlaybookStepResult] = field(default_factory=list)
+    error: str = ""
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == "completed"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "playbook_id": self.playbook_id,
+            "request_id": self.request_id,
+            "status": self.status,
+            "error": self.error,
+            "step_results": [r.to_dict() for r in self.step_results],
+        }
+
+
+def _order_playbook_steps(pb: Playbook) -> list[PlaybookStep]:
+    """Deterministic precondition order over the declared steps.
+
+    Repeatedly takes the first declared step whose preconditions are
+    all ordered already. ``Playbook.validate`` rejects cycles before
+    execution, but the ordering never hangs even if one slips through:
+    whatever remains is appended in declaration order.
+    """
+    remaining = list(pb.steps)
+    ordered: list[PlaybookStep] = []
+    done: set[str] = set()
+    while remaining:
+        for i, step in enumerate(remaining):
+            if all(p in done for p in step.preconditions):
+                ordered.append(step)
+                done.add(step.step_id)
+                remaining.pop(i)
+                break
+        else:
+            ordered.extend(remaining)
+            break
+    return ordered
+
+
+@dataclass
+class PlaybookRunner:
+    """Execute playbooks strictly behind approval gates.
+
+    Lifecycle (no wall-clock reads; callers pass every timestamp):
+
+    1. :meth:`request_run` submits an ``ApprovalRequest`` for a
+       playbook that may run (APPROVED/ACTIVE). Proposed, draft,
+       deprecated and revoked playbooks cannot be requested.
+    2. The approval queue resolves the request — personas, manual
+       ``decide`` calls or expiry. The runner never bypasses it.
+    3. :meth:`execute` runs each step's tool through the registry in
+       precondition order when (and only when) the request shows
+       APPROVED. The first failing step stops the run; ``run_count``
+       only grows for completed runs.
+    """
+
+    library: PlaybookLibrary
+    queue: ApprovalQueue
+    registry: ToolRegistry
+
+    def request_run(
+        self,
+        pid: str,
+        *,
+        requester: str,
+        approver: str,
+        now: datetime,
+        expires_after: timedelta | None = None,
+    ) -> str | None:
+        """Submit an approval request to run playbook ``pid``.
+
+        Returns the request id, or None when the playbook is unknown or
+        not in a runnable status.
+        """
+        pb = self.library.get(pid)
+        if pb is None or not pb.can_run():
+            return None
+        request_id = f"pbrun_{pid}_{len(self.queue.requests) + 1}"
+        self.queue.submit(
+            ApprovalRequest(
+                request_id=request_id,
+                item_id=pid,
+                item_kind="playbook_run",
+                summary=f"run playbook {pb.name!r} v{pb.version}",
+                requester=requester,
+                approver=approver,
+                created_at=now,
+                expires_after=expires_after,
+            )
+        )
+        return request_id
+
+    def execute(self, request_id: str) -> PlaybookRunReport:
+        """Run the playbook attached to an approved request."""
+        request = next((r for r in self.queue.requests if r.request_id == request_id), None)
+        if request is None:
+            return PlaybookRunReport(
+                playbook_id="", request_id=request_id, status="unknown_request"
+            )
+        pid = request.item_id
+        if request.status != ApprovalStatus.APPROVED:
+            return PlaybookRunReport(
+                playbook_id=pid,
+                request_id=request_id,
+                status="not_approved",
+                error=str(request.status),
+            )
+        pb = self.library.get(pid)
+        if pb is None or not pb.can_run():
+            return PlaybookRunReport(playbook_id=pid, request_id=request_id, status="blocked")
+        validation = pb.validate()
+        if validation:
+            return PlaybookRunReport(
+                playbook_id=pid,
+                request_id=request_id,
+                status="blocked",
+                error="; ".join(validation),
+            )
+        results: list[PlaybookStepResult] = []
+        for step in _order_playbook_steps(pb):
+            if not step.tool:
+                results.append(
+                    PlaybookStepResult(step_id=step.step_id, tool="", success=True, skipped=True)
+                )
+                continue
+            try:
+                outcome = self.registry.invoke(step.tool, dict(step.inputs))
+            except (ToolValidationError, ToolPolicyError) as exc:
+                results.append(
+                    PlaybookStepResult(
+                        step_id=step.step_id, tool=step.tool, success=False, error=str(exc)
+                    )
+                )
+                return PlaybookRunReport(
+                    playbook_id=pid,
+                    request_id=request_id,
+                    status="failed",
+                    step_results=results,
+                )
+            results.append(
+                PlaybookStepResult(
+                    step_id=step.step_id,
+                    tool=step.tool,
+                    success=outcome.success,
+                    output=outcome.output,
+                    error=outcome.error,
+                )
+            )
+            if not outcome.success:
+                return PlaybookRunReport(
+                    playbook_id=pid,
+                    request_id=request_id,
+                    status="failed",
+                    step_results=results,
+                )
+        self.library.record_run(pid)
+        return PlaybookRunReport(
+            playbook_id=pid, request_id=request_id, status="completed", step_results=results
+        )
