@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
+from mnemofold.reports import escape_text, wrap_html
 from mnemofold.textsim import bigram_jaccard
 
 
@@ -72,6 +73,67 @@ class FoldReport:
             "new_semantic": list(self.new_semantic),
             "recurrence_proposals": self.recurrence_proposals,
         }
+
+    def to_html(self) -> str:
+        """Self-contained HTML view mirroring :meth:`to_markdown`.
+
+        Sections: summary, merges, rejected candidates, new semantic
+        items and recurrence proposals. All dynamic text passes through
+        ``escape_text`` so hostile content inside merged items cannot
+        break out of its table cell. Proposal dicts are rendered as
+        sorted ``k=v`` pairs, keeping the output deterministic for any
+        proposal shape.
+        """
+        summary = (
+            f"<p>timestamp: {escape_text(self.timestamp)}<br>"
+            f"items: {self.items_before} &rarr; {self.items_after}<br>"
+            f"merges: {len(self.merges)} | rejected: {len(self.rejected)} | "
+            f"new semantic: {len(self.new_semantic)} | "
+            f"proposals: {len(self.recurrence_proposals)}</p>"
+        )
+        merge_rows = "".join(
+            f"<tr><td>{escape_text(m.kept_id)}</td><td>{escape_text(m.removed_id)}</td>"
+            f"<td>{round(m.similarity, 6)}</td><td>{escape_text(m.reason)}</td></tr>"
+            for m in self.merges
+        )
+        merges = (
+            "<table><tr><th>kept</th><th>removed</th><th>similarity</th>"
+            f"<th>reason</th></tr>{merge_rows}</table>"
+        )
+        rejected_rows = "".join(
+            "<tr><td>{a}</td><td>{b}</td><td>{sim}</td><td>{reason}</td></tr>".format(
+                a=escape_text(str(r.get("a", ""))),
+                b=escape_text(str(r.get("b", ""))),
+                sim=round(float(r.get("similarity", 0.0)), 6),
+                reason=escape_text(str(r.get("reason", ""))),
+            )
+            for r in self.rejected
+        )
+        rejected = (
+            "<table><tr><th>a</th><th>b</th><th>similarity</th>"
+            f"<th>reason</th></tr>{rejected_rows}</table>"
+        )
+        new_items = (
+            "<ul>" + "".join(f"<li>{escape_text(i)}</li>" for i in self.new_semantic) + "</ul>"
+        )
+        proposals = (
+            "<ul>"
+            + "".join(
+                "<li>" + escape_text(", ".join(f"{k}={p[k]}" for k in sorted(p))) + "</li>"
+                for p in self.recurrence_proposals
+            )
+            + "</ul>"
+        )
+        return wrap_html(
+            f"Fold report {self.fold_id}",
+            [
+                ("Summary", summary),
+                ("Merges", merges),
+                ("Rejected candidates", rejected),
+                ("New semantic items", new_items),
+                ("Recurrence proposals", proposals),
+            ],
+        )
 
     def digest(self) -> str:
         """SHA-256 over the canonical JSON of this report.
