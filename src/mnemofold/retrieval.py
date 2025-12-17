@@ -39,6 +39,17 @@ class SearchResult:
     reasons: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True, frozen=True)
+class TermContribution:
+    """One query term's BM25 contribution to a document score."""
+
+    term: str
+    tf: int
+    df: int
+    idf: float
+    contribution: float
+
+
 @dataclass
 class BM25Index:
     """BM25 inverted index over memory items.
@@ -110,6 +121,45 @@ class BM25Index:
     def ids(self) -> list[str]:
         """All indexed item ids in deterministic (sorted) order."""
         return sorted(self._docs)
+
+    def explain(self, query: str, item_id: str) -> list[TermContribution]:
+        """Per-term BM25 contributions for one document.
+
+        Mirrors :meth:`search` exactly — including double-counting a
+        repeated query term — so the contributions always sum to the
+        score search reports for ``item_id``. Terms absent from the
+        corpus or from this document are skipped. Results are sorted by
+        descending contribution with an alphabetical tie-break, making
+        explanation payloads deterministic.
+        """
+        if item_id not in self._docs:
+            return []
+        query_terms = tokenize(query)
+        if not query_terms:
+            return []
+        n_docs = len(self._docs)
+        dl = self._dl[item_id]
+        parts: list[TermContribution] = []
+        for term in query_terms:
+            df = self._df.get(term, 0)
+            if df == 0:
+                continue
+            tf = self._tf.get(term, {}).get(item_id, 0)
+            if tf == 0:
+                continue
+            idf = math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
+            denom = tf + self.k1 * (1 - self.b + self.b * dl / max(1.0, self._avgdl))
+            parts.append(
+                TermContribution(
+                    term=term,
+                    tf=tf,
+                    df=df,
+                    idf=idf,
+                    contribution=idf * (tf * (self.k1 + 1)) / denom,
+                )
+            )
+        parts.sort(key=lambda p: (-p.contribution, p.term))
+        return parts
 
 
 def mmr_rerank(
