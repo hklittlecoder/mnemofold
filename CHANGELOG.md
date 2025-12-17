@@ -3,6 +3,27 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本处于 0.x 阶段，每次发布仅递增补丁号。
 
+## [0.1.2] - 2026-11-18
+
+围绕审计链、持久化与可解释性的一轮深化。
+
+### Added
+
+- 工具：收据日志链式摘要与 `verify_chain` 校验；幂等缓存 JSONL 持久化
+  （`save`/`load`，字节级确定），工具结果 `to_dict`/`from_dict`
+- 图：统一结构审计 `audit_graph`（悬挂边、溯源环、活跃计数）
+- Playbook：审批门控执行器 `PlaybookRunner`（申请、批准、按前置条件
+  顺序执行、失败即停），运行报告可序列化
+- 记忆：保留期延长/清除 API（附审计历史 `retention_history`）
+- 检索：BM25 逐项贡献解释 `explain`，与 `search` 得分在随机语料上
+  交叉验证一致
+- 折叠：报告自包含 HTML 渲染（动态文本全量转义）
+
+### Changed
+
+- 序列化：图校验和、计划与 playbook 摘要统一走共享的规范 JSON 助手
+  `mnemofold.canon`（摘要值保持不变）
+
 ## [0.1.1] - 2026-11-17
 
 在 0.1.0 的核心机制之上，深化各子系统的边界行为、可审计性与可复现性。
