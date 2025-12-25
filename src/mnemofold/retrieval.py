@@ -13,11 +13,16 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from mnemofold.deletion import DeletionEngine, DeletionReason, DeletionReport, GraphDeletionTarget
 from mnemofold.graph import WorkstreamGraph
 from mnemofold.memory import MemoryItem, MemoryStore
+from mnemofold.persist import read_envelope, write_envelope
+
+BM25_INDEX_SCHEMA = "bm25_index"
+BM25_INDEX_VERSION = 1
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+")
 
@@ -160,6 +165,40 @@ class BM25Index:
             )
         parts.sort(key=lambda p: (-p.contribution, p.term))
         return parts
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable snapshot: ranking parameters plus the raw documents.
+
+        The inverted-index internals (``_df``/``_tf``/``_avgdl``/``_dl``)
+        are pure functions of the documents, so :meth:`from_dict`
+        rebuilds them exactly by re-adding each document. Persisting only
+        the documents keeps the payload small and the rebuild independent
+        of the original insertion order.
+        """
+        return {
+            "k1": self.k1,
+            "b": self.b,
+            "docs": {item_id: self._docs[item_id] for item_id in sorted(self._docs)},
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BM25Index:
+        """Rebuild an index from :meth:`to_dict` output."""
+        index = cls(k1=float(data.get("k1", 1.5)), b=float(data.get("b", 0.75)))
+        docs = data.get("docs", {})
+        for item_id in sorted(docs):
+            index.add(item_id, docs[item_id])
+        return index
+
+    def save(self, path: str | Path) -> None:
+        """Write the index to ``path`` as a versioned envelope."""
+        write_envelope(path, BM25_INDEX_SCHEMA, self.to_dict(), version=BM25_INDEX_VERSION)
+
+    @classmethod
+    def load(cls, path: str | Path) -> BM25Index:
+        """Load an index written by :meth:`save`."""
+        data = read_envelope(path, BM25_INDEX_SCHEMA, version=BM25_INDEX_VERSION)
+        return cls.from_dict(data)
 
 
 def mmr_rerank(
