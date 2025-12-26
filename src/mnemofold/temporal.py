@@ -128,6 +128,36 @@ class TemporalStore(Generic[T]):
         """Count of facts that have been superseded (have valid_to set)."""
         return sum(1 for f in self._facts if not f.is_current())
 
+    def supersede(
+        self,
+        fact_key: str,
+        new_value: T,
+        at: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> IntervalFact[T]:
+        """Close the current version (if any) at ``at`` and open a new one.
+
+        ``at`` becomes the new version's inclusive ``valid_from`` and the
+        previous version's exclusive ``valid_to``, so as-of queries from
+        before ``at`` keep returning the old value: history is never
+        lost. Callers pass an ``at`` at or after the current version's
+        start; an earlier instant produces an overlap that
+        :class:`IntervalValidator` reports rather than one this method
+        silently rewrites. Returns the newly added fact.
+        """
+        current = self.current(fact_key)
+        if current is not None:
+            current.valid_to = at
+        fact: IntervalFact[T] = IntervalFact(
+            fact_key=fact_key,
+            value=new_value,
+            valid_from=at,
+            metadata=dict(metadata or {}),
+        )
+        self._facts.append(fact)
+        return fact
+
 
 # Working day calendars
 
