@@ -274,6 +274,26 @@ class RetrievalEngine:
         for item in self.store._items.values():
             self.index_item(item)
 
+    def export_index(self) -> dict[str, Any]:
+        """Snapshot the underlying BM25 index as a serializable dict.
+
+        Lets a caller ship or persist the derived ranking structure
+        without re-deriving it from the store on the other side.
+        """
+        return self.index.to_dict()
+
+    def import_index(self, data: dict[str, Any]) -> None:
+        """Replace the index with one rebuilt from :meth:`export_index` output."""
+        self.index = BM25Index.from_dict(data)
+
+    def save_index(self, path: str | Path) -> None:
+        """Persist the index snapshot to ``path`` as a versioned envelope."""
+        self.index.save(path)
+
+    def load_index(self, path: str | Path) -> None:
+        """Load an index snapshot written by :meth:`save_index`."""
+        self.index = BM25Index.load(path)
+
     def search(
         self,
         query: str,
