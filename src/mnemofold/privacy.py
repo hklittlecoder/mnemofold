@@ -14,7 +14,13 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
+
+from mnemofold.persist import read_envelope, write_envelope
+
+REDACTION_VAULT_SCHEMA = "redaction_vault"
+REDACTION_VAULT_VERSION = 1
 
 
 class PiiKind(StrEnum):
@@ -446,3 +452,33 @@ class RedactionVault:
 
     def known_tokens(self) -> list[str]:
         return sorted(self._token_to_value)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable form: the salt plus the token -> value map.
+
+        The vault is the sole private holder of the mapping, so this
+        payload is exactly as sensitive as the originals it protects and
+        must only be written to trusted storage. Round-tripping through
+        :meth:`from_dict` restores the ability to unseal text sealed by
+        this vault.
+        """
+        return {"salt": self.salt, "tokens": dict(self._token_to_value)}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RedactionVault:
+        """Rebuild a vault from :meth:`to_dict` output."""
+        vault = cls(salt=data.get("salt", ""))
+        vault._token_to_value = dict(data.get("tokens", {}))
+        return vault
+
+    def save(self, path: str | Path) -> None:
+        """Write the vault to ``path`` as a versioned envelope."""
+        write_envelope(
+            path, REDACTION_VAULT_SCHEMA, self.to_dict(), version=REDACTION_VAULT_VERSION
+        )
+
+    @classmethod
+    def load(cls, path: str | Path) -> RedactionVault:
+        """Load a vault written by :meth:`save`."""
+        data = read_envelope(path, REDACTION_VAULT_SCHEMA, version=REDACTION_VAULT_VERSION)
+        return cls.from_dict(data)
