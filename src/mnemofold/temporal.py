@@ -103,6 +103,16 @@ class TemporalStore(Generic[T]):
         """Return all currently-valid facts."""
         return [f for f in self._facts if f.is_current()]
 
+    def snapshot_at(self, when: str) -> dict[str, IntervalFact[T]]:
+        """Bulk as-of query: every fact key with its version valid at ``when``.
+
+        Keys with no version covering the instant are absent, so the
+        snapshot answers "what was known at ``when``" in one call. Keys
+        are emitted in sorted order and each value is exactly what
+        :meth:`as_of` returns for that key, including its tie-break.
+        """
+        return {key: fact for key in self.keys() if (fact := self.as_of(key, when)) is not None}
+
     def keys(self) -> list[str]:
         """Return all distinct fact keys."""
         return sorted({f.fact_key for f in self._facts})
