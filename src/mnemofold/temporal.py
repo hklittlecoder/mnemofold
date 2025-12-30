@@ -410,6 +410,14 @@ class CalendarRegistry:
 # --- Wall-clock deadlines -----------------------------------------------------
 
 
+def _zone(name: str) -> ZoneInfo:
+    """Resolve an IANA zone name, raising ValueError when it is unknown."""
+    try:
+        return ZoneInfo(name)
+    except KeyError as exc:
+        raise ValueError(f"unknown IANA timezone: {name}") from exc
+
+
 @dataclass(frozen=True, slots=True)
 class WallDeadline:
     """A deadline anchored to local wall time in one region.
@@ -441,6 +449,36 @@ class WallDeadline:
         """Same wall time, moved forward to the next working day if needed."""
         rolled = calendar.next_workday(date.fromisoformat(self.day))
         return replace(self, day=rolled.isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable form; field order is fixed by the dataclass."""
+        return {
+            "day": self.day,
+            "hour": self.hour,
+            "minute": self.minute,
+            "region_tz": self.region_tz,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WallDeadline:
+        """Rebuild a deadline from :meth:`to_dict`, validating every field.
+
+        ``day`` must be a real ISO date, ``hour``/``minute`` must be in
+        range, and ``region_tz`` must resolve to a known IANA zone — a
+        corrupted payload raises here instead of failing later inside
+        :meth:`instant`.
+        """
+        day = str(data["day"])
+        date.fromisoformat(day)
+        hour = int(data["hour"])
+        minute = int(data["minute"])
+        if not 0 <= hour <= 23:
+            raise ValueError(f"hour out of range: {hour}")
+        if not 0 <= minute <= 59:
+            raise ValueError(f"minute out of range: {minute}")
+        region_tz = str(data["region_tz"])
+        _zone(region_tz)
+        return cls(day=day, hour=hour, minute=minute, region_tz=region_tz)
 
 
 def wall_deadline_in(region: str, day: str, hour: int = 17, minute: int = 0) -> WallDeadline:
