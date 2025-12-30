@@ -302,6 +302,59 @@ HOLIDAYS_2025: dict[str, frozenset[str]] = {
     ),
 }
 
+# Representative public-holiday sets for 2026, mirroring the 2025 tables.
+# Movable dates follow the 2026 ecclesiastical calendar (Easter Sunday is
+# April 5) and the US federal weekday rules; like the 2025 tables they are
+# representative fixtures for offline scenarios, not a statutory source.
+HOLIDAYS_2026: dict[str, frozenset[str]] = {
+    "de": frozenset(
+        {
+            "2026-01-01",  # Neujahr
+            "2026-04-03",  # Good Friday
+            "2026-04-06",  # Easter Monday
+            "2026-05-01",  # Labour Day
+            "2026-05-14",  # Ascension
+            "2026-05-25",  # Whit Monday
+            "2026-10-03",  # German Unity Day
+            "2026-12-25",  # Christmas
+            "2026-12-26",  # Second Christmas Day
+        }
+    ),
+    "hk": frozenset(
+        {
+            "2026-01-01",  # New Year's Day
+            "2026-02-17",  # Lunar New Year (day 1)
+            "2026-02-18",  # Lunar New Year (day 2)
+            "2026-02-19",  # Lunar New Year (day 3)
+            "2026-04-06",  # Ching Ming (observed)
+            "2026-05-01",  # Labour Day
+            "2026-10-01",  # National Day
+            "2026-12-25",  # Christmas
+            "2026-12-26",  # Boxing Day
+        }
+    ),
+    "us": frozenset(
+        {
+            "2026-01-01",  # New Year's Day
+            "2026-01-19",  # Martin Luther King Jr. Day
+            "2026-02-16",  # Washington's Birthday
+            "2026-05-25",  # Memorial Day
+            "2026-06-19",  # Juneteenth
+            "2026-07-03",  # Independence Day (observed)
+            "2026-09-07",  # Labor Day
+            "2026-11-26",  # Thanksgiving
+            "2026-12-25",  # Christmas
+        }
+    ),
+}
+
+# Holiday tables keyed by year; the registry merges the requested years.
+HOLIDAYS_BY_YEAR: dict[int, dict[str, frozenset[str]]] = {
+    2025: HOLIDAYS_2025,
+    2026: HOLIDAYS_2026,
+}
+
+
 # IANA zone names per region, used by wall-clock deadline arithmetic.
 REGION_TIMEZONES: dict[str, str] = {
     "hk": "Asia/Hong_Kong",
@@ -334,10 +387,23 @@ class CalendarRegistry:
         return sorted(self._calendars)
 
     @classmethod
-    def with_defaults(cls) -> CalendarRegistry:
+    def with_defaults(cls, years: tuple[int, ...] = (2025,)) -> CalendarRegistry:
+        """Build regional calendars from the representative holiday tables.
+
+        ``years`` selects which tables to merge into each region's
+        holiday set; the default keeps the historical 2025-only
+        behavior. Unknown years raise instead of silently producing a
+        holiday-free calendar.
+        """
+        for year in years:
+            if year not in HOLIDAYS_BY_YEAR:
+                raise KeyError(f"no representative holiday table for year: {year}")
         registry = cls()
         for region in sorted(HOLIDAYS_2025):
-            registry.register(WorkdayCalendar(name=region, holidays=set(HOLIDAYS_2025[region])))
+            merged: set[str] = set()
+            for year in years:
+                merged |= set(HOLIDAYS_BY_YEAR[year][region])
+            registry.register(WorkdayCalendar(name=region, holidays=merged))
         return registry
 
 
