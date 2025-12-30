@@ -378,12 +378,17 @@ def _scenario_now(config: ScenarioConfig, factory: WorkHistoryFactory) -> dateti
     return factory.start_date + timedelta(days=day)
 
 
-def _commitment_measurements(config: ScenarioConfig, project: str | None = None) -> dict[str, Any]:
+def _commitment_measurements(
+    config: ScenarioConfig,
+    project: str | None = None,
+    owners: set[str] | None = None,
+) -> dict[str, Any]:
     """Run factory -> ingest -> ledger -> context and measure everything.
 
-    Shared by the whole-history scenario and the per-project slices. When
-    ``project`` is given, only planted commitments of that project form
-    the ground truth for recall and overdue detection. Every number is
+    Shared by the whole-history scenario and the per-project / per-role
+    slices. When ``project`` is given, only planted commitments of that
+    project form the ground truth; when ``owners`` is given, only
+    commitments owed by those persona ids count. Every number is
     measured from the run; nothing is assumed.
     """
     factory, typed, manifest = _typed_history(config)
@@ -394,7 +399,9 @@ def _commitment_measurements(config: ScenarioConfig, project: str | None = None)
     planted = {
         item.item_id: item
         for item in factory.planted_items()
-        if item.kind == "commitment" and (project is None or item.data["project"] == project)
+        if item.kind == "commitment"
+        and (project is None or item.data["project"] == project)
+        and (owners is None or item.data["owed_by"] in owners)
     }
     ref_of_key: dict[str, str] = {
         f"{item.data['description']}\n{item.data['due_date'][:10]}": ref
@@ -742,6 +749,46 @@ def run_commitment_slices(config: ScenarioConfig | None = None) -> list[Scenario
             MetricResult("slice_commitment_recall", measured["commitment_recall"], threshold=1.0)
         )
         card.add(MetricResult("slice_overdue_f1", measured["overdue"]["f1"], threshold=1.0))
+        results.append(ScenarioResult(scorecard=card, measurements=measured))
+    return results
+
+
+def run_role_slices(config: ScenarioConfig | None = None) -> list[ScenarioResult]:
+    """Per-role commitment scorecards, in sorted role order.
+
+    Ground truth is restricted to the planted commitments owed by
+    personas holding that role, reusing the whole-history measurement
+    machinery so role slices and project slices stay methodologically
+    identical. Roles that own no planted commitment are skipped rather
+    than reported as empty slices.
+    """
+    cfg = config or ScenarioConfig()
+    factory, _typed, _manifest = _typed_history(cfg)
+    owners_by_role: dict[str, set[str]] = {}
+    for persona in factory.personas:
+        owners_by_role.setdefault(str(persona.role), set()).add(persona.person_id)
+    planted_owners = {
+        item.data["owed_by"] for item in factory.planted_items() if item.kind == "commitment"
+    }
+    results: list[ScenarioResult] = []
+    for role in sorted(owners_by_role):
+        owners = owners_by_role[role]
+        if not owners & planted_owners:
+            continue
+        measured = _commitment_measurements(cfg, owners=owners)
+        card = Scorecard(
+            scenario=f"commitments[role:{role}]-seed{cfg.seed}",
+            details={
+                "ground_truth": f"synthetic planted commitments (role {role})",
+                "planted_commitments": measured["planted"],
+                "recovered": measured["recovered"],
+                "actual_overdue": measured["actual_overdue"],
+            },
+        )
+        card.add(
+            MetricResult("role_commitment_recall", measured["commitment_recall"], threshold=1.0)
+        )
+        card.add(MetricResult("role_overdue_f1", measured["overdue"]["f1"], threshold=1.0))
         results.append(ScenarioResult(scorecard=card, measurements=measured))
     return results
 
