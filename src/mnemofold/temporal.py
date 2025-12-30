@@ -9,8 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any, Generic, TypeVar
 from zoneinfo import ZoneInfo
+
+from mnemofold.persist import read_envelope, write_envelope
+
+TEMPORAL_STORE_SCHEMA = "temporal_store"
+TEMPORAL_STORE_VERSION = 1
 
 T = TypeVar("T")
 
@@ -167,6 +173,53 @@ class TemporalStore(Generic[T]):
         )
         self._facts.append(fact)
         return fact
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize facts in insertion order (values must be JSON-native).
+
+        Order matters: :meth:`current` resolves ties toward the most
+        recently inserted open fact, so :meth:`from_dict` replays facts
+        in the same sequence and every query answers identically across
+        a roundtrip.
+        """
+        return {
+            "facts": [
+                {
+                    "fact_key": f.fact_key,
+                    "value": f.value,
+                    "valid_from": f.valid_from,
+                    "valid_to": f.valid_to,
+                    "metadata": dict(f.metadata),
+                }
+                for f in self._facts
+            ]
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TemporalStore[Any]:
+        """Rebuild a store from :meth:`to_dict` output, preserving order."""
+        store: TemporalStore[Any] = cls()
+        for fd in data.get("facts", []):
+            store.add(
+                IntervalFact(
+                    fact_key=fd["fact_key"],
+                    value=fd["value"],
+                    valid_from=fd["valid_from"],
+                    valid_to=fd.get("valid_to"),
+                    metadata=dict(fd.get("metadata", {})),
+                )
+            )
+        return store
+
+    def save(self, path: str | Path) -> None:
+        """Write the store to ``path`` as a versioned envelope."""
+        write_envelope(path, TEMPORAL_STORE_SCHEMA, self.to_dict(), version=TEMPORAL_STORE_VERSION)
+
+    @classmethod
+    def load(cls, path: str | Path) -> TemporalStore[Any]:
+        """Load a store written by :meth:`save`."""
+        data = read_envelope(path, TEMPORAL_STORE_SCHEMA, version=TEMPORAL_STORE_VERSION)
+        return cls.from_dict(data)
 
 
 # Working day calendars
