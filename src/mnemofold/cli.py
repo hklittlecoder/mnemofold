@@ -246,8 +246,13 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
 
 def _cmd_demo(args: argparse.Namespace) -> int:
-    from .evaluation import MetricResult, Scorecard
+    import tempfile
+
+    from .context import PackingProfile
+    from .evaluation import MetricResult, ScenarioConfig, Scorecard, run_commitment_scenario
     from .factory import WorkHistoryFactory
+    from .triage import TriageItem
+    from .workspace import Workspace
 
     factory = WorkHistoryFactory(seed=args.seed, days=args.days)
     events, manifest = factory.generate()
@@ -269,59 +274,121 @@ def _cmd_demo(args: argparse.Namespace) -> int:
         print(f"  {etype}: {count}")
     print()
 
-    # Triage demo — score a sample of mail events
-    from .triage import TriageItem, TriageScorer
-
-    scorer = TriageScorer()
-    mail_events = [e for e in events if e.event_type in ("mail_received", "mail_sent")][:10]
     now = events[-1].timestamp if events else "2026-01-01T00:00:00+00:00"
-    triage_results = []
-    for ev in mail_events:
-        item = TriageItem(
-            item_id=ev.event_id,
-            title=ev.payload.get("subject", "(no subject)"),
-            sender=ev.payload.get("from", "unknown"),
-            received_at=ev.timestamp,
-            content=ev.payload.get("body", ""),
-            has_explicit_ask="?" in ev.payload.get("body", ""),
-            thread_length=1,
-            sender_importance=0.6,
+    today = now[:10]
+    typed = [ev.to_event() for ev in events]
+    budget = 400
+
+    # Full offline pipeline on a throwaway workspace:
+    # ingest -> fold -> recall -> context pack -> prep -> triage -> standup
+    with tempfile.TemporaryDirectory(prefix="mnemofold-demo-") as workdir, Workspace(workdir) as ws:
+        ingested = ws.ingest_events(typed, now=now)
+        print(f"Ingested {ingested} events into the workspace")
+        print(f"  - commitments extracted: {ws.ledger.total_count()}")
+        print(f"  - memories projected: {ws.store.total_count()}")
+        print()
+
+        report = ws.fold(now)
+        print(
+            f"Fold: {report.items_before} -> {report.items_after} memories "
+            f"({len(report.merges)} merges, "
+            f"{len(report.recurrence_proposals)} playbook proposals)"
         )
-        result = scorer.score(item, now=now)
-        triage_results.append((result.score, item.title, result.reasons))
-    triage_results.sort(key=lambda x: -x[0])
-    print("Top triaged mail items:")
-    for score, title, reasons in triage_results[:5]:
-        reason_str = ", ".join(reasons[:3])
-        print(f"  [{score:.3f}] {title[:50]} ({reason_str})")
-    print()
+        print()
 
-    # Standup demo
-    from .ledger import CommitmentLedger
-    from .review import StandupGenerator
+        hits = ws.ask("milestone", top_k=3, now=now)
+        print(f"Recall: query 'milestone' -> {len(hits)} cited memories")
+        if hits:
+            item = ws.recall(hits[0].item_id, now=now)
+            title = item.title if item is not None else "(gone)"
+            print(f"  - top: {title[:60]}")
+        print()
 
-    ledger = CommitmentLedger()
-    gen = StandupGenerator(ledger)
-    last_date = events[-1].timestamp[:10] if events else "2026-01-01"
-    data = gen.generate(today=last_date)
-    print(f"Standup for {data.date}:")
-    print(f"  Completed: {len(data.completed)}")
-    print(f"  In progress: {len(data.in_progress)}")
-    print(f"  Planned: {len(data.planned)}")
-    print(f"  Blockers: {len(data.blockers)}")
-    print(f"  Open commitments: {data.open_commitments}")
-    print(f"  Overdue: {data.overdue}")
-    print(f"  Pending decisions: {data.pending_decisions}")
+        pack = ws.context_pack(
+            "milestone",
+            budget_tokens=budget,
+            profile=PackingProfile.MEETING_PREP,
+            now=now,
+        )
+        print(f"Context pack: {pack.total_tokens}/{pack.budget} tokens, {len(pack.items)} items")
+        print()
+
+        packet = ws.prep("demo-sync", "Demo sync", ["p1"], now=now)
+        print(f"Meeting prep: {packet.total_items} cited items for 'Demo sync'")
+        print()
+
+        mail_events = [e for e in events if e.event_type in ("mail_received", "mail_sent")][:10]
+        items = [
+            TriageItem(
+                item_id=ev.event_id,
+                title=ev.payload.get("subject", "(no subject)"),
+                sender=ev.payload.get("from", "unknown"),
+                received_at=ev.timestamp,
+                content=ev.payload.get("body", ""),
+                has_explicit_ask="?" in ev.payload.get("body", ""),
+                thread_length=1,
+                sender_importance=0.6,
+            )
+            for ev in mail_events
+        ]
+        titles = {item.item_id: item.title for item in items}
+        results, plan = ws.triage(items, now)
+        results.sort(key=lambda r: (-r.score, r.item_id))
+        print("Top triaged mail items:")
+        for result in results[:5]:
+            reason_str = ", ".join(result.reasons[:3])
+            title = titles.get(result.item_id, "")
+            print(f"  [{result.score:.3f}] {title[:50]} ({reason_str})")
+        print(
+            f"  batch plan: act_now={len(plan.act_now)} "
+            f"review={len(plan.review)} defer={len(plan.defer)}"
+        )
+        print()
+
+        data = ws.standup(today, now=now)
+        print(f"Standup for {data.date}:")
+        print(f"  Completed: {len(data.completed)}")
+        print(f"  In progress: {len(data.in_progress)}")
+        print(f"  Planned: {len(data.planned)}")
+        print(f"  Blockers: {len(data.blockers)}")
+        print(f"  Open commitments: {len(data.open_commitments)}")
+        print(f"  Overdue: {len(data.overdue)}")
+        print(f"  Pending decisions: {len(data.pending_decisions)}")
+        print()
+
+    # Measured scores on the synthetic history (planted ground truth)
+    scenario = run_commitment_scenario(ScenarioConfig(seed=args.seed, days=args.days))
+    measured = scenario.measurements
+    print("Measured on synthetic history (planted ground truth):")
+    print(
+        f"  - commitment recall: {measured['commitment_recall']:.3f} "
+        f"({measured['recovered']}/{measured['planted']})"
+    )
+    print(f"  - overdue F1: {measured['overdue']['f1']:.3f}")
     print()
 
     # Scorecard
     sc = Scorecard(scenario=f"demo-seed{args.seed}")
     sc.add(MetricResult(name="events_generated", value=float(len(events))))
-    sc.add(MetricResult(name="mail_triage_scored", value=float(len(triage_results))))
+    sc.add(MetricResult(name="mail_triage_scored", value=float(len(results))))
     sc.add(
         MetricResult(
             name="deterministic_checksum",
             value=1.0 if manifest.checksum else 0.0,
+            threshold=1.0,
+            higher_is_better=True,
+        )
+    )
+    sc.add(
+        MetricResult(
+            name="commitment_recall",
+            value=measured["commitment_recall"],
+        )
+    )
+    sc.add(
+        MetricResult(
+            name="context_budget_respected",
+            value=1.0 if pack.total_tokens <= pack.budget else 0.0,
             threshold=1.0,
             higher_is_better=True,
         )
