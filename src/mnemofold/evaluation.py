@@ -299,6 +299,40 @@ def expected_calibration_error(bins: list[CalibrationBin], total: int | None = N
     return round(ece, 6)
 
 
+def compare_scorecards(baseline: Scorecard, candidate: Scorecard) -> dict[str, Any]:
+    """Metric-level diff between two scorecards (drift report).
+
+    Reports every metric whose value or pass/fail status changed, with
+    baseline/candidate values and a quantized delta, plus metrics that
+    exist on only one side. Empty ``changed`` and ``only_*`` lists mean
+    the candidate reproduced the baseline exactly — the check CI runs
+    when a golden scorecard is regenerated.
+    """
+    base = {m.name: m for m in baseline.metrics}
+    cand = {m.name: m for m in candidate.metrics}
+    changed: list[dict[str, Any]] = []
+    for name in sorted(set(base) & set(cand)):
+        b, c = base[name], cand[name]
+        if b.value != c.value or b.status != c.status:
+            changed.append(
+                {
+                    "metric": name,
+                    "baseline": round(b.value, 6),
+                    "candidate": round(c.value, 6),
+                    "delta": round(c.value - b.value, 6),
+                    "baseline_status": b.status.value,
+                    "candidate_status": c.status.value,
+                }
+            )
+    return {
+        "baseline_scenario": baseline.scenario,
+        "candidate_scenario": candidate.scenario,
+        "changed": changed,
+        "only_in_baseline": sorted(set(base) - set(cand)),
+        "only_in_candidate": sorted(set(cand) - set(base)),
+    }
+
+
 def aggregate_scorecards(cards: list[Scorecard]) -> Scorecard:
     """Aggregate multiple scenario scorecards into one summary.
 
