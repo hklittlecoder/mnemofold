@@ -110,3 +110,29 @@ id 排序，字段含 `commitment_id`、`owed_by`、`owed_to`、`description`、
 
 以上工件的字段级 golden 测试位于 `tests/test_*_golden.py` 与各模块测试中；
 修改任何字段都应同时更新对应 golden 与本页。
+
+
+## 持久化 envelope（`mnemofold.persist`）
+
+落盘工件统一使用自描述 envelope，字节级确定（键排序、紧凑分隔符、
+ASCII 转义）：
+
+```json
+{"schema": "<名称>", "schema_version": <整数>, "payload": { ... }}
+```
+
+`parse_envelope` / `read_envelope` 在 JSON 损坏、schema 名不符、版本
+不匹配或 payload 非对象时抛出 `PersistError`——陈旧文件不会被静默误读。
+当前登记的 schema：
+
+- `bm25_index`（v1）：`{"k1", "b", "docs"}`。`docs` 为按 id 排序的
+  全量文档表；倒排结构是文档的纯函数，`BM25Index.save/load` 重建后
+  检索与 explain 结果与保存前一致（有 restart parity 测试）；
+- `temporal_store`（v1）：`{"facts": [...]}`，事实按插入顺序保存
+  （`current` 的并列判定依赖顺序），字段为 fact_key / value /
+  valid_from / valid_to / metadata；
+- `redaction_vault`（v1）：`{"salt", "tokens"}`。tokens 含明文映射，
+  与原文同等敏感，只应写入受信任存储。
+
+每个 schema 的 golden 字节冻结在 `tests/fixtures/*_golden.json`；
+新增可持久化工件时应登记 schema 名、补充 golden，并更新本页。
