@@ -424,3 +424,51 @@ def derive_stale_thread_rules(
             )
         )
     return rules
+
+
+def derive_followup_rules(
+    events: list[Event],
+    now: datetime,
+    *,
+    unanswered_after_hours: float = 24.0,
+    cooldown_hours: float = 24.0,
+) -> list[TriggerRule]:
+    """Build FOLLOW_UP rules for threads ending in an unanswered ask.
+
+    A thread whose most recent event carries a question mark in its
+    ``subject`` or ``body`` and has been silent for at least
+    ``unanswered_after_hours`` yields one INFO rule firing at ``now``
+    (``trg-followup-<thread_id>``). A thread whose latest event is an
+    answer (no question mark) never yields a rule, however old the
+    question before it. This is a surface heuristic over payloads —
+    only the literal ``?`` is inspected — not a claim about
+    conversational semantics.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    latest = {tid: evs[-1] for tid, evs in thread_activity(events).items()}
+    cooldown = timedelta(hours=cooldown_hours)
+    rules: list[TriggerRule] = []
+    for tid in sorted(latest):
+        event = latest[tid]
+        text = f"{event.content.get('subject', '')} {event.content.get('body', '')}"
+        if "?" not in text:
+            continue
+        age_hours = (now - event.timestamp).total_seconds() / 3600.0
+        if age_hours < unanswered_after_hours:
+            continue
+        rules.append(
+            TriggerRule(
+                rule_id=f"trg-followup-{tid}",
+                kind=TriggerKind.FOLLOW_UP,
+                target_id=tid,
+                fire_at=now,
+                severity=TriggerSeverity.INFO,
+                message=(
+                    f"thread {tid} ends in an unanswered ask from {event.timestamp.isoformat()}"
+                ),
+                cooldown=cooldown,
+                dedupe_window=cooldown,
+            )
+        )
+    return rules
