@@ -17,6 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from mnemofold.events import Event
 from mnemofold.ledger import CommitmentLedger, CommitmentStatus
 
 
@@ -353,6 +354,71 @@ def derive_commitment_rules(
                 fire_at=fire_at,
                 severity=severity,
                 message=message,
+                cooldown=cooldown,
+                dedupe_window=cooldown,
+            )
+        )
+    return rules
+
+
+def thread_activity(events: list[Event]) -> dict[str, list[Event]]:
+    """Events per thread id, in timestamp order — the shared thread scan.
+
+    Events without a ``thread_id`` are ignored; non-string ids are
+    normalized with ``str``. Ties on identical timestamps are broken by
+    ``event_id`` so the ordering is total regardless of input order.
+    Derivation helpers build on this so "what happened in thread T" has
+    exactly one definition.
+    """
+    ordered = sorted(events, key=lambda e: (e.timestamp, e.event_id))
+    threads: dict[str, list[Event]] = {}
+    for event in ordered:
+        tid = event.content.get("thread_id")
+        if tid is not None:
+            threads.setdefault(str(tid), []).append(event)
+    return threads
+
+
+def derive_stale_thread_rules(
+    events: list[Event],
+    now: datetime,
+    *,
+    stale_after_days: float = 3.0,
+    closed_after_days: float | None = None,
+    cooldown_hours: float = 24.0,
+) -> list[TriggerRule]:
+    """Build STALE_THREAD rules for threads that went quiet.
+
+    A thread whose most recent event is at least ``stale_after_days``
+    old — but younger than ``closed_after_days`` (default: twice
+    ``stale_after_days``) — yields one WARNING rule firing at ``now``
+    with a deterministic id (``trg-thread-<thread_id>``). Threads quiet
+    past the closed horizon count as settled and are skipped: nag about
+    recent silence, not ancient history. Events without a ``thread_id``
+    are ignored and a naive ``now`` is treated as UTC. Re-deriving from
+    the same inputs gives the same rule set.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    closed_after = closed_after_days if closed_after_days is not None else 2.0 * stale_after_days
+    last_seen = {tid: evs[-1].timestamp for tid, evs in thread_activity(events).items()}
+    cooldown = timedelta(hours=cooldown_hours)
+    rules: list[TriggerRule] = []
+    for tid in sorted(last_seen):
+        age_days = (now - last_seen[tid]).total_seconds() / 86400.0
+        if age_days < stale_after_days or age_days >= closed_after:
+            continue
+        rules.append(
+            TriggerRule(
+                rule_id=f"trg-thread-{tid}",
+                kind=TriggerKind.STALE_THREAD,
+                target_id=tid,
+                fire_at=now,
+                severity=TriggerSeverity.WARNING,
+                message=(
+                    f"thread {tid} quiet since {last_seen[tid].isoformat()} "
+                    f"({round(age_days, 1)} days)"
+                ),
                 cooldown=cooldown,
                 dedupe_window=cooldown,
             )
