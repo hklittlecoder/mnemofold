@@ -12,7 +12,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -471,4 +471,83 @@ def derive_followup_rules(
                 dedupe_window=cooldown,
             )
         )
+    return rules
+
+
+def derive_summary_rules(
+    now: datetime,
+    *,
+    daily_count: int = 3,
+    daily_hour: int = 17,
+    weekly_count: int = 2,
+    weekly_weekday: int = 4,
+    weekly_hour: int = 16,
+    cooldown_hours: float = 12.0,
+) -> list[TriggerRule]:
+    """Schedule DAILY_SUMMARY and WEEKLY_REVIEW rules from ``now``.
+
+    Daily rules fire at ``daily_hour``:00 UTC on the next
+    ``daily_count`` calendar days, skipping today when that hour has
+    already passed. Weekly rules fire at ``weekly_hour``:00 UTC on the
+    next ``weekly_count`` occurrences of ``weekly_weekday`` (Monday is
+    0, matching ``date.weekday``). Ids embed the fire date
+    (``trg-daily-<YYYY-MM-DD>`` / ``trg-weekly-<YYYY-MM-DD>``) so rules
+    never collide across derivations. Invalid counts, hours or weekdays
+    raise ValueError; a naive ``now`` is treated as UTC.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    for name, value in (("daily_count", daily_count), ("weekly_count", weekly_count)):
+        if value < 0:
+            raise ValueError(f"{name} must be non-negative, got {value}")
+    if not 0 <= daily_hour <= 23:
+        raise ValueError(f"daily_hour out of range: {daily_hour}")
+    if not 0 <= weekly_hour <= 23:
+        raise ValueError(f"weekly_hour out of range: {weekly_hour}")
+    if not 0 <= weekly_weekday <= 6:
+        raise ValueError(f"weekly_weekday out of range: {weekly_weekday}")
+
+    cooldown = timedelta(hours=cooldown_hours)
+    rules: list[TriggerRule] = []
+
+    day = now.date()
+    while len([r for r in rules if r.kind == TriggerKind.DAILY_SUMMARY]) < daily_count:
+        candidate = datetime.combine(day, time(hour=daily_hour), tzinfo=UTC)
+        if candidate >= now:
+            rules.append(
+                TriggerRule(
+                    rule_id=f"trg-daily-{day.isoformat()}",
+                    kind=TriggerKind.DAILY_SUMMARY,
+                    target_id=day.isoformat(),
+                    fire_at=candidate,
+                    severity=TriggerSeverity.INFO,
+                    message=f"daily summary for {day.isoformat()} at {candidate.isoformat()}",
+                    cooldown=cooldown,
+                    dedupe_window=cooldown,
+                )
+            )
+        day += timedelta(days=1)
+
+    seen = 0
+    day = now.date()
+    while seen < weekly_count:
+        if day.weekday() == weekly_weekday:
+            candidate = datetime.combine(day, time(hour=weekly_hour), tzinfo=UTC)
+            if candidate >= now:
+                rules.append(
+                    TriggerRule(
+                        rule_id=f"trg-weekly-{day.isoformat()}",
+                        kind=TriggerKind.WEEKLY_REVIEW,
+                        target_id=day.isoformat(),
+                        fire_at=candidate,
+                        severity=TriggerSeverity.INFO,
+                        message=f"weekly review for {day.isoformat()} at {candidate.isoformat()}",
+                        cooldown=cooldown,
+                        dedupe_window=cooldown,
+                    )
+                )
+                seen += 1
+        day += timedelta(days=1)
+
+    rules.sort(key=lambda r: (r.fire_at, r.rule_id))
     return rules
