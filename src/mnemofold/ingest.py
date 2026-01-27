@@ -227,6 +227,9 @@ def _name_similarity(a: str, b: str) -> float:
     return bigram_jaccard(a, b)
 
 
+SEGMENT_MODES = ("gap", "day", "thread", "meeting")
+
+
 @dataclass(frozen=True, slots=True)
 class SegmentConfig:
     """Declarative, serializable rules for episode segmentation.
@@ -244,7 +247,7 @@ class SegmentConfig:
     day_tz: str = "UTC"
 
     def __post_init__(self) -> None:
-        if self.mode not in ("gap", "day"):
+        if self.mode not in SEGMENT_MODES:
             raise ValueError(f"unknown segmentation mode: {self.mode}")
 
     def to_dict(self) -> dict[str, Any]:
@@ -283,7 +286,7 @@ class EpisodeSegmenter:
     day_tz: str = "UTC"
 
     def __post_init__(self) -> None:
-        if self.mode not in ("gap", "day"):
+        if self.mode not in SEGMENT_MODES:
             raise ValueError(f"unknown segmentation mode: {self.mode}")
 
     @classmethod
@@ -309,6 +312,12 @@ class EpisodeSegmenter:
         sorted_events = sorted(events, key=lambda e: e.timestamp)
         if self.mode == "day":
             return self._segment_by_day(sorted_events)
+        if self.mode in ("thread", "meeting"):
+            return self._segment_by_key(sorted_events, self.mode)
+        return self._segment_gap(sorted_events)
+
+    def _segment_gap(self, sorted_events: list[Event]) -> list[Episode]:
+        """Gap-rule segmentation: the default ``gap`` mode."""
         episodes: list[Episode] = []
         current_episode: Episode | None = None
         current_group: str | None = None
@@ -337,6 +346,49 @@ class EpisodeSegmenter:
 
             last_time = event.timestamp
 
+        return episodes
+
+    def _segment_by_key(self, sorted_events: list[Event], key_kind: str) -> list[Episode]:
+        """Strict grouping: one episode per distinct thread/meeting id.
+
+        Events carrying the key stay together no matter how far apart in
+        time they are. Events without it fall back to plain gap
+        segmentation among themselves, with thread and meeting grouping
+        disabled so a strict mode never regroups by the other key. The
+        ``max_episode_events`` cap splits oversized key groups into
+        consecutive episodes. Output is sorted by (start_time,
+        episode_id), so runs over the same input are identical.
+        """
+        field_name = f"{key_kind}_id"
+        keyed: dict[str, list[Event]] = {}
+        unkeyed: list[Event] = []
+        for event in sorted_events:
+            key = event.content.get(field_name)
+            if key is None:
+                unkeyed.append(event)
+            else:
+                keyed.setdefault(f"{key_kind}:{key}", []).append(event)
+        episodes: list[Episode] = []
+        for group in sorted(keyed):
+            current: Episode | None = None
+            for event in keyed[group]:
+                if current is None or self._is_full(current):
+                    current = self._start_episode(event)
+                    current.tags.add(group)
+                    episodes.append(current)
+                else:
+                    current.add_event(event)
+        if unkeyed:
+            fallback = EpisodeSegmenter(
+                gap_minutes=self.gap_minutes,
+                group_by_thread=False,
+                group_by_meeting=False,
+                max_episode_events=self.max_episode_events,
+                mode="gap",
+                day_tz=self.day_tz,
+            )
+            episodes.extend(fallback._segment_gap(unkeyed))
+        episodes.sort(key=lambda ep: (ep.start_time, ep.episode_id))
         return episodes
 
     def _segment_by_day(self, sorted_events: list[Event]) -> list[Episode]:
