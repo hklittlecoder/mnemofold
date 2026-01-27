@@ -303,3 +303,50 @@ def assemble_report_page(
         )
         page = page.replace("</body>", f"{footer}\n</body>")
     return page
+
+
+def render_calibration_svg(
+    points: list[tuple[float, float]],
+    *,
+    size: int = 320,
+    pad: int = 40,
+) -> str:
+    """Reliability diagram: predicted probability vs observed rate.
+
+    ``points`` are ``(mean_predicted, observed_rate)`` pairs, e.g.
+    derived from ``evaluation.calibration_report`` bins. The dashed
+    diagonal is the perfectly-calibrated reference; points above it
+    mean the scorer under-predicted. Coordinates are clamped to [0, 1]
+    and rounded to 2 decimals, so identical input always renders
+    byte-identical SVG.
+    """
+    span = size - 2 * pad
+
+    def x(predicted: float) -> float:
+        return round(pad + min(1.0, max(0.0, predicted)) * span, 2)
+
+    def y(rate: float) -> float:
+        return round(pad + (1.0 - min(1.0, max(0.0, rate))) * span, 2)
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
+        f'viewBox="0 0 {size} {size}" role="img" aria-label="calibration reliability diagram">',
+        f'<rect x="{pad}" y="{pad}" width="{span}" height="{span}" '
+        'fill="#f7fafc" stroke="#e2e8f0"/>',
+        f'<line x1="{x(0.0)}" y1="{y(0.0)}" x2="{x(1.0)}" y2="{y(1.0)}" '
+        'stroke="#a0aec0" stroke-dasharray="4 3"/>',
+    ]
+    if points:
+        coords = " ".join(f"{x(p)},{y(r)}" for p, r in points)
+        parts.append(f'<polyline points="{coords}" fill="none" stroke="#2b6cb0" stroke-width="2"/>')
+        for p, r in points:
+            parts.append(f'<circle cx="{x(p)}" cy="{y(r)}" r="3" fill="#2b6cb0"/>')
+    parts.append(
+        f'<text x="{pad}" y="{size - pad // 2}" font-size="10" fill="#4a5568">predicted</text>'
+    )
+    parts.append(
+        f'<text x="{pad // 2}" y="{pad}" font-size="10" fill="#4a5568" '
+        f'transform="rotate(-90 {pad // 2} {pad})">observed</text>'
+    )
+    parts.append("</svg>")
+    return "".join(parts)
