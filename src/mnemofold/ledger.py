@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -432,3 +432,66 @@ class CommitmentLedger:
             "counts": counts,
             **buckets,
         }
+
+    def burndown_series(self, start_day: str, days: int) -> list[dict[str, Any]]:
+        """Per-day cumulative (created, resolved, open) series for charts.
+
+        ``created`` counts commitments whose creation day (``created_at``,
+        falling back to ``updated_at``, falling back to ``start_day``
+        when neither parses) is on or before the day; ``resolved`` counts
+        DONE/CANCELLED/SUPERSEDED transitions recorded on or before it.
+        Days are consecutive calendar dates from ``start_day``; both
+        counters are non-decreasing, so the series renders directly as a
+        burndown chart.
+        """
+        if days < 0:
+            raise ValueError("days must be non-negative")
+        start = date.fromisoformat(str(start_day)[:10])
+        resolved_statuses = {
+            str(CommitmentStatus.DONE),
+            str(CommitmentStatus.CANCELLED),
+            str(CommitmentStatus.SUPERSEDED),
+        }
+        created_days: list[date] = []
+        for cid in sorted(self._commitments):
+            created_days.append(self._created_day(self._commitments[cid], start))
+        resolved_days: list[date] = []
+        for entry in self._history:
+            if (
+                entry.get("action") == "status_change"
+                and entry.get("to_status") in resolved_statuses
+            ):
+                resolved_days.append(self._parse_day(str(entry.get("timestamp", "")), start))
+        series: list[dict[str, Any]] = []
+        for i in range(days):
+            day = start + timedelta(days=i)
+            created = sum(1 for d in created_days if d <= day)
+            resolved = sum(1 for d in resolved_days if d <= day)
+            series.append(
+                {
+                    "day": day.isoformat(),
+                    "created": created,
+                    "resolved": resolved,
+                    "open": created - resolved,
+                }
+            )
+        return series
+
+    @staticmethod
+    def _parse_day(value: str, fallback: date) -> date:
+        """First 10 chars as a date; fallback when unparseable."""
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return fallback
+
+    @classmethod
+    def _created_day(cls, commitment: Commitment, fallback: date) -> date:
+        """Creation day with updated_at and start_day fallbacks."""
+        for candidate in (commitment.created_at, commitment.updated_at):
+            if candidate:
+                try:
+                    return date.fromisoformat(candidate[:10])
+                except ValueError:
+                    continue
+        return fallback
