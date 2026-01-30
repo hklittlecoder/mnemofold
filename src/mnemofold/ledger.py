@@ -390,3 +390,45 @@ class CommitmentLedger:
             for cid in sorted(self._commitments)
             if self._commitments[cid].status in active and self.open_dependencies(cid)
         ]
+
+    def aging_report(self, now: str) -> dict[str, Any]:
+        """Bucket active commitments by due-time urgency.
+
+        Active means OPEN or IN_PROGRESS. Buckets: ``overdue`` (past due
+        outside the commitment's own grace window), ``due_today`` (under
+        24h away, including negative offsets still covered by grace),
+        ``due_this_week`` (1-7 days), ``later`` (7+ days) and ``no_due``
+        (unparseable due date). Ids are sorted inside each bucket and
+        the bucket sizes always sum to ``total_active``.
+        """
+        active_statuses = {CommitmentStatus.OPEN, CommitmentStatus.IN_PROGRESS}
+        buckets: dict[str, list[str]] = {
+            "overdue": [],
+            "due_today": [],
+            "due_this_week": [],
+            "later": [],
+            "no_due": [],
+        }
+        for cid in sorted(self._commitments):
+            commitment = self._commitments[cid]
+            if commitment.status not in active_statuses:
+                continue
+            if commitment.is_overdue(now):
+                buckets["overdue"].append(cid)
+                continue
+            days = commitment.days_until_due(now)
+            if days is None:
+                buckets["no_due"].append(cid)
+            elif days < 1.0:
+                buckets["due_today"].append(cid)
+            elif days < 7.0:
+                buckets["due_this_week"].append(cid)
+            else:
+                buckets["later"].append(cid)
+        counts = {name: len(ids) for name, ids in buckets.items()}
+        return {
+            "now": now,
+            "total_active": sum(counts.values()),
+            "counts": counts,
+            **buckets,
+        }
