@@ -8,7 +8,10 @@ comparable and the behavior easy to test in isolation.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+
+_WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
 def char_bigrams(text: str, *, fold_case: bool = False) -> set[str]:
@@ -125,3 +128,55 @@ def near_duplicate_clusters(
 
     clusters = sorted(clusters_map.values(), key=lambda c: (c[0], len(c)))
     return [sorted(c) for c in clusters]
+
+
+def tokenize_words(text: str, *, fold_case: bool = False) -> list[str]:
+    """Word tokens split on non-alphanumeric runs, in original order.
+
+    Mirrors the retrieval tokenizer's alphabet so similarity scores and
+    search terms disagree about as little as possible. With
+    ``fold_case=True`` tokens are lowercased.
+    """
+    if fold_case:
+        text = text.lower()
+    return _WORD_RE.findall(text)
+
+
+def token_jaccard(a: str, b: str, *, fold_case: bool = False) -> float:
+    """Jaccard similarity over word-token sets, in [0.0, 1.0].
+
+    Unlike :func:`bigram_jaccard` this ignores word order entirely —
+    "release the plan" and "the plan: release!" score 1.0 — which makes
+    it the better signal for subject-line and title matching where
+    punctuation and phrasing drift but vocabulary does not. Empty or
+    token-less strings score 0.0.
+    """
+    if not a or not b:
+        return 0.0
+    tokens_a = set(tokenize_words(a, fold_case=fold_case))
+    tokens_b = set(tokenize_words(b, fold_case=fold_case))
+    if not tokens_a or not tokens_b:
+        return 0.0
+    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+
+
+def combined_similarity(
+    a: str,
+    b: str,
+    *,
+    char_weight: float = 0.5,
+    fold_case: bool = False,
+) -> float:
+    """Convex combination of character-bigram and word-token Jaccard.
+
+    ``char_weight`` weights the bigram component; the token component
+    gets ``1 - char_weight``. The endpoints reproduce the individual
+    measures exactly (``char_weight=1.0`` is :func:`bigram_jaccard`,
+    ``0.0`` is :func:`token_jaccard`), so callers can dial between
+    order-sensitive and vocabulary-only similarity.
+    """
+    if not 0.0 <= char_weight <= 1.0:
+        raise ValueError(f"char_weight must be in [0, 1], got {char_weight}")
+    chars = bigram_jaccard(a, b, fold_case=fold_case)
+    tokens = token_jaccard(a, b, fold_case=fold_case)
+    return char_weight * chars + (1.0 - char_weight) * tokens
