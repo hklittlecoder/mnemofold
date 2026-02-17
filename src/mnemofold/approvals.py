@@ -13,6 +13,13 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+from mnemofold.persist import read_envelope, write_envelope
+
+APPROVAL_QUEUE_SCHEMA = "approval_queue"
+APPROVAL_QUEUE_VERSION = 1
 
 
 class ApprovalStatus(StrEnum):
@@ -54,6 +61,50 @@ class ApprovalRequest:
     def is_open(self) -> bool:
         return self.status == ApprovalStatus.PENDING
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable form; instants as ISO strings, expiry as seconds."""
+        return {
+            "request_id": self.request_id,
+            "item_id": self.item_id,
+            "item_kind": self.item_kind,
+            "summary": self.summary,
+            "requester": self.requester,
+            "approver": self.approver,
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "decided_at": self.decided_at.isoformat() if self.decided_at else None,
+            "decision_note": self.decision_note,
+            "escalated_from": self.escalated_from,
+            "escalation_chain": list(self.escalation_chain),
+            "escalation_count": self.escalation_count,
+            "expires_after_seconds": (
+                self.expires_after.total_seconds() if self.expires_after is not None else None
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ApprovalRequest:
+        """Rebuild a request from :meth:`to_dict` output."""
+        created = data.get("created_at")
+        decided = data.get("decided_at")
+        expiry = data.get("expires_after_seconds")
+        return cls(
+            request_id=data["request_id"],
+            item_id=data["item_id"],
+            item_kind=data["item_kind"],
+            summary=data.get("summary", ""),
+            requester=data.get("requester", ""),
+            approver=data.get("approver", ""),
+            status=ApprovalStatus(data.get("status", "pending")),
+            created_at=datetime.fromisoformat(created) if created else None,
+            decided_at=datetime.fromisoformat(decided) if decided else None,
+            decision_note=data.get("decision_note", ""),
+            escalated_from=data.get("escalated_from"),
+            escalation_chain=list(data.get("escalation_chain", [])),
+            escalation_count=int(data.get("escalation_count", 0)),
+            expires_after=timedelta(seconds=float(expiry)) if expiry is not None else None,
+        )
+
 
 @dataclass
 class Approver:
@@ -63,6 +114,23 @@ class Approver:
     persona: ApproverPersona = ApproverPersona.ASK
     escalation_to: str | None = None
     decision_latency: timedelta = timedelta(hours=2)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "persona": self.persona.value,
+            "escalation_to": self.escalation_to,
+            "decision_latency_seconds": self.decision_latency.total_seconds(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Approver:
+        return cls(
+            name=data["name"],
+            persona=ApproverPersona(data.get("persona", "ask")),
+            escalation_to=data.get("escalation_to"),
+            decision_latency=timedelta(seconds=float(data.get("decision_latency_seconds", 7200.0))),
+        )
 
 
 @dataclass(slots=True)
@@ -247,3 +315,34 @@ class ApprovalQueue:
             counts[r.status.value] = counts.get(r.status.value, 0) + 1
         counts["escalations"] = sum(r.escalation_count for r in self.requests)
         return counts
+
+    def to_dict(self) -> dict[str, Any]:
+        """Deterministic form: approvers sorted by name, requests in order.
+
+        Request order is submission order — escalation and expiry logic
+        both walk the list, so :meth:`from_dict` replays it exactly.
+        """
+        return {
+            "approvers": [self.approvers[name].to_dict() for name in sorted(self.approvers)],
+            "requests": [request.to_dict() for request in self.requests],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ApprovalQueue:
+        """Rebuild a queue from :meth:`to_dict` output."""
+        queue = cls()
+        for approver in data.get("approvers", []):
+            queue.add_approver(Approver.from_dict(approver))
+        for request in data.get("requests", []):
+            queue.submit(ApprovalRequest.from_dict(request))
+        return queue
+
+    def save(self, path: str | Path) -> None:
+        """Write the queue to ``path`` as a versioned envelope."""
+        write_envelope(path, APPROVAL_QUEUE_SCHEMA, self.to_dict(), version=APPROVAL_QUEUE_VERSION)
+
+    @classmethod
+    def load(cls, path: str | Path) -> ApprovalQueue:
+        """Load a queue written by :meth:`save`."""
+        data = read_envelope(path, APPROVAL_QUEUE_SCHEMA, version=APPROVAL_QUEUE_VERSION)
+        return cls.from_dict(data)
