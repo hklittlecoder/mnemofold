@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 
 def escape_text(text: str) -> str:
@@ -348,5 +349,69 @@ def render_calibration_svg(
         f'<text x="{pad // 2}" y="{pad}" font-size="10" fill="#4a5568" '
         f'transform="rotate(-90 {pad // 2} {pad})">observed</text>'
     )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def render_burndown_svg(
+    series: list[dict[str, Any]],
+    *,
+    width: int = 640,
+    height: int = 200,
+    pad: int = 40,
+) -> str:
+    """Two-line burndown chart: cumulative created vs resolved per day.
+
+    ``series`` entries need ``day``, ``created`` and ``resolved`` keys,
+    exactly what ``CommitmentLedger.burndown_series`` produces. The y
+    scale is the largest ``created`` value (at least 1); coordinates are
+    rounded to 2 decimals so an identical series always renders
+    byte-identical SVG. An empty series renders the frame only.
+    """
+    inner_w = width - 2 * pad
+    inner_h = height - 2 * pad
+    scale = max(1, max((int(p.get("created", 0)) for p in series), default=0))
+    n = len(series)
+
+    def x(i: int) -> float:
+        if n <= 1:
+            return float(pad)
+        return round(pad + i * inner_w / (n - 1), 2)
+
+    def y(value: int) -> float:
+        return round(pad + inner_h - (value / scale) * inner_h, 2)
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="commitment burndown">',
+        f'<rect x="{pad}" y="{pad}" width="{inner_w}" height="{inner_h}" '
+        'fill="#f7fafc" stroke="#e2e8f0"/>',
+    ]
+    if series:
+        created_pts = " ".join(
+            f"{x(i)},{y(int(p.get('created', 0)))}" for i, p in enumerate(series)
+        )
+        resolved_pts = " ".join(
+            f"{x(i)},{y(int(p.get('resolved', 0)))}" for i, p in enumerate(series)
+        )
+        parts.append(
+            f'<polyline points="{created_pts}" fill="none" stroke="#2b6cb0" stroke-width="2"/>'
+        )
+        parts.append(
+            f'<polyline points="{resolved_pts}" fill="none" stroke="#2f855a" stroke-width="2"/>'
+        )
+        parts.append(
+            f'<text x="{pad}" y="{height - pad // 2}" font-size="10" fill="#4a5568">'
+            f"{html.escape(str(series[0].get('day', '')))}</text>"
+        )
+        parts.append(
+            f'<text x="{width - pad}" y="{height - pad // 2}" font-size="10" '
+            f'text-anchor="end" fill="#4a5568">'
+            f"{html.escape(str(series[-1].get('day', '')))}</text>"
+        )
+        parts.append(
+            f'<text x="{pad - 6}" y="{pad + 4}" font-size="10" text-anchor="end" '
+            f'fill="#4a5568">{scale}</text>'
+        )
     parts.append("</svg>")
     return "".join(parts)
