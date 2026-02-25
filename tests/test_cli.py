@@ -688,6 +688,7 @@ EXPECTED_SUBCOMMANDS = {
     "standup",
     "review",
     "playbooks",
+    "verify",
 }
 
 

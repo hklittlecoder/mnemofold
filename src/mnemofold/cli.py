@@ -189,6 +189,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_playbooks.add_argument("--json", action="store_true", help="output JSON proposals")
     p_playbooks.set_defaults(func=_cmd_playbooks)
 
+    # verify
+    p_verify = sub.add_parser("verify", help="verify workspace integrity (chains, tombstones)")
+    p_verify.add_argument("--db", required=True, help="workspace directory")
+    p_verify.add_argument("--json", action="store_true", help="output the JSON report")
+    p_verify.set_defaults(func=_cmd_verify)
+
     return parser
 
 
@@ -1049,6 +1055,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    from .workspace import Workspace
+
+    if not Path(args.db).is_dir():
+        print(f"ERROR: workspace not found: {args.db}", file=sys.stderr)
+        return 1
+
+    workspace = Workspace(args.db)
+    try:
+        report = workspace.verify_integrity()
+    finally:
+        workspace.close()
+
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print("=== mnemofold verify ===")
+        for name in sorted(report["checks"]):
+            mark = "ok" if report["checks"][name] else "FAILED"
+            print(f"  {name}: {mark}")
+        print(f"Frames checked: {report['frames_checked']}")
+        print(f"Tombstones: {report['tombstones']}")
+        print(f"Result: {'PASS' if report['ok'] else 'FAIL'}")
+    return 0 if report["ok"] else 1
 
 
 if __name__ == "__main__":
