@@ -33,7 +33,7 @@ from mnemofold.ingest import CommitmentExtractor
 from mnemofold.ledger import Commitment, CommitmentLedger
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.prep import MeetingPrep, MeetingPrepper
-from mnemofold.replay import TraceRecorder
+from mnemofold.replay import TraceReader, TraceRecorder
 from mnemofold.retrieval import (
     RetrievalEngine,
     SearchResult,
@@ -559,6 +559,40 @@ class Workspace:
         if item is not None and now:
             self.trace.record_recall(now, {"item_id": item_id})
         return item
+
+    def verify_integrity(self) -> dict[str, Any]:
+        """Cross-check every durability layer without mutating state.
+
+        Verifies the journal hash chain, the recorded trace chain, that
+        no tombstoned key is still present in the memory store (a
+        direct probe behind the recall guard, so a half-applied
+        deletion is caught), and that the projection digest computes
+        identically twice. Returns one structured report; ``ok`` is
+        True only when every check passed. Read-only by contract:
+        verification never re-projects, repairs, or records.
+        """
+        audit = self.journal.audit_chain()
+        resurrected = sorted(
+            tomb.key
+            for tomb in self.deletion.tombstones.all()
+            if self.store.peek(tomb.key) is not None
+        )
+        digest = self.projection_digest()
+        checks = {
+            "journal_chain": audit.ok,
+            "trace_chain": TraceReader(self.trace.path).verify(),
+            "no_resurrection": not resurrected,
+            "projection_stable": digest == self.projection_digest(),
+        }
+        return {
+            "ok": all(checks.values()),
+            "checks": checks,
+            "frames_checked": audit.checked,
+            "first_bad_frame": audit.first_bad_seq,
+            "tombstones": self.deletion.tombstones.count(),
+            "resurrected_keys": resurrected,
+            "projection_digest": digest,
+        }
 
 
 def diff_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
