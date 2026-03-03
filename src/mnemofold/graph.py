@@ -481,3 +481,64 @@ def audit_graph(graph: WorkstreamGraph) -> GraphAudit:
         inactive_nodes=sum(1 for n in graph.nodes.values() if not n.active),
         inactive_edges=sum(1 for e in graph.edges.values() if not e.active),
     )
+
+
+@dataclass(slots=True)
+class GraphMergeReport:
+    """What one :func:`merge_graphs` call did, deterministically."""
+
+    nodes_added: int = 0
+    edges_added: int = 0
+    node_conflicts: list[str] = field(default_factory=list)
+    edge_conflicts: list[str] = field(default_factory=list)
+    dropped_edges: list[str] = field(default_factory=list)
+
+    @property
+    def clean(self) -> bool:
+        return not (self.node_conflicts or self.edge_conflicts or self.dropped_edges)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "nodes_added": self.nodes_added,
+            "edges_added": self.edges_added,
+            "node_conflicts": list(self.node_conflicts),
+            "edge_conflicts": list(self.edge_conflicts),
+            "dropped_edges": list(self.dropped_edges),
+            "clean": self.clean,
+        }
+
+
+def merge_graphs(
+    base: WorkstreamGraph, other: WorkstreamGraph
+) -> tuple[WorkstreamGraph, GraphMergeReport]:
+    """Deterministic union of two graphs; inputs are never mutated.
+
+    Nodes and edges present only in ``other`` are added to a fresh copy
+    of ``base``. Same-id nodes (or edges) whose checksums differ are
+    reported as conflicts and the ``base`` version wins — divergent
+    facts are surfaced, never silently blended. Edges whose endpoints
+    are missing from the union are dropped and listed, so the merged
+    graph always satisfies the no-dangling-edges invariant.
+    """
+    merged = WorkstreamGraph.from_dict(base.to_dict())
+    report = GraphMergeReport()
+    for node_id in sorted(other.nodes):
+        node = other.nodes[node_id]
+        existing = merged.nodes.get(node_id)
+        if existing is None:
+            merged.add_node(Node.from_dict(node.to_dict()))
+            report.nodes_added += 1
+        elif node_checksum(existing) != node_checksum(node):
+            report.node_conflicts.append(node_id)
+    for edge_id in sorted(other.edges):
+        edge = other.edges[edge_id]
+        if edge_id in merged.edges:
+            if edge_checksum(merged.edges[edge_id]) != edge_checksum(edge):
+                report.edge_conflicts.append(edge_id)
+            continue
+        if edge.source_id not in merged.nodes or edge.target_id not in merged.nodes:
+            report.dropped_edges.append(edge_id)
+            continue
+        merged.add_edge(Edge.from_dict(edge.to_dict()))
+        report.edges_added += 1
+    return merged, report
