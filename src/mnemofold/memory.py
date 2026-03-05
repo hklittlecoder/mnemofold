@@ -105,6 +105,7 @@ class MemoryStore:
     working_set_size: int = 50
     promotion_salience_threshold: float = 0.7
     demotion_salience_threshold: float = 0.3
+    _evictions: list[dict[str, str]] = field(default_factory=list)
 
     def add(self, item: MemoryItem) -> None:
         """Add an item to memory."""
@@ -205,8 +206,9 @@ class MemoryStore:
         for item in working[:evict_count]:
             if item.pinned:
                 continue
-            # Demote to episodic
+            # Demote to episodic and leave an audit trail
             item.tier = MemoryTier.EPISODIC
+            self._evictions.append({"item_id": item.item_id, "reason": "working_set_overflow"})
 
     def tier_counts(self) -> dict[MemoryTier, int]:
         """Return count of items per tier."""
@@ -330,3 +332,13 @@ class MemoryStore:
         if item is None:
             return []
         return list(item.metadata.get("retention_history", []))
+
+    def evictions(self) -> list[dict[str, str]]:
+        """Working-set eviction audit trail, oldest first.
+
+        Every overflow demotion performed by :meth:`add` leaves one
+        ``{"item_id", "reason"}`` entry. Pinned items are never evicted
+        and therefore never appear here. The log grows monotonically;
+        callers that need bounded memory can snapshot and diff it.
+        """
+        return list(self._evictions)
