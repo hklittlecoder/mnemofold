@@ -641,3 +641,37 @@ class IntervalValidator:
                         )
                     )
         return violations
+
+
+def facts_expiring_within(
+    store: TemporalStore[Any], now: str, days: float
+) -> list[IntervalFact[Any]]:
+    """Facts whose validity ends inside the window (now, now + days].
+
+    Open-ended facts (no ``valid_to``) never expire and are excluded;
+    facts that already ended at or before ``now`` are historical, not
+    upcoming, and are excluded too. Malformed ``valid_to`` values are
+    skipped rather than raising — one corrupt fact must not blind the
+    whole horizon scan. Results are sorted by (valid_to, fact_key) so
+    the answer is stable. An unparseable ``now`` or a negative window
+    raises ValueError: callers get an explicit failure instead of a
+    silently empty list.
+    """
+    if days < 0:
+        raise ValueError(f"days must be non-negative, got {days}")
+    moment = _parse_instant(now)
+    horizon = moment + timedelta(days=days)
+    expiring: list[IntervalFact[Any]] = []
+    fact_keys = store.keys()
+    for key in fact_keys:
+        for fact in store.history(key):
+            if fact.valid_to is None:
+                continue
+            try:
+                end = _parse_instant(fact.valid_to)
+            except (ValueError, TypeError):
+                continue
+            if moment < end <= horizon:
+                expiring.append(fact)
+    expiring.sort(key=lambda f: (f.valid_to or "", f.fact_key))
+    return expiring
