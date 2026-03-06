@@ -37,6 +37,7 @@ class FactoryConfig:
     noise_level: float = 0.0
     workflow_repeats: int = 0
     contradiction_kinds: tuple[str, ...] = ("due_date",)
+    event_types: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -44,6 +45,7 @@ class FactoryConfig:
             "noise_level": self.noise_level,
             "workflow_repeats": self.workflow_repeats,
             "contradiction_kinds": list(self.contradiction_kinds),
+            "event_types": sorted(self.event_types),
         }
 
     def validate(self) -> None:
@@ -57,6 +59,10 @@ class FactoryConfig:
             raise ValueError(f"unknown contradiction kinds: {unknown}")
         if not self.contradiction_kinds:
             raise ValueError("contradiction_kinds must not be empty")
+        known_types = {t.value for t in EventType}
+        unknown_types = sorted(set(self.event_types) - known_types)
+        if unknown_types:
+            raise ValueError(f"unknown event types: {unknown_types}")
 
 
 class PersonaRole(StrEnum):
@@ -210,6 +216,12 @@ class WorkHistoryFactory:
         self._events.extend(self._injected)
         self._events.sort(key=lambda e: e.timestamp)
         self._assign_ids()
+        if self.config.event_types:
+            # Post-generation slice: ids are already assigned, so surviving
+            # events keep the exact ids they carry in the full history and
+            # ground truth stays comparable across slices.
+            wanted = set(self.config.event_types)
+            self._events = [e for e in self._events if e.event_type in wanted]
 
         manifest = HistoryManifest(
             seed=self.seed,
