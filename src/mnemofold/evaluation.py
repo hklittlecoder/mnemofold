@@ -11,6 +11,7 @@ golden tests.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -856,3 +857,20 @@ def run_suite(config: ScenarioConfig | None = None) -> SuiteResult:
     ]
     cards = [result.scorecard for result in results]
     return SuiteResult(cards=cards, aggregate=aggregate_scorecards(cards))
+
+
+def precision_at_k_curve(
+    relevant: set[str], retrieved: list[str], ks: Iterable[int]
+) -> list[dict[str, Any]]:
+    """precision@k across several cutoffs in one pass — a rank-quality curve.
+
+    Cutoffs are deduplicated and sorted; each point quantizes precision
+    to 6 decimals. Mirrors :func:`precision_at_k` semantics exactly:
+    non-positive cutoffs score 0.0 and cutoffs beyond the ranking
+    evaluate over the full list. Useful for reporting how fast triage
+    or retrieval quality decays with depth without re-ranking per k.
+    """
+    return [
+        {"k": k, "precision": round(precision_at_k(relevant, retrieved, k), 6)}
+        for k in sorted(set(ks))
+    ]
