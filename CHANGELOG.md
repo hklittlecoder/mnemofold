@@ -3,6 +3,34 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本处于 0.x 阶段，每次发布仅递增补丁号。
 
+## [0.1.3] - 2026-11-18
+
+聚焦完整性审计、确定性合并与报表深化。
+
+### Added
+
+- 工作区：`verify_integrity` 只读完整性审计（日志哈希链、trace 链、
+  墓碑复活探测、投影摘要稳定性）；CLI 新增 `verify` 子命令
+  （人类可读 / `--json`，检查失败时非零退出码）
+- 图：`merge_graphs` 确定性合并——同 id 冲突以 base 为准并上报，
+  悬挂边丢弃，输入永不被修改，合并结果始终通过结构审计
+- 记忆：工作集驱逐审计日志 `evictions()`，驱逐全部可追溯
+- 时间：`facts_expiring_within` 到期预览查询（含畸形数据跳过语义）
+- 评估：`precision_at_k_curve` 排序质量曲线；按角色切片
+  `run_role_slices`；记分卡漂移对比 `compare_scorecards`
+- 台账：账龄报告 `aging_report` 与 burndown 序列 `burndown_series`，
+  配套 SVG `render_burndown_svg`；报表新增校准可靠性图
+  `render_calibration_svg`
+- 摄入：严格 thread / meeting 分段模式（键内跨时间聚合、无键事件
+  回退 gap 规则）
+- 触发器：陈旧线程、待跟进提问、每日小结/每周回顾规则派生，
+  与既有冷却/去重/静默时段语义完全兼容
+- 持久化：版本化 envelope（`mnemofold.persist`）；BM25 索引、时间
+  存储、redaction vault、审批队列可落盘，均带 golden 字节测试
+- 文本：词级 `token_jaccard` 与组合相似度 `combined_similarity`
+- CLI：`demo` 完整跑通 factory → ingest → fold → recall → context →
+  prep → triage → standup 并打印实测分数
+
 ## [0.1.2] - 2026-11-18
 
 围绕审计链、持久化与可解释性的一轮深化。
