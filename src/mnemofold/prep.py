@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
@@ -152,6 +153,25 @@ class MeetingPrep:
         return "\n".join(parts)
 
 
+def _created_on_or_before(item: MemoryItem, as_of: str) -> bool:
+    """True when the item demonstrably existed at ``as_of``.
+
+    Naive timestamps are treated as UTC. Unparseable values on either
+    side answer False: without provable age an item is treated as not
+    yet existing rather than silently cited.
+    """
+    try:
+        created = datetime.fromisoformat(item.created_at)
+        moment = datetime.fromisoformat(as_of)
+    except (ValueError, TypeError):
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return created <= moment
+
+
 @dataclass
 class MeetingPrepper:
     """Assembles meeting prep packets from memory."""
@@ -165,8 +185,17 @@ class MeetingPrepper:
         meeting_title: str,
         attendees: list[str],
         context_text: str = "",
+        as_of: str = "",
     ) -> MeetingPrep:
-        """Prepare a meeting packet for the given meeting."""
+        """Prepare a meeting packet for the given meeting.
+
+        With ``as_of`` (an ISO instant) the packet is built as if it
+        were that moment: memories created after it stay invisible, so
+        preparing a past meeting never leaks knowledge that arrived
+        later. Items without a parseable ``created_at`` are excluded
+        when ``as_of`` is set — an item that cannot prove its age does
+        not get cited.
+        """
         prep = MeetingPrep(
             meeting_id=meeting_id,
             meeting_title=meeting_title,
@@ -177,6 +206,8 @@ class MeetingPrepper:
         candidate_items: list[MemoryItem] = []
         candidate_items.extend(self.store.items_by_tier(MemoryTier.SEMANTIC))
         candidate_items.extend(self.store.items_by_tier(MemoryTier.EPISODIC))
+        if as_of:
+            candidate_items = [i for i in candidate_items if _created_on_or_before(i, as_of)]
 
         # Score items by relevance (simple keyword match against attendees + title)
         keywords = {a.lower() for a in attendees} | set(meeting_title.lower().split())
