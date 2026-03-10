@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass, field
+from typing import Any
 
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 
@@ -24,6 +25,29 @@ class PrepItem:
     citation: str
     priority: float = 0.0
 
+    def to_dict(self) -> dict[str, Any]:
+        """Deterministic dict form; priority quantized to 6 decimals."""
+        return {
+            "item_id": self.item_id,
+            "title": self.title,
+            "category": self.category,
+            "summary": self.summary,
+            "citation": self.citation,
+            "priority": round(self.priority, 6),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PrepItem:
+        """Rebuild an item from :meth:`to_dict` output."""
+        return cls(
+            item_id=data["item_id"],
+            title=data.get("title", ""),
+            category=data.get("category", ""),
+            summary=data.get("summary", ""),
+            citation=data.get("citation", ""),
+            priority=float(data.get("priority", 0.0)),
+        )
+
 
 @dataclass(slots=True)
 class MeetingPrep:
@@ -36,6 +60,31 @@ class MeetingPrep:
     items: list[PrepItem] = field(default_factory=list)
     total_items: int = 0
     cited_sources: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Deterministic dict form of the whole packet."""
+        return {
+            "meeting_id": self.meeting_id,
+            "meeting_title": self.meeting_title,
+            "attendee_names": list(self.attendee_names),
+            "agenda_items": list(self.agenda_items),
+            "items": [item.to_dict() for item in self.items],
+            "total_items": self.total_items,
+            "cited_sources": list(self.cited_sources),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MeetingPrep:
+        """Rebuild a packet from :meth:`to_dict` output."""
+        return cls(
+            meeting_id=data["meeting_id"],
+            meeting_title=data.get("meeting_title", ""),
+            attendee_names=list(data.get("attendee_names", [])),
+            agenda_items=list(data.get("agenda_items", [])),
+            items=[PrepItem.from_dict(item) for item in data.get("items", [])],
+            total_items=int(data.get("total_items", 0)),
+            cited_sources=list(data.get("cited_sources", [])),
+        )
 
     def to_markdown(self) -> str:
         lines = [f"# Meeting Prep: {self.meeting_title}", ""]
