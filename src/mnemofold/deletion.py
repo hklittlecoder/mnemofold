@@ -112,6 +112,37 @@ class GraphDeletionTarget:
     incoming_relations: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class DeletionPreview:
+    """Dry-run plan of a deletion cascade — what ``delete`` would do.
+
+    ``would_delete`` preserves the exact walk order and depths that
+    :meth:`DeletionEngine.delete` would produce, so a preview and the
+    later report compare entry by entry. Producing a preview mutates
+    nothing: no deletions, no tombstones, no journal entries.
+    """
+
+    would_delete: list[dict[str, Any]] = field(default_factory=list)
+    blocked: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return len(self.would_delete)
+
+    def keys(self) -> list[str]:
+        """The keys that would be deleted, in walk order."""
+        return [entry["key"] for entry in self.would_delete]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "would_delete": [dict(entry) for entry in self.would_delete],
+            "blocked": list(self.blocked),
+            "missing": list(self.missing),
+            "total": self.total,
+        }
+
+
 class DeletionEngine:
     """Cascading deletion with tombstone protection against resurrection.
 
@@ -223,6 +254,38 @@ class DeletionEngine:
         for ts in self.tombstones.all():
             counts[ts.reason.value] = counts.get(ts.reason.value, 0) + 1
         return counts
+
+    def preview(self, key: str) -> DeletionPreview:
+        """Dry-run the cascade: what :meth:`delete` would touch, untouched.
+
+        Walks the same outgoing-relation graph with the same guards —
+        tombstones short-circuit, protected keys block their subtree,
+        unknown keys are reported missing — but performs no deletion and
+        records no tombstone. The plan matches a subsequent ``delete``
+        exactly as long as the graph does not change in between.
+        """
+        preview = DeletionPreview()
+        self._walk_preview(key, preview, depth=0, visited=set())
+        return preview
+
+    def _walk_preview(
+        self, key: str, preview: DeletionPreview, depth: int, visited: set[str]
+    ) -> None:
+        if key in visited:
+            return
+        visited.add(key)
+        if self.tombstones.has(key):
+            return
+        if self._is_protected(key):
+            preview.blocked.append(key)
+            return
+        target = self._get_target(key)
+        if target is None:
+            preview.missing.append(key)
+            return
+        preview.would_delete.append({"key": key, "kind": target.kind, "depth": depth})
+        for rel in target.outgoing_relations:
+            self._walk_preview(rel, preview, depth + 1, visited)
 
 
 class ResurrectionError(ValueError):
