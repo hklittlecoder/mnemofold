@@ -98,3 +98,50 @@ mnemofold triage / prep / asof / context / triggers / privacy / replay / diff
 `StalenessPolicy` / `TierPolicy`（记忆生命周期）、`ToolPolicy`（工具
 门禁）、`RetentionPolicy`（衰减曲线）。每个配置都有 `to_dict`/校验与
 往返测试，序列化处理见 [reproducibility.md](reproducibility.md)。
+
+
+## 分段模式、触发器派生与完整性审计
+
+### 严格分段模式
+
+`EpisodeSegmenter` 支持四种 `mode`：
+
+- `gap`（默认）：按时间间隔聚合；thread/meeting 键变化即切分情节；
+- `day`：按 `day_tz` 的日历日分桶（跨 DST 的历史保持在本地日）；
+- `thread`：严格按 `thread_id` 聚合——同一线程无论间隔多久都在一个情节；
+- `meeting`：严格按 `meeting_id` 聚合。
+
+严格模式下不携带对应键的事件回退到 gap 规则（且不再按另一种键分组）；
+`max_episode_events` 会把超长键组切成连续情节。配置经
+`SegmentConfig.to_dict` / `from_dict` 往返无损。
+
+### 触发器派生
+
+- `derive_commitment_rules(ledger, now)`：台账 → 逾期告警（CRITICAL）与
+  截止提醒（WARNING，提前 `ahead_days`）；
+- `derive_stale_thread_rules(events, now)`：事件历史 → 陈旧线程规则。
+  只提醒“最近沉默”的线程：静默超过 `closed_after_days`（默认两倍
+  窗口）视为已了结，不再打扰；
+- `derive_followup_rules(events, now)`：以问号结尾且超过
+  `unanswered_after_hours` 无人回应的线程 → 跟进规则（表面启发式，
+  只检查字面 `?`）；
+- `derive_summary_rules(now)`：每日小结（`DAILY_SUMMARY`）与每周回顾
+  （`WEEKLY_REVIEW`）的调度规则，id 内嵌触发日期，跨次派生不冲突。
+
+所有派生规则都带 cooldown 与去重窗口，与 `TriggerEngine` 的静默时段、
+报表覆盖抑制语义完全兼容。
+
+### 完整性审计
+
+`Workspace.verify_integrity()` 是只读审计，覆盖四层：日志哈希链
+（`journal_chain`）、trace 哈希链（`trace_chain`）、墓碑复活探测
+（`no_resurrection`，直接探查存储而非 recall 守卫）、投影摘要稳定性
+（`projection_stable`）。CLI：
+
+```bash
+mnemofold verify --db ./ws          # 人类可读输出，PASS/FAIL
+mnemofold verify --db ./ws --json   # 机器可读报告
+```
+
+检查失败时退出码非零。被篡改的 trace 会让工作区打开即失败
+（`ValueError: hash mismatch ...`）——恢复路径是显式的，不做静默修复。
