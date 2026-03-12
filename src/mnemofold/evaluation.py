@@ -874,3 +874,45 @@ def precision_at_k_curve(
         {"k": k, "precision": round(precision_at_k(relevant, retrieved, k), 6)}
         for k in sorted(set(ks))
     ]
+
+
+def run_robustness_scenario(config: ScenarioConfig | None = None) -> ScenarioResult:
+    """Measure commitment recall with and without non-mail evidence.
+
+    Runs the standard commitment measurement twice on the same seed:
+    once on the full synthetic history, once on a mail-only slice
+    (``FactoryConfig.event_types``). The gap between the two recalls is
+    a measured statement about how much the extractor depends on
+    non-mail channels in THIS synthetic factory — not a claim about
+    real-world corpora. Both numbers come from planted ground truth.
+    """
+    cfg = config or ScenarioConfig()
+    full = _commitment_measurements(cfg)
+    base = cfg.factory_config or FactoryConfig()
+    sliced_cfg = ScenarioConfig(
+        seed=cfg.seed,
+        days=cfg.days,
+        now_day=cfg.now_day,
+        top_k=cfg.top_k,
+        context_budget=cfg.context_budget,
+        factory_config=FactoryConfig(
+            include_designer=base.include_designer,
+            noise_level=base.noise_level,
+            workflow_repeats=base.workflow_repeats,
+            contradiction_kinds=base.contradiction_kinds,
+            event_types=("mail_received", "mail_sent"),
+        ),
+    )
+    sliced = _commitment_measurements(sliced_cfg)
+    card = Scorecard(
+        scenario=f"robustness-seed{cfg.seed}-{cfg.days}d",
+        details={
+            "ground_truth": "synthetic planted commitments (full vs mail-only slice)",
+            "full_recall": round(full["commitment_recall"], 6),
+            "mail_only_recall": round(sliced["commitment_recall"], 6),
+            "recall_gap": round(full["commitment_recall"] - sliced["commitment_recall"], 6),
+        },
+    )
+    card.add(MetricResult("full_commitment_recall", full["commitment_recall"], threshold=1.0))
+    card.add(MetricResult("mail_only_commitment_recall", sliced["commitment_recall"]))
+    return ScenarioResult(scorecard=card, measurements={"full": full, "mail_only": sliced})
