@@ -495,6 +495,27 @@ class Workspace:
         self.trace.record_decision(now, {"action": "remember", "event_id": event.event_id})
         return event.event_id
 
+    def forget_preview(self, item_id: str) -> dict[str, Any]:
+        """Impact report for a forget request, without executing anything.
+
+        Mirrors :meth:`forget`'s cascade planning through the deletion
+        engine's dry-run and additionally lists the ledger commitments
+        that WOULD be dropped because they cite an affected key. Nothing
+        is deleted, tombstoned, journaled, or traced — safe to call on a
+        live workspace before asking the user to confirm.
+        """
+        preview = self.deletion.preview(item_id)
+        affected = set(preview.keys()) | {item_id}
+        commitments = sorted(
+            c.commitment_id
+            for c in self.ledger.all_commitments()
+            if set(c.source_event_ids) & affected
+        )
+        payload = preview.to_dict()
+        payload["requested_key"] = item_id
+        payload["ledger_commitments_affected"] = commitments
+        return payload
+
     def forget(self, item_id: str, *, now: str, reason: str = "") -> DeletionReport:
         """Forget an item: delete with cascade, then tombstone it.
 
