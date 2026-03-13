@@ -172,6 +172,25 @@ class TraceReader:
             return "0" * 64, 0
         return lines[-1]["hash"], len(lines)
 
+    def summary(self) -> dict[str, Any]:
+        """Per-kind entry counts plus the verified chain head.
+
+        Integrity-aware by design: a corrupted chain raises the same
+        ValueError the rest of the reader raises, instead of returning
+        counts over partially valid data. An empty trace summarizes to
+        zero entries and the genesis head.
+        """
+        lines = self._iter_lines()
+        by_kind: dict[str, int] = {}
+        for line in lines:
+            kind = line["entry"]["kind"]
+            by_kind[kind] = by_kind.get(kind, 0) + 1
+        return {
+            "entries": len(lines),
+            "by_kind": dict(sorted(by_kind.items())),
+            "head_hash": lines[-1]["hash"] if lines else "0" * 64,
+        }
+
 
 def trace_diff(
     path_a: str | Path,
