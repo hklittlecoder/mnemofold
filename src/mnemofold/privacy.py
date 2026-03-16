@@ -10,6 +10,7 @@ and conflict diagnostics.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -349,6 +350,57 @@ class AccessLog:
         for e in self._entries:
             counts[e.principal] = counts.get(e.principal, 0) + 1
         return counts
+
+    def export_jsonl(self) -> str:
+        """Serialize entries AND chain hashes as JSONL for cold storage.
+
+        Each line is ``{"hash": <chain digest>, "entry": {...}}`` in
+        canonical JSON. :meth:`import_jsonl` recomputes the chain while
+        reading, so an exported audit trail stays tamper-evident even
+        outside the process that produced it.
+        """
+        lines: list[str] = []
+        for entry, digest in zip(self._entries, self._hashes, strict=True):
+            record = {
+                "hash": digest,
+                "entry": {
+                    "timestamp": entry.timestamp.isoformat(),
+                    "principal": entry.principal,
+                    "action": entry.action,
+                    "resource_id": entry.resource_id,
+                    "granted": entry.granted,
+                    "reason": entry.reason,
+                },
+            }
+            lines.append(json.dumps(record, sort_keys=True, separators=(",", ":")))
+        return "".join(line + "\n" for line in lines)
+
+    @classmethod
+    def import_jsonl(cls, text: str) -> AccessLog:
+        """Rebuild a log from :meth:`export_jsonl`, verifying every link.
+
+        Raises ValueError on the first line whose recomputed chain hash
+        does not match the stored one — a partial import never happens,
+        because the exception propagates before the log is returned.
+        """
+        log = cls()
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            ed = record["entry"]
+            entry = AccessLogEntry(
+                timestamp=datetime.fromisoformat(ed["timestamp"]),
+                principal=ed["principal"],
+                action=ed["action"],
+                resource_id=ed["resource_id"],
+                granted=bool(ed["granted"]),
+                reason=ed["reason"],
+            )
+            digest = log.record(entry)
+            if digest != record["hash"]:
+                raise ValueError(f"access log chain mismatch at line {lineno}")
+        return log
 
 
 _TIER_ORDER = {
