@@ -150,6 +150,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_forget.add_argument("item_id", help="memory id to forget")
     p_forget.add_argument("--reason", default="", help="reason recorded on the tombstone")
     p_forget.add_argument("--now", required=True, help="ISO instant of the request")
+    p_forget.add_argument(
+        "--preview", action="store_true", help="show the impact report without deleting"
+    )
     p_forget.set_defaults(func=_cmd_forget)
 
     # recall
@@ -917,6 +920,22 @@ def _cmd_forget(args: argparse.Namespace) -> int:
     workspace = _open_workspace(args.db)
     if workspace is None:
         return 1
+    if args.preview:
+        preview = workspace.forget_preview(args.item_id)
+        workspace.close()
+        print(f"preview for {args.item_id}:")
+        print(f"  would delete: {preview['total']} item(s)")
+        for entry in preview["would_delete"]:
+            print(f"    - {entry['key']} ({entry['kind']}, depth {entry['depth']})")
+        if preview["blocked"]:
+            print(f"  blocked (protected): {', '.join(preview['blocked'])}")
+        if preview["missing"]:
+            print(f"  missing: {', '.join(preview['missing'])}")
+        if preview["ledger_commitments_affected"]:
+            affected = ", ".join(preview["ledger_commitments_affected"])
+            print(f"  ledger commitments affected: {affected}")
+        print("nothing was deleted (preview only)")
+        return 0
     try:
         report = workspace.forget(args.item_id, now=args.now, reason=args.reason)
     except ValueError as exc:
