@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from mnemofold.ledger import CommitmentLedger, CommitmentStatus
 from mnemofold.reports import wrap_html
@@ -310,3 +311,30 @@ def render_weekly_html(review: WeeklyReview) -> str:
         sections.append((f"{title} ({len(items)})", body))
     sections.append(("Citations", f"<p><em>{len(review.citations)} memory ids cited</em></p>"))
     return wrap_html(f"Weekly Review {review.week_start} → {review.week_end}", sections)
+
+
+def compare_reviews(previous: WeeklyReview, current: WeeklyReview) -> dict[str, Any]:
+    """Week-over-week delta between two weekly reviews.
+
+    Every list difference is sorted and expressed with the commitment
+    ids (and risk strings) the two reviews already cite — the delta
+    never introduces claims of its own. ``stats_delta`` subtracts the
+    previous integer stats from the current ones key by key, covering
+    the union of both weeks' stat keys.
+    """
+    return {
+        "previous_week": [previous.week_start, previous.week_end],
+        "current_week": [current.week_start, current.week_end],
+        "completed_new": sorted(set(current.completed) - set(previous.completed)),
+        "completed_no_longer_listed": sorted(set(previous.completed) - set(current.completed)),
+        "overdue_new": sorted(set(current.overdue) - set(previous.overdue)),
+        "overdue_cleared": sorted(set(previous.overdue) - set(current.overdue)),
+        "still_open_new": sorted(set(current.still_open) - set(previous.still_open)),
+        "still_open_cleared": sorted(set(previous.still_open) - set(current.still_open)),
+        "risks_added": sorted(set(current.risks) - set(previous.risks)),
+        "risks_removed": sorted(set(previous.risks) - set(current.risks)),
+        "stats_delta": {
+            key: current.stats.get(key, 0) - previous.stats.get(key, 0)
+            for key in sorted(set(current.stats) | set(previous.stats))
+        },
+    }
