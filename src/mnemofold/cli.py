@@ -175,6 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_standup.add_argument("--db", required=True, help="workspace directory")
     p_standup.add_argument("--today", help="ISO instant for 'today' (default: last event)")
     p_standup.add_argument("--html", action="store_true", help="output HTML")
+    p_standup.add_argument("--json", action="store_true", help="output JSON (takes precedence)")
     p_standup.set_defaults(func=_cmd_standup)
 
     # review
@@ -1019,7 +1020,12 @@ def _cmd_standup(args: argparse.Namespace) -> int:
             return 1
     finally:
         workspace.close()
-    print(render_standup_html(data) if args.html else render_standup_markdown(data))
+    if args.json:
+        import json
+
+        print(json.dumps(data.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(render_standup_html(data) if args.html else render_standup_markdown(data))
     return 0
 
 

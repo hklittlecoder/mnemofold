@@ -45,6 +45,20 @@ class StandupData:
     pending_decisions: list[str] = field(default_factory=list)
     citations: list[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Deterministic dict form used by the CLI --json output."""
+        return {
+            "date": self.date,
+            "completed": list(self.completed),
+            "in_progress": list(self.in_progress),
+            "planned": list(self.planned),
+            "blockers": list(self.blockers),
+            "open_commitments": list(self.open_commitments),
+            "overdue": list(self.overdue),
+            "pending_decisions": list(self.pending_decisions),
+            "citations": list(self.citations),
+        }
+
 
 @dataclass
 class StandupGenerator:
