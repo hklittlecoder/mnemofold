@@ -39,6 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--seed", type=int, default=42, help="random seed")
     p_eval.add_argument("--days", type=int, default=30, help="days of history")
     p_eval.add_argument("--json", action="store_true", help="output JSON scorecard")
+    p_eval.add_argument(
+        "--slices",
+        choices=["none", "projects", "roles"],
+        default="none",
+        help="also run per-slice commitment scorecards",
+    )
     p_eval.set_defaults(func=_cmd_eval)
 
     # demo
@@ -208,12 +214,22 @@ def _cmd_version(_args: argparse.Namespace) -> int:
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:
-    from .evaluation import ScenarioConfig, run_suite
+    from .evaluation import (
+        ScenarioConfig,
+        run_commitment_slices,
+        run_role_slices,
+        run_suite,
+    )
     from .factory import WorkHistoryFactory
 
     factory = WorkHistoryFactory(seed=args.seed, days=args.days)
     events, manifest = factory.generate()
     suite = run_suite(ScenarioConfig(seed=args.seed, days=args.days))
+    slices = []
+    if args.slices == "projects":
+        slices = run_commitment_slices(ScenarioConfig(seed=args.seed, days=args.days))
+    elif args.slices == "roles":
+        slices = run_role_slices(ScenarioConfig(seed=args.seed, days=args.days))
 
     if args.json:
         import json
@@ -236,6 +252,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             "cards": [card.to_dict() for card in suite.cards],
             "aggregate": suite.aggregate.to_dict(),
             "overall_pass": suite.overall_pass(),
+            "slices": [result.scorecard.to_dict() for result in slices],
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -251,6 +268,9 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             for metric in card.metrics:
                 print(f"    {metric.name}: {metric.value:.4f} [{metric.status.value}]")
         print(f"Aggregate pass: {suite.aggregate.overall_pass()}")
+        for result in slices:
+            verdict = "PASS" if result.scorecard.overall_pass() else "FAIL"
+            print(f"[{verdict}] slice {result.scorecard.scenario}")
 
     return 0 if suite.overall_pass() else 1
 
