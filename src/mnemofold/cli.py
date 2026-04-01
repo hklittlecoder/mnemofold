@@ -1050,6 +1050,8 @@ def _cmd_standup(args: argparse.Namespace) -> int:
 
 
 def _cmd_review(args: argparse.Namespace) -> int:
+    from datetime import date as date_cls
+
     from .review import WeeklyReviewGenerator, render_weekly_html, render_weekly_markdown
 
     workspace = _open_workspace(args.db)
@@ -1057,9 +1059,26 @@ def _cmd_review(args: argparse.Namespace) -> int:
         return 1
     try:
         review = WeeklyReviewGenerator(workspace.ledger).generate(args.start, args.end)
+        try:
+            days = max(
+                1,
+                (
+                    date_cls.fromisoformat(args.end[:10]) - date_cls.fromisoformat(args.start[:10])
+                ).days,
+            )
+            series = workspace.ledger.burndown_series(args.start[:10], days)
+        except ValueError:
+            print(
+                "ERROR: --start/--end must begin with ISO dates (YYYY-MM-DD)",
+                file=sys.stderr,
+            )
+            return 1
     finally:
         workspace.close()
-    print(render_weekly_html(review) if args.html else render_weekly_markdown(review))
+    if args.html:
+        print(render_weekly_html(review, series))
+    else:
+        print(render_weekly_markdown(review))
     return 0
 
 

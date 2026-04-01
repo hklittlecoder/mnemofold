@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from mnemofold.ledger import CommitmentLedger, CommitmentStatus
-from mnemofold.reports import wrap_html
+from mnemofold.reports import render_burndown_svg, wrap_html
 
 
 def _parse_instant(value: str) -> datetime | None:
@@ -313,8 +313,13 @@ def render_weekly_markdown(review: WeeklyReview) -> str:
     return "\n".join(lines)
 
 
-def render_weekly_html(review: WeeklyReview) -> str:
-    """Self-contained HTML page for a weekly review; all text escaped."""
+def render_weekly_html(review: WeeklyReview, burndown: list[dict[str, Any]] | None = None) -> str:
+    """Self-contained HTML page for a weekly review; all text escaped.
+
+    When ``burndown`` is given — rows as produced by
+    ``CommitmentLedger.burndown_series`` — the page embeds a commitment
+    burndown chart between the section list and the citation footer.
+    """
     sections: list[tuple[str, str]] = []
     for title, attribute in _WEEKLY_SECTIONS:
         items: list[str] = getattr(review, attribute)
@@ -323,6 +328,8 @@ def render_weekly_html(review: WeeklyReview) -> str:
         else:
             body = "<p><em>None</em></p>"
         sections.append((f"{title} ({len(items)})", body))
+    if burndown:
+        sections.append(("Burndown", render_burndown_svg(burndown)))
     sections.append(("Citations", f"<p><em>{len(review.citations)} memory ids cited</em></p>"))
     return wrap_html(f"Weekly Review {review.week_start} → {review.week_end}", sections)
 
