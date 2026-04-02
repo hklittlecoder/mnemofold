@@ -332,3 +332,52 @@ def verify_dp_vs_greedy(items: list[ContextItem], budget: int) -> bool:
     dp_value = sum(items[i].priority for i in dp_indices)
     greedy_value = sum(items[i].priority for i in greedy_indices)
     return dp_value >= greedy_value - 1e-9
+
+
+def explain_pack(packer: ContextPacker, items: list[ContextItem]) -> dict[str, Any]:
+    """Per-candidate rationale for one packing decision.
+
+    Runs the same exact-knapsack selection as :meth:`ContextPacker.pack`
+    and reports every candidate in INPUT order with its effective
+    priority, value density (priority per token) and outcome:
+
+    * ``selected`` — part of the optimal subset;
+    * ``ineligible`` — zero tokens or larger than the whole budget;
+    * ``outcompeted`` — eligible, but the exact solver found a
+      higher-value feasible subset without it.
+
+    ``outcompeted`` deliberately does NOT mean "low density": the
+    knapsack optimum can skip a dense item when a combination of others
+    fits the budget better. Totals reconcile with the pack itself
+    (``used`` equals the selected token sum and never exceeds budget).
+    """
+    pack = packer.pack(items)
+    selected_ids = {it.item_id for it in pack.items}
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        effective = effective_priority(item, packer.profile)
+        if item.item_id in selected_ids:
+            reason = "selected"
+        elif not 0 < item.token_estimate <= packer.budget:
+            reason = "ineligible"
+        else:
+            reason = "outcompeted"
+        rows.append(
+            {
+                "item_id": item.item_id,
+                "tokens": item.token_estimate,
+                "effective_priority": effective,
+                "value_density": (
+                    round(effective / item.token_estimate, 6) if item.token_estimate > 0 else 0.0
+                ),
+                "selected": reason == "selected",
+                "reason": reason,
+            }
+        )
+    return {
+        "budget": pack.budget,
+        "used": pack.total_tokens,
+        "headroom": pack.budget - pack.total_tokens,
+        "ordering": pack.ordering,
+        "rows": rows,
+    }
