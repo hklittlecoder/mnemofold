@@ -122,9 +122,9 @@ def near_duplicate_clusters(
                 union(a, b)
 
     clusters_map: dict[str, list[str]] = {}
-    for i in ids:
-        root = find(i)
-        clusters_map.setdefault(root, []).append(i)
+    for item_id in ids:
+        root = find(item_id)
+        clusters_map.setdefault(root, []).append(item_id)
 
     clusters = sorted(clusters_map.values(), key=lambda c: (c[0], len(c)))
     return [sorted(c) for c in clusters]
