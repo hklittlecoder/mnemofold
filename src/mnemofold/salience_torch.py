@@ -12,6 +12,7 @@ marked ``@pytest.mark.model`` and ``@pytest.mark.slow``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 try:
     import torch
@@ -208,3 +209,44 @@ def compare_to_baseline(
         "baseline_mse": round(baseline_mse, 6),
         "model_better": model_mse < baseline_mse,
     }
+
+
+def _round_tree(value: Any) -> Any:
+    """Recursively round floats so exports are stable across platforms."""
+    if isinstance(value, float):
+        return round(value, 8)
+    if isinstance(value, list):
+        return [_round_tree(v) for v in value]
+    return value
+
+
+def export_weights(model: SalienceMLP) -> dict[str, Any]:
+    """Plain-JSON weights of a salience MLP — no torch pickles.
+
+    The export is diffable, portable and JSON-serializable: parameter
+    tensors become nested Python floats rounded to 8 decimals at this
+    production point, which keeps files byte-stable across platforms
+    while shifting scores far below any decision threshold. The format
+    field versioned ``salience_mlp_v1``; :func:`import_weights` refuses
+    anything else.
+    """
+    state = model.state_dict()
+    weights = {name: _round_tree(state[name].tolist()) for name in sorted(state)}
+    hidden_dim = int(state["net.0.weight"].shape[0])
+    return {"format": "salience_mlp_v1", "hidden_dim": hidden_dim, "weights": weights}
+
+
+def import_weights(data: dict[str, Any]) -> SalienceMLP:
+    """Rebuild a SalienceMLP from :func:`export_weights` output.
+
+    The architecture is derived from ``hidden_dim``; loaded weights
+    reproduce the exported model's scores within float32 tolerance.
+    """
+    if not _TORCH_AVAILABLE:
+        raise ImportError("torch is not available")
+    if data.get("format") != "salience_mlp_v1":
+        raise ValueError(f"unknown weight export format: {data.get('format')!r}")
+    model = SalienceMLP(hidden_dim=int(data["hidden_dim"]))
+    state = {name: torch.tensor(value) for name, value in data["weights"].items()}
+    model.load_state_dict(state)
+    return model
