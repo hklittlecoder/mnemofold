@@ -11,11 +11,16 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from mnemofold.approvals import ApprovalQueue, ApprovalRequest, ApprovalStatus
 from mnemofold.canon import sha256_hex
+from mnemofold.persist import read_envelope, write_envelope
 from mnemofold.tools import ToolPolicyError, ToolRegistry, ToolValidationError
+
+PLAN_SCHEMA = "plan"
+PLAN_VERSION = 1
 
 
 class PlanStatus(StrEnum):
@@ -134,6 +139,15 @@ class Plan:
         tests and cross-run reproducibility checks.
         """
         return sha256_hex(self.to_dict())
+
+    def save(self, path: str | Path) -> None:
+        """Write the plan to ``path`` as a versioned envelope."""
+        write_envelope(path, PLAN_SCHEMA, self.to_dict(), version=PLAN_VERSION)
+
+    @classmethod
+    def load(cls, path: str | Path) -> Plan:
+        """Load a plan written by :meth:`save`."""
+        return cls.from_dict(read_envelope(path, PLAN_SCHEMA, version=PLAN_VERSION))
 
 
 @dataclass
