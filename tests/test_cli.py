@@ -297,6 +297,7 @@ def test_cmd_triggers_runs(capsys):
     assert "Active" in out
 
 
+@pytest.mark.slow
 def test_cmd_eval_runs_scenario_suite(capsys):
     rc = main(["eval", "--seed", "42", "--days", "30"])
     out = capsys.readouterr().out
@@ -306,6 +307,7 @@ def test_cmd_eval_runs_scenario_suite(capsys):
     assert "Aggregate pass: True" in out
 
 
+@pytest.mark.slow
 def test_cmd_eval_json_has_cards_and_aggregate(capsys):
     main(["eval", "--seed", "1", "--days", "20", "--json"])
     data = json.loads(capsys.readouterr().out)

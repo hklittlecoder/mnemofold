@@ -10,6 +10,8 @@ reviewed. Nothing here is a real-corpus or real-user result.
 import json
 from pathlib import Path
 
+import pytest
+
 from mnemofold.evaluation import ScenarioConfig, run_suite
 
 GOLDEN_PATH = Path(__file__).parent / "fixtures" / "evaluation_suite_golden.json"
@@ -37,5 +39,6 @@ class TestGoldenSuite:
         assert GOLDEN_PATH.exists(), "golden fixture missing; regenerate it deliberately"
         assert golden_payload() == GOLDEN_PATH.read_text()
 
+    @pytest.mark.slow
     def test_regeneration_is_stable(self):
         assert golden_payload() == golden_payload()

@@ -121,6 +121,7 @@ class TestFoldingDemoExample:
         assert first == capsys.readouterr().out
 
 
+@pytest.mark.slow
 class TestAssistantWeekExample:
     def test_runs_and_reports_ok(self, capsys):
         rc = load_example("assistant_week").main()

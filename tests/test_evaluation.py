@@ -424,6 +424,7 @@ class TestScenarioSweeps:
             assert first == second, runner.__name__
 
 
+@pytest.mark.slow
 class TestPrivacyDeletionScenario:
     def test_zero_violations_and_clean_deletion(self):
         result = run_privacy_deletion_scenario(ScenarioConfig(seed=42, days=60))
@@ -450,6 +451,7 @@ class TestPrivacyDeletionScenario:
         assert first == second
 
 
+@pytest.mark.slow
 class TestCommitmentSlices:
     def test_slices_are_sorted_and_cover_planted_total(self):
         cfg = ScenarioConfig(seed=42, days=120)
@@ -481,6 +483,7 @@ class TestCommitmentSlices:
         assert first == second
 
 
+@pytest.mark.slow
 class TestEvaluationSuite:
     def test_suite_runs_every_scenario(self):
         suite = run_suite(ScenarioConfig(seed=42, days=60))

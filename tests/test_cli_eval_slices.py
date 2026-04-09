@@ -6,6 +6,8 @@ import pytest
 
 from mnemofold.cli import main
 
+pytestmark = pytest.mark.slow
+
 
 class TestEvalSlices:
     def test_default_has_empty_slices(self, capsys):
