@@ -332,6 +332,37 @@ class ReceiptLog:
             head = _chain_link(head, receipt)
         return head == expected_head
 
+    def summary(self) -> dict[str, Any]:
+        """Aggregate counts over the log: per tool, per decision, success.
+
+        Deterministic (sorted mapping keys) and JSON-safe, so the
+        summary can be embedded in fold reports, dashboards, or export
+        bundles. An empty log summarizes to zeros rather than raising.
+        """
+        by_tool: dict[str, int] = {}
+        by_decision: dict[str, int] = {}
+        successes = 0
+        cached = 0
+        keys: set[str] = set()
+        for receipt in self._receipts:
+            by_tool[receipt.tool_name] = by_tool.get(receipt.tool_name, 0) + 1
+            by_decision[receipt.decision] = by_decision.get(receipt.decision, 0) + 1
+            if receipt.success:
+                successes += 1
+            if receipt.from_cache:
+                cached += 1
+            if receipt.idempotency_key:
+                keys.add(receipt.idempotency_key)
+        return {
+            "total": len(self._receipts),
+            "successes": successes,
+            "failures": len(self._receipts) - successes,
+            "cached": cached,
+            "unique_idempotency_keys": len(keys),
+            "by_tool": dict(sorted(by_tool.items())),
+            "by_decision": dict(sorted(by_decision.items())),
+        }
+
     def to_jsonl(self) -> str:
         """Serialize receipts as JSONL (one canonical JSON object per line)."""
         return "".join(
