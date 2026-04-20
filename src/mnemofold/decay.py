@@ -250,3 +250,25 @@ def _days_between(a: str, b: str) -> float:
         return (tb - ta).total_seconds() / 86400.0
     except (ValueError, TypeError):
         return 0.0
+
+
+def find_steady_state(results: list[dict[str, Any]]) -> int | None:
+    """First day from which a decay simulation stopped changing anything.
+
+    Expects the per-day rows produced by :meth:`DecayEngine.simulate`.
+    A day is steady when it AND every later day report zero demotions,
+    tombstones and purges; the earliest such day in the quiet tail is
+    returned. Returns None when activity never settles or the input is
+    empty. Rows without activity keys count as quiet, so partial
+    simulations still converge.
+    """
+    if not results:
+        return None
+    steady: int | None = None
+    for row in reversed(results):
+        active = row.get("demoted", 0) or row.get("tombstoned", 0) or row.get("purged", 0)
+        if active:
+            break
+        day = row.get("day")
+        steady = int(day) if day is not None else None
+    return steady
