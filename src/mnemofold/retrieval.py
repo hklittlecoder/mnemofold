@@ -415,6 +415,25 @@ class RetrievalEngine:
             project = str(item.metadata.get("project", "")).lower()
             if project not in parsed.projects:
                 return False
+        if parsed.excluded_tags:
+            item_tags = {t.lower() for t in item.tags}
+            if item_tags.intersection(parsed.excluded_tags):
+                return False
+        if parsed.excluded_people:
+            people = {str(p).lower() for p in item.metadata.get("people", ())}
+            person = str(item.metadata.get("person", "")).lower()
+            if person:
+                people.add(person)
+            if people.intersection(parsed.excluded_people):
+                return False
+        if parsed.excluded_projects:
+            project = str(item.metadata.get("project", "")).lower()
+            if project in parsed.excluded_projects:
+                return False
+        if parsed.excluded_terms:
+            words = set(tokenize(f"{item.title} {item.content}"))
+            if any(term in words for term in parsed.excluded_terms):
+                return False
         return self._within_time_bounds(parsed, item)
 
     def _within_time_bounds(self, parsed: ParsedQuery, item: MemoryItem) -> bool:
@@ -637,6 +656,11 @@ _FILTER_RE = re.compile(
 _LIST_FILTERS = ("tag", "person", "project")
 _INSTANT_FILTERS = ("before", "after", "on")
 
+_NEG_FILTER_RE = re.compile(
+    r"(?:^|\s)-(?P<key>tag|person|project):(?P<value>\S+)",
+    re.IGNORECASE,
+)
+
 
 @dataclass(slots=True)
 class ParsedQuery:
@@ -648,6 +672,8 @@ class ParsedQuery:
       case-insensitively;
     * ``before:<iso>``, ``after:<iso>``, ``on:<iso>`` — temporal bounds,
       last occurrence wins;
+    * ``-tag:<t>``, ``-person:<p>``, ``-project:<pr>`` and a bare
+      ``-term`` — exclusions: matching items are dropped from results;
     * everything else is free text for BM25.
     """
 
@@ -658,6 +684,10 @@ class ParsedQuery:
     before: str | None = None
     after: str | None = None
     on: str | None = None
+    excluded_tags: list[str] = field(default_factory=list)
+    excluded_people: list[str] = field(default_factory=list)
+    excluded_projects: list[str] = field(default_factory=list)
+    excluded_terms: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -668,6 +698,10 @@ class ParsedQuery:
             "before": self.before,
             "after": self.after,
             "on": self.on,
+            "excluded_tags": list(self.excluded_tags),
+            "excluded_people": list(self.excluded_people),
+            "excluded_projects": list(self.excluded_projects),
+            "excluded_terms": list(self.excluded_terms),
         }
 
     @classmethod
@@ -680,16 +714,35 @@ class ParsedQuery:
             before=data.get("before"),
             after=data.get("after"),
             on=data.get("on"),
+            excluded_tags=list(data.get("excluded_tags", [])),
+            excluded_people=list(data.get("excluded_people", [])),
+            excluded_projects=list(data.get("excluded_projects", [])),
+            excluded_terms=list(data.get("excluded_terms", [])),
         )
 
     def has_filters(self) -> bool:
         return bool(
-            self.tags or self.people or self.projects or self.before or self.after or self.on
+            self.tags
+            or self.people
+            or self.projects
+            or self.before
+            or self.after
+            or self.on
+            or self.excluded_tags
+            or self.excluded_people
+            or self.excluded_projects
+            or self.excluded_terms
         )
 
 
 def parse_query(raw: str) -> ParsedQuery:
-    """Split a raw query string into filters and free text, deterministically."""
+    """Split a raw query string into filters, exclusions and free text.
+
+    Positive filters (``tag:x``) and their negations (``-tag:x``) are
+    extracted first; a bare ``-word`` excludes items containing that
+    token. Negations never cancel positives — ``tag:a -tag:a`` matches
+    items tagged ``a`` and then drops them, yielding no results.
+    """
     parsed = ParsedQuery()
     for match in _FILTER_RE.finditer(raw):
         key = match.group("key").lower()
@@ -701,8 +754,26 @@ def parse_query(raw: str) -> ParsedQuery:
                 target.append(lowered)
         elif key in _INSTANT_FILTERS:
             setattr(parsed, key, value)
-    remainder = _FILTER_RE.sub(" ", raw)
-    parsed.text = " ".join(remainder.split())
+    neg_targets = {
+        "tag": parsed.excluded_tags,
+        "person": parsed.excluded_people,
+        "project": parsed.excluded_projects,
+    }
+    for match in _NEG_FILTER_RE.finditer(raw):
+        target = neg_targets[match.group("key").lower()]
+        lowered = match.group("value").lower()
+        if lowered not in target:
+            target.append(lowered)
+    remainder = _NEG_FILTER_RE.sub(" ", _FILTER_RE.sub(" ", raw))
+    kept: list[str] = []
+    for token in remainder.split():
+        if len(token) > 1 and token.startswith("-"):
+            term = token[1:].lower()
+            if term and term not in parsed.excluded_terms:
+                parsed.excluded_terms.append(term)
+        else:
+            kept.append(token)
+    parsed.text = " ".join(kept)
     return parsed
 
 
