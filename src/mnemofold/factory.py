@@ -142,13 +142,21 @@ class WorkHistoryFactory:
     """
 
     def __init__(
-        self, seed: int = 42, days: int = 180, config: FactoryConfig | None = None
+        self,
+        seed: int = 42,
+        days: int = 180,
+        config: FactoryConfig | None = None,
+        start_date: str = "2025-01-01",
     ) -> None:
         self.seed = seed
         self.days = days
         self.config = config or FactoryConfig()
         self.config.validate()
-        self.start_date = datetime(2025, 1, 1, tzinfo=UTC)
+        # The default reproduces the baseline history byte-for-byte; any
+        # other ISO date shifts every generated timestamp and deadline.
+        # Naive dates are interpreted as UTC.
+        parsed = datetime.fromisoformat(start_date)
+        self.start_date = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
         self.personas: list[Persona] = []
         self.projects: list[str] = []
         self._rng: random.Random = random.Random(seed)
