@@ -110,6 +110,27 @@ class TriggerEngine:
     def add_rule(self, rule: TriggerRule) -> None:
         self._rules.append(rule)
 
+    def remove_rule(self, rule_id: str) -> bool:
+        """Drop a rule by id; returns True when one was removed.
+
+        Cooldown and dedupe memory is deliberately kept: a rule that
+        comes back later must not be able to fire again inside the
+        cooldown window it already used.
+        """
+        before = len(self._rules)
+        self._rules = [r for r in self._rules if r.rule_id != rule_id]
+        return len(self._rules) < before
+
+    def replace_rules(self, rules: list[TriggerRule]) -> None:
+        """Swap the whole rule set, keeping fire memory.
+
+        Derived rule sets change as the ledger changes; replacing keeps
+        the engine in sync with the latest derivation while cooldown and
+        dedupe state for surviving rule ids persists, so re-deriving can
+        never reset a cooldown.
+        """
+        self._rules = list(rules)
+
     def rules(self) -> list[TriggerRule]:
         return list(self._rules)
 
