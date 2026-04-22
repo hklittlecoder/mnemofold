@@ -183,3 +183,46 @@ export / standup / review / playbooks / ledger / triage / fold / asof /
 context / prep / privacy / triggers / replay / diff / eval / demo /
 version。`mnemofold <subcommand> --help` 查看参数；退出码：0 成功、
 1 操作性错误、2 校验失败。
+
+
+## 完整性、预览与查询排除（0.1.3+）
+
+### 工作区完整性与删除预览
+
+- `Workspace.verify_integrity()`：只读审计，返回
+  `{ok, checks{journal_chain, trace_chain, no_resurrection, projection_stable},
+  frames_checked, first_bad_frame, tombstones, resurrected_keys, projection_digest}`；
+- `Workspace.forget_preview(item_id)`：右被遗忘请求的影响预演，
+  额外给出 `ledger_commitments_affected`；不产生任何删除、墓碑或 trace；
+- CLI：`mnemofold verify --db DIR [--json]`、
+  `mnemofold forget --db DIR ID --now TS --preview`。
+
+### 评估切片
+
+- `evaluation.run_role_slices(config)`：按 persona 角色切片的承诺
+  scorecard（与 `run_commitment_slices` 同一测量机制）；
+- `evaluation.compare_scorecards(baseline, candidate)`：指标级漂移报告；
+- `evaluation.precision_at_k_curve(relevant, retrieved, ks)`：precision@k 曲线；
+- CLI：`mnemofold eval --slices {none,projects,roles}`（`--json` 时输出
+  `slices` 数组）。
+
+### 查询排除语法
+
+`parse_query` 在既有 `tag:` / `person:` / `project:` / `before:` /
+`after:` / `on:` 过滤器之外支持排除：
+
+- `-tag:draft`、`-person:bo`、`-project:ops`：排除命中标签/人员/项目的条目；
+- `-word`：排除正文或标题包含该 token 的条目（连字符词如 `e2e-tests`
+  不受影响）；
+- 排除不会“抵消”正向过滤器：`tag:x -tag:x` 返回空集；
+- `ParsedQuery.to_dict` 携带 `excluded_*` 字段，roundtrip 无损。
+
+### 其他
+
+- `context.explain_pack(packer, items)`：每个候选的入选/落选原因
+  （`selected` / `ineligible` / `outcompeted`）与价值密度；
+- `decay.find_steady_state(results)`：衰减模拟收敛日检测；
+- `salience_torch.export_weights / import_weights`：模型权重的纯 JSON
+  导出（格式 `salience_mlp_v1`，不依赖 torch pickle）；
+- `plan.Plan.save / load`：计划文件的版本化 envelope 持久化；
+- `tools.ReceiptLog.summary()`：按工具与决定聚合的收据统计。
