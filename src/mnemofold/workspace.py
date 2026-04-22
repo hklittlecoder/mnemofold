@@ -430,10 +430,12 @@ class Workspace:
         Fired counts are receipted into the trace.
         """
         moment = _parse_now(now)
-        known = {rule.rule_id for rule in self.trigger_engine.rules()}
-        for rule in derive_commitment_rules(self.ledger, moment, ahead_days=ahead_days):
-            if rule.rule_id not in known:
-                self.trigger_engine.add_rule(rule)
+        # Replace rather than append: rules for commitments that finished
+        # since the last tick must stop firing, while the engine keeps
+        # cooldown/dedupe memory for the rule ids that survive.
+        self.trigger_engine.replace_rules(
+            derive_commitment_rules(self.ledger, moment, ahead_days=ahead_days)
+        )
         fired = self.trigger_engine.tick(moment)
         self.trace.record_receipt(now, {"action": "triggers", "fired": len(fired)})
         return fired
