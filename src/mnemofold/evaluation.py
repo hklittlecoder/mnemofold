@@ -916,3 +916,49 @@ def run_robustness_scenario(config: ScenarioConfig | None = None) -> ScenarioRes
     card.add(MetricResult("full_commitment_recall", full["commitment_recall"], threshold=1.0))
     card.add(MetricResult("mail_only_commitment_recall", sliced["commitment_recall"]))
     return ScenarioResult(scorecard=card, measurements={"full": full, "mail_only": sliced})
+
+
+def run_noise_sweep(
+    config: ScenarioConfig | None = None,
+    noise_levels: tuple[float, ...] = (0.0, 0.25, 0.5),
+) -> list[ScenarioResult]:
+    """Measure commitment recall under increasing synthetic noise.
+
+    Each level re-runs the whole measurement with ``FactoryConfig.
+    noise_level`` overridden; results come back ordered by level. Every
+    number is measured against the planted ground truth at that level —
+    the sweep reports what happens, it does not assume monotone
+    degradation. No threshold is attached to the noisy recall metric:
+    it is a reported measurement, not a pass/fail gate.
+    """
+    cfg = config or ScenarioConfig()
+    results: list[ScenarioResult] = []
+    for level in noise_levels:
+        base = cfg.factory_config or FactoryConfig()
+        noisy = FactoryConfig(
+            include_designer=base.include_designer,
+            noise_level=level,
+            workflow_repeats=base.workflow_repeats,
+            contradiction_kinds=base.contradiction_kinds,
+        )
+        level_cfg = ScenarioConfig(
+            seed=cfg.seed,
+            days=cfg.days,
+            now_day=cfg.now_day,
+            top_k=cfg.top_k,
+            context_budget=cfg.context_budget,
+            factory_config=noisy,
+        )
+        measured = _commitment_measurements(level_cfg)
+        card = Scorecard(
+            scenario=f"noise-{level}-seed{cfg.seed}",
+            details={
+                "ground_truth": f"synthetic planted commitments (noise_level={level})",
+                "noise_level": level,
+                "planted_commitments": measured["planted"],
+                "recovered": measured["recovered"],
+            },
+        )
+        card.add(MetricResult("noisy_commitment_recall", measured["commitment_recall"]))
+        results.append(ScenarioResult(scorecard=card, measurements=measured))
+    return results
