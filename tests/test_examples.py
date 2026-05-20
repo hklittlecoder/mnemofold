@@ -156,3 +156,32 @@ class TestAssistantWeekExample:
         first = capsys.readouterr().out
         module.main()
         assert first == capsys.readouterr().out
+
+
+class TestLifecyclePrivacyExample:
+    def test_runs_and_reports_ok(self, capsys):
+        rc = load_example("lifecycle_privacy").main()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "RESULT: OK" in out
+
+    def test_privacy_and_audit_checks_reported(self, capsys):
+        load_example("lifecycle_privacy").main()
+        out = capsys.readouterr().out
+        for marker in (
+            "sealed_hides_email",
+            "vault_unseal_restores",
+            "preview_plans_the_note",
+            "forgotten_not_recallable",
+            "integrity_ok",
+        ):
+            assert marker in out
+
+    @pytest.mark.slow
+    def test_output_is_deterministic(self, capsys):
+        module = load_example("lifecycle_privacy")
+        module.main()
+        first = capsys.readouterr().out
+        module.main()
+        second = capsys.readouterr().out
+        assert first == second

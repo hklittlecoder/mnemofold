@@ -6,3 +6,7 @@ Mnemofold 离线示例目录。每个示例有独立的 README。
 - `contradiction_month/` — 矛盾月份：冲突截止日期与所有者、取代策略、as-of 查询、审计追踪与删除级联
 - `folding_demo/` — 折叠：夜间巩固、复发挖掘、剧本建议与折叠报告
 - `assistant_week/` — 完整助手周：分诊、会议准备、站立会 HTML 与评估评分卡
+
+- `lifecycle_privacy/` — 记忆生命周期与隐私走查：PII 检出与可逆封存、
+  夜间折叠、带引用检索、预览式右被遗忘（forget_preview → forget）、
+  四层完整性审计；全部离线、确定性，PII 为合成数据。

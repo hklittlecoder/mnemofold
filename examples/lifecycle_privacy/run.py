@@ -32,7 +32,7 @@ from mnemofold.workspace import Workspace
 
 SEED = 31
 DAYS = 10
-RAW_NOTE = "Mail ana.chen@corp.example or +1-555-0142 about card 4111 1111 1111 1111."
+RAW_NOTE = "Mail ana.chen@corp.example or +1 (555) 010-0142 about card 4111 1111 1111 1111."
 
 
 def main() -> int:
@@ -41,7 +41,9 @@ def main() -> int:
         factory = WorkHistoryFactory(seed=SEED, days=DAYS)
         synthetic, manifest = factory.generate()
         events = [e.to_event() for e in synthetic]
-        now = events[-1].timestamp
+        # SyntheticEvent.timestamp is an ISO string — exactly what the
+        # workspace APIs take; typed Event.timestamp is a datetime.
+        now = synthetic[-1].timestamp
 
         print(f"=== mnemofold lifecycle & privacy example (seed={SEED}) ===")
         print(f"history: {len(events)} events, checksum {manifest.checksum}")
