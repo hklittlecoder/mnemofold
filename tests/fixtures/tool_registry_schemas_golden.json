@@ -1,0 +1,1 @@
+[{"capabilities":[],"description":"Echo message","idempotent":true,"max_retries":0,"name":"echo","parameters":{"message":{"type":"string"}},"required":["message"],"side_effect":"none","timeout_seconds":30.0},{"capabilities":[],"description":"No-op","idempotent":true,"max_retries":0,"name":"noop","parameters":{},"required":[],"side_effect":"none","timeout_seconds":30.0}]
