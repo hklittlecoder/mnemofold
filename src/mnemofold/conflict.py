@@ -344,3 +344,49 @@ class ConflictDetector:
         for contradiction in contradictions:
             self.resolver.apply_resolution(store, contradiction, superseded_at)
         return contradictions
+
+
+def _md_cell(value: object) -> str:
+    """Escape a value for one Markdown table cell."""
+    return str(value).replace("|", "\\|")
+
+
+def audit_report_markdown(report: dict[str, Any]) -> str:
+    """Deterministic Markdown rendering of an :meth:`audit_report` dict.
+
+    Sections: totals, resolutions by reason, and one table row per
+    contradiction citing its fact key, winner and reason — the same
+    fields the resolver recorded, nothing invented. Pipe characters in
+    values are escaped so hostile fact keys cannot break the table.
+    """
+    lines = [
+        "# Contradiction Audit",
+        "",
+        f"- total: {report.get('total', 0)}",
+        f"- resolved: {report.get('resolved', 0)}",
+        f"- unresolved: {report.get('unresolved', 0)}",
+        "",
+        "## Resolutions by reason",
+        "",
+    ]
+    by_reason = report.get("by_reason", {})
+    if by_reason:
+        for reason in sorted(by_reason):
+            lines.append(f"- {reason}: {by_reason[reason]}")
+    else:
+        lines.append("- (none)")
+    lines.extend(["", "## Contradictions", ""])
+    entries = report.get("contradictions", [])
+    if entries:
+        lines.append("| fact key | resolved | winner | reason |")
+        lines.append("| --- | --- | --- | --- |")
+        for c in entries:
+            lines.append(
+                f"| {_md_cell(c.get('fact_key', ''))} "
+                f"| {_md_cell(c.get('resolved', False))} "
+                f"| {_md_cell(c.get('winner', ''))} "
+                f"| {_md_cell(c.get('reason', ''))} |"
+            )
+    else:
+        lines.append("_No contradictions recorded._")
+    return "\n".join(lines)
