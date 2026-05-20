@@ -615,6 +615,7 @@ class Workspace:
             "tombstones": self.deletion.tombstones.count(),
             "resurrected_keys": resurrected,
             "projection_digest": digest,
+            "journal": self.journal.stats(),
         }
 
 

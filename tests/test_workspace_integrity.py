@@ -67,7 +67,9 @@ class TestVerifyIntegrity:
             "tombstones",
             "resurrected_keys",
             "projection_digest",
+            "journal",
         }
+        assert report["journal"]["frames"] == report["frames_checked"]
         assert set(report["checks"]) == {
             "journal_chain",
             "trace_chain",

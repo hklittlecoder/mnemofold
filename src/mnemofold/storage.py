@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from mnemofold.events import Event
 
@@ -390,6 +390,20 @@ class Journal:
         if row is None:
             return _genesis_chain_checksum()
         return row[0]
+
+    def stats(self) -> dict[str, Any]:
+        """Operational counters for dashboards and integrity reports.
+
+        Read-only and deterministic: frame and tombstone counts, the
+        current chain head, and the schema version the file is on.
+        """
+        row = self._conn.execute("SELECT COUNT(*) FROM tombstones").fetchone()
+        return {
+            "frames": len(self),
+            "tombstones": int(row[0]) if row else 0,
+            "head_checksum": self.head_checksum(),
+            "schema_version": SCHEMA_VERSION,
+        }
 
     # ------------------------------------------------------------------
     # Tombstones
