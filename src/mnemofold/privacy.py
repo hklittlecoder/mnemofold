@@ -402,6 +402,32 @@ class AccessLog:
                 raise ValueError(f"access log chain mismatch at line {lineno}")
         return log
 
+    def summary(self) -> dict[str, Any]:
+        """Aggregate view: counts by principal, action and outcome.
+
+        Sorted mapping keys and ISO first/last timestamps keep the
+        summary deterministic; an empty log summarizes to zeros with
+        ``None`` bounds. Complements :meth:`count_by_principal` with the
+        action/outcome breakdown an audit dashboard needs.
+        """
+        by_principal: dict[str, int] = {}
+        by_action: dict[str, int] = {}
+        granted = 0
+        for entry in self._entries:
+            by_principal[entry.principal] = by_principal.get(entry.principal, 0) + 1
+            by_action[entry.action] = by_action.get(entry.action, 0) + 1
+            if entry.granted:
+                granted += 1
+        return {
+            "total": len(self._entries),
+            "granted": granted,
+            "denied": len(self._entries) - granted,
+            "by_principal": dict(sorted(by_principal.items())),
+            "by_action": dict(sorted(by_action.items())),
+            "first": self._entries[0].timestamp.isoformat() if self._entries else None,
+            "last": self._entries[-1].timestamp.isoformat() if self._entries else None,
+        }
+
 
 _TIER_ORDER = {
     PrivacyTier.PUBLIC: 0,
