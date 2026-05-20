@@ -27,7 +27,7 @@ from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.privacy import RedactionVault, detect_pii
 from mnemofold.retrieval import RetrievalEngine, build_deletion_engine, forget
 from mnemofold.temporal import IntervalFact, TemporalStore
-from mnemofold.triage import TriageItem, TriageScorer
+from mnemofold.triage import TriageItem, TriageResult, TriageScorer
 
 
 class MetricStatus(StrEnum):
@@ -962,3 +962,45 @@ def run_noise_sweep(
         card.add(MetricResult("noisy_commitment_recall", measured["commitment_recall"]))
         results.append(ScenarioResult(scorecard=card, measurements=measured))
     return results
+
+
+def triage_calibration(
+    results: list[TriageResult],
+    labels: dict[str, bool],
+    bins: int = 10,
+) -> dict[str, Any]:
+    """Calibration of triage scores against planted relevance labels.
+
+    Treats each triage score as a predicted probability that the item is
+    relevant (``labels`` maps item_id -> bool) and reports the Brier
+    score, the expected calibration error over equal-width bins, and the
+    per-bin breakdown. Items without a planted label are skipped and the
+    skip count is reported, so the measurement never silently invents
+    ground truth. All numbers come from the given synthetic labels.
+    """
+    probs: list[float] = []
+    outcomes: list[bool] = []
+    unlabeled = 0
+    for result in results:
+        if result.item_id in labels:
+            probs.append(min(1.0, max(0.0, result.score)))
+            outcomes.append(bool(labels[result.item_id]))
+        else:
+            unlabeled += 1
+    report = calibration_report(probs, outcomes, bins=bins)
+    return {
+        "labeled": len(probs),
+        "unlabeled": unlabeled,
+        "brier": brier_score(probs, outcomes),
+        "ece": expected_calibration_error(report),
+        "bins": [
+            {
+                "lower": b.lower,
+                "upper": b.upper,
+                "count": b.count,
+                "mean_predicted": b.mean_predicted,
+                "observed_rate": b.observed_rate,
+            }
+            for b in report
+        ],
+    }
