@@ -54,6 +54,15 @@ class TriageResult:
     priority: TriagePriority
     reasons: list[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Deterministic dict form; score quantized to 6 decimals."""
+        return {
+            "item_id": self.item_id,
+            "score": round(self.score, 6),
+            "priority": self.priority.value,
+            "reasons": list(self.reasons),
+        }
+
 
 def _parse_dt(s: str) -> datetime | None:
     try:

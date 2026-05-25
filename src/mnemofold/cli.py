@@ -77,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_triage.add_argument("--seed", type=int, default=42, help="seed for demo data")
     p_triage.add_argument("--days", type=int, default=14, help="days of history")
     p_triage.add_argument("--top", type=int, default=10, help="show top N items")
+    p_triage.add_argument("--json", action="store_true", help="output JSON results")
     p_triage.set_defaults(func=_cmd_triage)
 
     # fold
@@ -533,13 +534,27 @@ def _cmd_triage(args: argparse.Namespace) -> int:
             sender_importance=0.6,
         )
         result = scorer.score(item, now=now)
-        results.append((result.score, item, result.reasons))
+        results.append((result.score, item, result.reasons, result))
 
     results.sort(key=lambda x: -x[0])
     top_n = results[: args.top]
 
+    if args.json:
+        import json
+
+        payload = {
+            "scored": len(results),
+            "shown": len(top_n),
+            "top": [
+                {**result.to_dict(), "title": item.title, "sender": item.sender}
+                for _score, item, _reasons, result in top_n
+            ],
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
     print(f"=== Inbox Triage (top {args.top} of {len(results)}) ===")
-    for rank, (score, item, reasons) in enumerate(top_n, 1):
+    for rank, (score, item, reasons, _result) in enumerate(top_n, 1):
         reason_str = ", ".join(reasons[:3]) if reasons else "no reasons"
         print(f"{rank:2d}. [{score:.3f}] {item.title[:55]}")
         print(f"     from: {item.sender}  ({reason_str})")
