@@ -99,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_context.add_argument("--days", type=int, default=30, help="days of history")
     p_context.add_argument("--budget", type=int, default=2000, help="token budget")
     p_context.add_argument("--profile", default="meeting_prep", help="packing profile")
+    p_context.add_argument("--json", action="store_true", help="output the pack as JSON")
     p_context.set_defaults(func=_cmd_context)
 
     # prep
@@ -666,6 +667,13 @@ def _cmd_context(args: argparse.Namespace) -> int:
     pack = packer.pack(items)
 
     within = pack.total_tokens <= pack.budget
+    if args.json:
+        import json
+
+        payload = pack.to_dict()
+        payload["within_budget"] = within
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
     print(f"=== Context Pack (budget={args.budget}, profile={profile.value}) ===")
     print(f"Items packed: {len(pack.items)}")
     print(f"Tokens used:  {pack.total_tokens}")

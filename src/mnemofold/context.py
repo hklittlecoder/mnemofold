@@ -86,6 +86,30 @@ class ContextPack:
             lines.append("")
         return "\n".join(lines)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Deterministic dict form; priorities quantized to 6 decimals.
+
+        Includes the budget headroom so consumers can check the packing
+        invariant (``total_tokens <= budget``) without recomputation.
+        """
+        return {
+            "profile": str(self.profile),
+            "ordering": self.ordering,
+            "budget": self.budget,
+            "total_tokens": self.total_tokens,
+            "headroom": self.budget - self.total_tokens,
+            "items": [
+                {
+                    "item_id": it.item_id,
+                    "title": it.title,
+                    "category": it.category,
+                    "token_estimate": it.token_estimate,
+                    "priority": round(it.priority, 6),
+                }
+                for it in self.items
+            ],
+        }
+
 
 def estimate_tokens(text: str) -> int:
     """Deterministic token count estimator.
