@@ -346,3 +346,23 @@ class ApprovalQueue:
         """Load a queue written by :meth:`save`."""
         data = read_envelope(path, APPROVAL_QUEUE_SCHEMA, version=APPROVAL_QUEUE_VERSION)
         return cls.from_dict(data)
+
+    def stats_by_approver(self) -> dict[str, dict[str, int]]:
+        """Per-approver outcome counts for audit dashboards.
+
+        Covers every request currently or previously assigned to each
+        registered approver, broken down by status, plus an
+        ``escalated_away`` counter for requests an approver let escalate.
+        Requests naming an unregistered approver still appear, so the
+        breakdown never silently drops history. Keys are sorted for
+        deterministic reports.
+        """
+        stats: dict[str, dict[str, int]] = {name: {} for name in sorted(self.approvers)}
+        for request in self.requests:
+            bucket = stats.setdefault(request.approver, {})
+            key = request.status.value
+            bucket[key] = bucket.get(key, 0) + 1
+            if request.escalated_from:
+                source = stats.setdefault(request.escalated_from, {})
+                source["escalated_away"] = source.get("escalated_away", 0) + 1
+        return {name: dict(sorted(stats[name].items())) for name in sorted(stats)}
