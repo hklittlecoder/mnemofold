@@ -3,6 +3,32 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本处于 0.x 阶段，每次发布仅递增补丁号。
 
+## [0.1.4] - 2026-11-18
+
+围绕触发器生命周期、审计聚合与合成历史可配置性的深化。
+
+### Added
+
+- 触发器：`TriggerEngine.remove_rule` / `replace_rules`（保留冷却与去重
+  记忆）；陈旧线程、待跟进提问、每日/每周排程规则派生
+- 工厂：合成历史起始日期可配置（默认值与基线字节一致）；按事件类型
+  切片历史（`FactoryConfig.event_types`）
+- 评估：噪声扫描 `run_noise_sweep`、分诊校准 `triage_calibration`
+  （Brier + ECE，逐箱报告）
+- 存储：`Journal.stats` 运行计数器，并并入 `verify_integrity` 报告
+- 隐私：`AccessLog.summary` 按主体/动作/结果聚合
+- 审批：`ApprovalQueue.stats_by_approver` 按审批人拆解结果与升级次数
+- 冲突：`audit_report_markdown` 矛盾审计 Markdown 渲染（转义表格值）
+- 查询：`-tag:` / `-person:` / `-project:` / `-term` 排除语法
+- 示例：`lifecycle_privacy` 全生命周期走查（封存 → 折叠 → 引用检索 →
+  预览式遗忘 → 四层审计）
+- 工具：`ReceiptLog.summary` 收据聚合；默认注册表 schema golden 冻结
+
+### Fixed
+
+- 工作区触发器 tick 改为整组替换派生规则：已完成承诺的提醒规则
+  不再作为“幽灵规则”在冷却窗口后继续触发
+
 ## [0.1.3] - 2026-11-18
 
 聚焦完整性审计、确定性合并与报表深化。
