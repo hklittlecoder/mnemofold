@@ -1,0 +1,1 @@
+{"edges":[{"active":true,"edge_id":"e-participates-1","edge_type":"participates","properties":{"since":"2026-01-05"},"source_id":"n-ana","target_id":"n-atlas"}],"nodes":[{"active":true,"label":"Ana Chen","node_id":"n-ana","node_type":"person","properties":{"team":"core"}},{"active":true,"label":"Atlas","node_id":"n-atlas","node_type":"project","properties":{}}]}
