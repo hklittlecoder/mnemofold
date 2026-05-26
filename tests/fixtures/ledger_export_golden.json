@@ -1,0 +1,66 @@
+{
+  "commitments": [
+    {
+      "commitment_id": "c1",
+      "created_at": "2026-03-01T09:00:00+00:00",
+      "depends_on": [],
+      "description": "draft spec",
+      "due_date": "2026-03-05T17:00:00+00:00",
+      "grace_hours": 2.0,
+      "metadata": {
+        "channel": "mail"
+      },
+      "owed_by": "ana",
+      "owed_to": "bo",
+      "priority": 0.7,
+      "source_event_ids": [
+        "evt_a"
+      ],
+      "status": "open",
+      "tags": [
+        "review",
+        "urgent"
+      ],
+      "updated_at": ""
+    },
+    {
+      "commitment_id": "c2",
+      "created_at": "2026-03-02T09:00:00+00:00",
+      "depends_on": [],
+      "description": "review spec",
+      "due_date": "2026-03-06T17:00:00+00:00",
+      "grace_hours": 0.0,
+      "metadata": {},
+      "owed_by": "bo",
+      "owed_to": "ana",
+      "priority": 0.5,
+      "source_event_ids": [],
+      "status": "done",
+      "tags": [],
+      "updated_at": "2026-03-04T10:00:00+00:00"
+    }
+  ],
+  "history": [
+    {
+      "action": "created",
+      "commitment_id": "c1",
+      "from_status": null,
+      "timestamp": "2026-03-01T09:00:00+00:00",
+      "to_status": "open"
+    },
+    {
+      "action": "created",
+      "commitment_id": "c2",
+      "from_status": null,
+      "timestamp": "2026-03-02T09:00:00+00:00",
+      "to_status": "open"
+    },
+    {
+      "action": "status_change",
+      "commitment_id": "c2",
+      "from_status": "open",
+      "timestamp": "2026-03-04T10:00:00+00:00",
+      "to_status": "done"
+    }
+  ]
+}
