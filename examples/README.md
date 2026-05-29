@@ -10,3 +10,6 @@ Mnemofold 离线示例目录。每个示例有独立的 README。
 - `lifecycle_privacy/` — 记忆生命周期与隐私走查：PII 检出与可逆封存、
   夜间折叠、带引用检索、预览式右被遗忘（forget_preview → forget）、
   四层完整性审计；全部离线、确定性，PII 为合成数据。
+
+- `playbook_lifecycle/` — 剧本生命周期：复发挖掘 → 提议 → 审批门控执行
+  （拒绝/批准两条路径）→ 修订与版本 diff；全部离线、确定性。

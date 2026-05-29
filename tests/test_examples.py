@@ -185,3 +185,33 @@ class TestLifecyclePrivacyExample:
         module.main()
         second = capsys.readouterr().out
         assert first == second
+
+
+class TestPlaybookLifecycleExample:
+    def test_runs_and_reports_ok(self, capsys):
+        rc = load_example("playbook_lifecycle").main()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "RESULT: OK" in out
+
+    def test_lifecycle_checks_reported(self, capsys):
+        load_example("playbook_lifecycle").main()
+        out = capsys.readouterr().out
+        for marker in (
+            "recurrence_mined",
+            "denied_run_blocked",
+            "approved_run_completed",
+            "run_count_incremented",
+            "revision_created",
+            "diff_shows_removed_step",
+        ):
+            assert marker in out
+
+    @pytest.mark.slow
+    def test_output_is_deterministic(self, capsys):
+        module = load_example("playbook_lifecycle")
+        module.main()
+        first = capsys.readouterr().out
+        module.main()
+        second = capsys.readouterr().out
+        assert first == second
