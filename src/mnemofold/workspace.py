@@ -33,6 +33,7 @@ from mnemofold.ingest import CommitmentExtractor
 from mnemofold.ledger import Commitment, CommitmentLedger
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.prep import MeetingPrep, MeetingPrepper
+from mnemofold.privacy import RedactionVault
 from mnemofold.replay import TraceReader, TraceRecorder
 from mnemofold.retrieval import (
     RetrievalEngine,
@@ -478,14 +479,25 @@ class Workspace:
         title: str = "",
         tags: list[str] | None = None,
         author: str = "user",
+        seal_with: RedactionVault | None = None,
     ) -> str:
         """Record a note into the journal and project it.
 
         The event is content-addressed, so remembering the same text at
         the same instant is idempotent. ``now`` must be an explicit ISO
         instant — the workspace never reads the wall clock.
+
+        With ``seal_with``, text and title pass through the vault BEFORE
+        anything is journaled: the raw values never touch the journal,
+        the trace, or the projection — only the vault holds the mapping
+        back, so sealed notes stay usable (fold, search, cite) without
+        holding plaintext PII at rest.
         """
         moment = _parse_now(now)
+        if seal_with is not None:
+            text = seal_with.seal(text)
+            if title:
+                title = seal_with.seal(title)
         content: dict[str, object] = {
             "text": text,
             "title": title,
