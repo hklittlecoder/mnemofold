@@ -116,9 +116,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_privacy.add_argument("text", nargs="?", help="text to scan (or use --demo)")
     p_privacy.add_argument("--demo", action="store_true", help="run on demo text")
     p_privacy.add_argument(
-        "--mode", default="mask", choices=["mask", "hash", "remove"], help="redaction mode"
+        "--mode",
+        default="mask",
+        choices=["mask", "hash", "remove", "seal"],
+        help="redaction mode (seal requires --vault)",
     )
-    p_privacy.add_argument("--salt", default="", help="salt for hash mode")
+    p_privacy.add_argument("--salt", default="", help="salt for hash mode / new vaults")
+    p_privacy.add_argument(
+        "--vault", help="redaction vault file (required for seal mode and --unseal)"
+    )
+    p_privacy.add_argument(
+        "--unseal", action="store_true", help="restore sealed text using --vault"
+    )
     p_privacy.set_defaults(func=_cmd_privacy)
 
     # triggers
@@ -747,7 +756,9 @@ def _cmd_prep(args: argparse.Namespace) -> int:
 
 
 def _cmd_privacy(args: argparse.Namespace) -> int:
-    from .privacy import RedactionMode, detect_pii, redact
+    from pathlib import Path
+
+    from .privacy import RedactionMode, RedactionVault, detect_pii, redact
 
     if args.demo:
         text = (
@@ -761,7 +772,37 @@ def _cmd_privacy(args: argparse.Namespace) -> int:
         print("ERROR: provide text or use --demo", file=sys.stderr)
         return 1
 
+    if args.unseal:
+        if not args.vault:
+            print("ERROR: --unseal requires --vault", file=sys.stderr)
+            return 1
+        vault_path = Path(args.vault)
+        if not vault_path.exists():
+            print(f"ERROR: vault not found: {args.vault}", file=sys.stderr)
+            return 1
+        print(RedactionVault.load(vault_path).unseal(text))
+        return 0
+
     matches = detect_pii(text)
+    if args.mode == "seal":
+        if not args.vault:
+            print("ERROR: seal mode requires --vault", file=sys.stderr)
+            return 1
+        vault_path = Path(args.vault)
+        vault = (
+            RedactionVault.load(vault_path)
+            if vault_path.exists()
+            else RedactionVault(salt=args.salt)
+        )
+        sealed = vault.seal(text)
+        vault.save(vault_path)
+        print("=== Privacy Scan ===")
+        print(f"Found {len(matches)} PII matches; vault now holds {vault.sealed_count()} token(s)")
+        print()
+        print("Sealed (reversible only via the vault):")
+        print(sealed)
+        return 0
+
     mode_map = {
         "mask": RedactionMode.MASK,
         "hash": RedactionMode.HASH,
