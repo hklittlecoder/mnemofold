@@ -222,10 +222,18 @@ def _text_similarity(a: str, b: str) -> float:
 
 @dataclass
 class Folder:
-    """Folding engine that consolidates episodic memory into semantic memory."""
+    """Folding engine that consolidates episodic memory into semantic memory.
+
+    ``max_merges_per_fold`` bounds how many near-duplicate merges one
+    pass may perform (0 means unbounded). Pairs above the cap are not
+    dropped silently: they are recorded in the report's rejected list
+    with reason ``merge_cap_reached`` and remain candidates for the
+    next fold, so capped nightly runs converge to the same end state.
+    """
 
     similarity_threshold: float = 0.75
     min_episodes_for_recurrence: int = 3
+    max_merges_per_fold: int = 0
 
     def fold(
         self,
@@ -337,6 +345,17 @@ class Folder:
                             "b": b.item_id,
                             "similarity": sim,
                             "reason": "below_threshold",
+                        }
+                    )
+                    continue
+
+                if self.max_merges_per_fold > 0 and len(report.merges) >= self.max_merges_per_fold:
+                    report.rejected.append(
+                        {
+                            "a": a.item_id,
+                            "b": b.item_id,
+                            "similarity": sim,
+                            "reason": "merge_cap_reached",
                         }
                     )
                     continue
