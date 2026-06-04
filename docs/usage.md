@@ -145,3 +145,33 @@ mnemofold verify --db ./ws --json   # 机器可读报告
 
 检查失败时退出码非零。被篡改的 trace 会让工作区打开即失败
 （`ValueError: hash mismatch ...`）——恢复路径是显式的，不做静默修复。
+
+
+## 隐私封存与 vault CLI
+
+### 封存式记忆（sealed remember）
+
+`Workspace.remember(..., seal_with=vault)` 在写入日志**之前**用
+`RedactionVault` 封存文本与标题：明文 PII 不落在 journal、trace、
+投影或导出 bundle 的任何字节里，只有 vault 持有还原映射。封存后的
+笔记照常参与折叠、检索与引用（非 PII 词汇仍可搜索）。
+
+```python
+vault = RedactionVault(salt="user-secret")
+note_id = ws.remember(raw_text, now=now, seal_with=vault)
+item = ws.recall(note_id)          # 内容是 <sealed:...> token
+vault.unseal(item.content)         # 仅 vault 可还原
+```
+
+### CLI 的 seal / unseal
+
+```bash
+# 封存并把 vault 落盘（vault 文件与明文同等敏感，需妥善保管）
+mnemofold privacy "Mail ana@corp.example ..." --mode seal --vault vault.json --salt S
+
+# 之后任意时刻还原
+mnemofold privacy "<sealed 文本>" --unseal --vault vault.json
+```
+
+同一 vault 重复封存同一值会得到相同 token（可交叉引用）；
+`--mode mask/hash/remove` 的一次性脱敏行为保持不变。
