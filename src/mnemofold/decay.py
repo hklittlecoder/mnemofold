@@ -36,6 +36,22 @@ class RetentionPolicy:
     access_boost: float = 0.15
     max_access_boosts: int = 4
 
+    def __post_init__(self) -> None:
+        if self.half_life_days <= 0:
+            raise ValueError(f"half_life_days must be positive, got {self.half_life_days}")
+        if self.grace_days < 0:
+            raise ValueError(f"grace_days must be non-negative, got {self.grace_days}")
+        if self.max_age_days <= 0:
+            raise ValueError(f"max_age_days must be positive, got {self.max_age_days}")
+        if not 0.0 <= self.min_salience <= 1.0:
+            raise ValueError(f"min_salience must be within [0, 1], got {self.min_salience}")
+        if self.access_boost < 0:
+            raise ValueError(f"access_boost must be non-negative, got {self.access_boost}")
+        if self.max_access_boosts < 0:
+            raise ValueError(
+                f"max_access_boosts must be non-negative, got {self.max_access_boosts}"
+            )
+
     def decay_factor(self, days: float) -> float:
         return math.exp(-days * math.log(2) / self.half_life_days)
 
