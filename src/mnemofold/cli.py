@@ -201,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument("--start", required=True, help="ISO week start")
     p_review.add_argument("--end", required=True, help="ISO week end")
     p_review.add_argument("--html", action="store_true", help="output HTML")
+    p_review.add_argument("--json", action="store_true", help="output JSON (takes precedence)")
     p_review.set_defaults(func=_cmd_review)
 
     # playbooks
@@ -1139,7 +1140,11 @@ def _cmd_review(args: argparse.Namespace) -> int:
             return 1
     finally:
         workspace.close()
-    if args.html:
+    if args.json:
+        import json
+
+        print(json.dumps(review.to_dict(), indent=2, sort_keys=True))
+    elif args.html:
         print(render_weekly_html(review, series))
     else:
         print(render_weekly_markdown(review))

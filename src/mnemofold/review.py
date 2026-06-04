@@ -177,6 +177,20 @@ class WeeklyReview:
     citations: list[str] = field(default_factory=list)
     stats: dict[str, int] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Deterministic dict form used by the CLI --json output."""
+        return {
+            "week_start": self.week_start,
+            "week_end": self.week_end,
+            "completed": list(self.completed),
+            "overdue": list(self.overdue),
+            "still_open": list(self.still_open),
+            "due_next_week": list(self.due_next_week),
+            "risks": list(self.risks),
+            "citations": list(self.citations),
+            "stats": dict(self.stats),
+        }
+
 
 @dataclass
 class WeeklyReviewGenerator:
