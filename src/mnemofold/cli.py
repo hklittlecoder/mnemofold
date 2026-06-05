@@ -70,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ledger.add_argument("--days", type=int, default=30, help="days of history")
     p_ledger.add_argument("--status", help="filter by status (open/done/overdue)")
     p_ledger.add_argument("--json", action="store_true", help="output JSON")
+    p_ledger.add_argument("--aging", action="store_true", help="report due-time aging buckets")
     p_ledger.set_defaults(func=_cmd_ledger)
 
     # triage
@@ -481,7 +482,7 @@ def _cmd_ledger(args: argparse.Namespace) -> int:
     from .ledger import Commitment, CommitmentLedger, CommitmentStatus
 
     factory = WorkHistoryFactory(seed=args.seed, days=args.days)
-    _events, _manifest = factory.generate()
+    events, _manifest = factory.generate()
 
     ledger = CommitmentLedger()
     for item in factory.planted_items():
@@ -509,6 +510,22 @@ def _cmd_ledger(args: argparse.Namespace) -> int:
             ledger.by_status(CommitmentStatus.OPEN)
     else:
         ledger.by_status(CommitmentStatus.OPEN)
+
+    if args.aging:
+        import json as json_mod
+
+        now = events[-1].timestamp if events else "2026-01-01T00:00:00+00:00"
+        report = ledger.aging_report(now)
+        if args.json:
+            print(json_mod.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(f"=== Ledger aging as of {now} ===")
+            for bucket in ("overdue", "due_today", "due_this_week", "later", "no_due"):
+                ids = report[bucket]
+                suffix = f" ({', '.join(ids)})" if ids else ""
+                print(f"  {bucket}: {len(ids)}{suffix}")
+            print(f"  total active: {report['total_active']}")
+        return 0
 
     if args.json:
         print(ledger.to_json())
