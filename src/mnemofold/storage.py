@@ -405,6 +405,25 @@ class Journal:
             "schema_version": SCHEMA_VERSION,
         }
 
+    def export_events_jsonl(self, path: str | Path, *, include_tombstoned: bool = False) -> int:
+        """Export frame events as JSONL for interop; returns the count written.
+
+        The journal stays the source of truth; the export is a plain
+        envelope-per-line file that :class:`~mnemofold.events.EventStore`
+        (or any JSONL consumer) reads back. Tombstoned events are
+        excluded by default so an export never silently carries
+        forgotten content; ``include_tombstoned=True`` is for audits
+        that must see the full frame history.
+        """
+        count = 0
+        with Path(path).open("w", encoding="utf-8") as fp:
+            for event in self.iter_events():
+                if not include_tombstoned and self.tombstone(event.event_id) is not None:
+                    continue
+                fp.write(event.to_json() + "\n")
+                count += 1
+        return count
+
     # ------------------------------------------------------------------
     # Tombstones
     # ------------------------------------------------------------------
