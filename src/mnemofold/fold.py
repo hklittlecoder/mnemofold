@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from mnemofold.canon import canonical_json
 from mnemofold.memory import MemoryItem, MemoryStore, MemoryTier
 from mnemofold.reports import escape_text, wrap_html
 from mnemofold.textsim import bigram_jaccard
@@ -482,3 +483,33 @@ def fold_idempotent_check(store: MemoryStore, folder: Folder, timestamp: str) ->
     state2 = store_copy.total_count()
 
     return state1 == state2
+
+
+def diff_fold_reports(baseline: FoldReport, candidate: FoldReport) -> dict[str, Any]:
+    """What changed between two fold reports — a nightly drift view.
+
+    Compares merges (as ``kept->removed`` pair keys), new semantic ids,
+    and recurrence proposals (by canonical JSON), reporting what
+    appeared and what disappeared between the two runs plus the
+    item-count delta. Every list is sorted, so the diff itself is
+    deterministic. Comparing a fold with its immediate rerun shows the
+    idempotence property directly: the candidate merged nothing, so all
+    of the baseline's merges appear under ``merges_removed``.
+    """
+    base_merges = {f"{m.kept_id}->{m.removed_id}" for m in baseline.merges}
+    cand_merges = {f"{m.kept_id}->{m.removed_id}" for m in candidate.merges}
+    base_new = set(baseline.new_semantic)
+    cand_new = set(candidate.new_semantic)
+    base_props = {canonical_json(p) for p in baseline.recurrence_proposals}
+    cand_props = {canonical_json(p) for p in candidate.recurrence_proposals}
+    return {
+        "baseline_fold_id": baseline.fold_id,
+        "candidate_fold_id": candidate.fold_id,
+        "merges_added": sorted(cand_merges - base_merges),
+        "merges_removed": sorted(base_merges - cand_merges),
+        "new_semantic_added": sorted(cand_new - base_new),
+        "new_semantic_removed": sorted(base_new - cand_new),
+        "proposals_added": sorted(cand_props - base_props),
+        "proposals_removed": sorted(base_props - cand_props),
+        "items_after_delta": candidate.items_after - baseline.items_after,
+    }
