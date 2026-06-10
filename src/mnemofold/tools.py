@@ -410,7 +410,7 @@ def _retry_delay(
     """
     exp = min(base * (2 ** (attempt - 1)), cap)
     source = rng if rng is not None else random
-    return exp + source.uniform(0, exp * 0.5)
+    return float(exp + source.uniform(0, exp * 0.5))
 
 
 @dataclass

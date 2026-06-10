@@ -63,7 +63,8 @@ class SalienceMLP(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x).squeeze(-1)
+        out: torch.Tensor = self.net(x).squeeze(-1)
+        return out
 
 
 @dataclass

@@ -1229,7 +1229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entry point for the mnemofold CLI."""
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    return int(args.func(args))
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:

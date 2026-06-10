@@ -389,7 +389,7 @@ class Journal:
         row = cur.fetchone()
         if row is None:
             return _genesis_chain_checksum()
-        return row[0]
+        return str(row[0])
 
     def stats(self) -> dict[str, Any]:
         """Operational counters for dashboards and integrity reports.

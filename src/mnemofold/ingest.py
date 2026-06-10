@@ -419,9 +419,9 @@ class EpisodeSegmenter:
     def _group_key(self, event: Event) -> str | None:
         d = event.content
         if self.group_by_thread and "thread_id" in d:
-            return "thread:" + d["thread_id"]
+            return "thread:" + str(d["thread_id"])
         if self.group_by_meeting and "meeting_id" in d:
-            return "meeting:" + d["meeting_id"]
+            return "meeting:" + str(d["meeting_id"])
         return None
 
     def _is_full(self, episode: Episode) -> bool:
@@ -442,9 +442,9 @@ class EpisodeSegmenter:
     def _derive_title(self, event: Event) -> str:
         d = event.content
         if "subject" in d:
-            return d["subject"]
+            return str(d["subject"])
         if "title" in d:
-            return d["title"]
+            return str(d["title"])
         if event.event_type == EventType.FOCUS_BLOCK:
             return f"Focus: {d.get('activity', 'work')}"
         return str(event.event_type)
