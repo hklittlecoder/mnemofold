@@ -542,3 +542,64 @@ def merge_graphs(
         merged.add_edge(Edge.from_dict(edge.to_dict()))
         report.edges_added += 1
     return merged, report
+
+
+def supersede_chain(graph: WorkstreamGraph, node_id: str) -> list[str]:
+    """Version history of a fact node, newest first.
+
+    A SUPERSEDES edge points from the newer version to the one it
+    replaces. Starting from ANY version, the walk climbs to the newest
+    version (following incoming edges) and then descends to the
+    original, so callers always get the full chain regardless of which
+    version they hold. Ties among multiple newer/older versions are
+    broken by node id, and cycles terminate via the visited set. An
+    unknown node yields an empty chain.
+    """
+    if node_id not in graph.nodes:
+        return []
+
+    def newer(nid: str) -> list[str]:
+        return [
+            e.source_id
+            for e in graph.incoming_edges(nid)
+            if e.edge_type == EdgeType.SUPERSEDES and e.source_id in graph.nodes
+        ]
+
+    def older(nid: str) -> list[str]:
+        return [
+            e.target_id
+            for e in graph.outgoing_edges(nid)
+            if e.edge_type == EdgeType.SUPERSEDES and e.target_id in graph.nodes
+        ]
+
+    seen = {node_id}
+    top = node_id
+    while True:
+        candidates = sorted(p for p in newer(top) if p not in seen)
+        if not candidates:
+            break
+        top = candidates[0]
+        seen.add(top)
+    chain = [top]
+    current = top
+    while True:
+        candidates = sorted(s for s in older(current) if s not in set(chain))
+        if not candidates:
+            break
+        current = candidates[0]
+        chain.append(current)
+    return chain
+
+
+def contradiction_pairs(graph: WorkstreamGraph) -> list[tuple[str, str]]:
+    """Active CONTRADICTS edges as sorted, deduplicated (a, b) id pairs.
+
+    Direction carries no meaning for a contradiction, so both
+    orientations collapse into one canonical pair and the result is
+    sorted for deterministic audit reports.
+    """
+    pairs: set[tuple[str, str]] = set()
+    for edge in graph.edges_by_type(EdgeType.CONTRADICTS):
+        pair = tuple(sorted((edge.source_id, edge.target_id)))
+        pairs.add((pair[0], pair[1]))
+    return sorted(pairs)
