@@ -186,6 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask.add_argument("--top", type=int, default=5, help="max results")
     p_ask.add_argument("--as-of", default="", help="only results created at or before this instant")
     p_ask.add_argument("--json", action="store_true", help="output JSON results")
+    p_ask.add_argument("--explain", action="store_true", help="include per-term BM25 contributions")
     p_ask.set_defaults(func=_cmd_ask)
 
     # standup
@@ -1073,11 +1074,28 @@ def _cmd_recall(args: argparse.Namespace) -> int:
 
 
 def _cmd_ask(args: argparse.Namespace) -> int:
+    from .retrieval import parse_query
+
     workspace = _open_workspace(args.db)
     if workspace is None:
         return 1
     try:
         results = workspace.ask(args.query, top_k=args.top, as_of=args.as_of)
+        explanations: dict[str, list[dict[str, object]]] | None = None
+        if args.explain:
+            free_text = parse_query(args.query).text
+            explanations = {}
+            for r in results:
+                explanations[r.item_id] = [
+                    {
+                        "term": c.term,
+                        "tf": c.tf,
+                        "df": c.df,
+                        "idf": round(c.idf, 6),
+                        "contribution": round(c.contribution, 6),
+                    }
+                    for c in workspace.engine.index.explain(free_text, r.item_id)
+                ]
     finally:
         workspace.close()
     if args.json:
@@ -1089,6 +1107,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                 "score": round(r.score, 6),
                 "title": r.title,
                 "citation": r.citation,
+                **({"explain": explanations[r.item_id]} if explanations is not None else {}),
             }
             for r in results
         ]
@@ -1097,6 +1116,12 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         print(f"=== {len(results)} result(s) for: {args.query} ===")
         for rank, r in enumerate(results, 1):
             print(f"{rank:2d}. [{r.score:.3f}] {r.title[:60]} {r.citation}")
+            if explanations is not None:
+                for c in explanations[r.item_id]:
+                    print(
+                        f"      term {str(c['term'])!r}: tf={c['tf']} df={c['df']} "
+                        f"idf={c['idf']} -> {c['contribution']}"
+                    )
     return 0
 
 
