@@ -495,3 +495,43 @@ class CommitmentLedger:
                 except ValueError:
                     continue
         return fallback
+
+    def verify_history(self) -> dict[str, Any]:
+        """Recompute commitment statuses from the transition history.
+
+        Replays ``created`` and ``status_change`` entries in order and
+        compares each reconstructed final status with the live one.
+        ``ok`` is True when the live ledger is exactly what its history
+        implies — an internal-consistency audit that catches corrupted
+        state and buggy transitions alike. Commitments that appear only
+        in history (e.g. removed via right-to-be-forgotten) are listed
+        under ``history_only`` for transparency but do not affect ``ok``.
+        """
+        replayed: dict[str, str] = {}
+        for entry in self._history:
+            cid = str(entry.get("commitment_id", ""))
+            action = entry.get("action")
+            if action == "created":
+                replayed.setdefault(cid, str(entry.get("to_status", "open")))
+            elif action == "status_change":
+                replayed[cid] = str(entry.get("to_status", ""))
+        mismatches: list[dict[str, str]] = []
+        for cid in sorted(self._commitments):
+            expected = replayed.get(cid)
+            actual = str(self._commitments[cid].status)
+            if expected != actual:
+                mismatches.append(
+                    {
+                        "commitment_id": cid,
+                        "history_says": expected if expected is not None else "(missing)",
+                        "live": actual,
+                    }
+                )
+        live_ids = set(self._commitments)
+        return {
+            "ok": not mismatches,
+            "mismatches": mismatches,
+            "history_entries": len(self._history),
+            "replayed_statuses": {cid: replayed[cid] for cid in sorted(replayed)},
+            "history_only": sorted(cid for cid in replayed if cid not in live_ids),
+        }
