@@ -3,6 +3,36 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本处于 0.x 阶段，每次发布仅递增补丁号。
 
+## [0.1.5] - 2026-11-18
+
+聚焦机器可读输出、golden 冻结与可解释性。
+
+### Added
+
+- CLI 机器可读输出：`context --json`（含 headroom）、`triage --json`、
+  `review --json`、`ledger --aging [--json]`、`ask --explain`
+  （逐项 BM25 贡献：tf/df/idf/contribution）
+- 序列化：`ContextPack.to_dict`、`TriageResult.to_dict`、
+  `WeeklyReview.to_dict`
+- 折叠：`max_merges_per_fold` 上限（被推迟的候选以
+  `merge_cap_reached` 记录在 rejected，收敛终态不变）；
+  `diff_fold_reports` 夜间漂移对比
+- 存储：`Journal.export_events_jsonl` 便携导出（默认剔除已墓碑事件，
+  `EventStore` 可直接读回）
+- 图：`supersede_chain`（任意版本入手返回完整版本链）与
+  `contradiction_pairs`（方向无关、去重排序）
+- 检索：`mean_pairwise_similarity` 结果集冗余度度量
+- 隐私：`Workspace.remember(seal_with=vault)` 落盘前封存；
+  `privacy --mode seal --vault` 与 `privacy --unseal --vault`
+- 衰减：`RetentionPolicy` 参数构造期校验
+- 示例：`playbook_lifecycle`（挖掘→提议→审批门控执行→修订 diff）
+- Golden 冻结：context pack Markdown、图序列化、台账 JSON 导出、
+  standup Markdown、默认工具注册表 schema
+
+### Changed
+
+- mypy 严格度提升（详见各 chore 提交）
+
 ## [0.1.4] - 2026-11-18
 
 围绕触发器生命周期、审计聚合与合成历史可配置性的深化。
