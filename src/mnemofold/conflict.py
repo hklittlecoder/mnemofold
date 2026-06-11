@@ -198,7 +198,9 @@ class ConflictResolver:
             contradiction.resolution_reason = "deterministic_tiebreak"
         return contradiction
 
-    def _reason(self, winner_score: tuple, loser_score: tuple) -> str:
+    def _reason(
+        self, winner_score: tuple[int, int, str, str], loser_score: tuple[int, int, str, str]
+    ) -> str:
         if winner_score[0] > loser_score[0]:
             return "source_trust"
         if winner_score[1] > loser_score[1]:
@@ -223,7 +225,7 @@ class ConflictResolver:
 
     def apply_resolution(
         self,
-        store: TemporalStore,
+        store: TemporalStore[Any],
         contradiction: Contradiction,
         superseded_at: str,
     ) -> None:

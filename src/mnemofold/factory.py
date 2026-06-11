@@ -95,7 +95,7 @@ class SyntheticEvent:
     event_id: str
     event_type: str
     timestamp: str
-    payload: dict
+    payload: dict[str, Any]
 
     def to_event(self) -> Event:
         """Convert to a typed, content-addressed Event.
@@ -115,7 +115,7 @@ class SyntheticEvent:
 class PlantedItem:
     item_id: str
     kind: str  # commitment, decision, contradiction
-    data: dict
+    data: dict[str, Any]
 
 
 @dataclass
@@ -130,7 +130,7 @@ class HistoryManifest:
     planted_decisions: int
     planted_contradictions: int
     checksum: str = ""
-    config: dict = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
 
 
 class WorkHistoryFactory:
@@ -293,7 +293,11 @@ class WorkHistoryFactory:
             hour_offset = rng.uniform(0, 8)
             ts = day_date + timedelta(hours=self._work_start_hour(persona) + hour_offset)
             kind = rng.choice(["chat_message", "note"])
-            payload: dict = {"persona_id": persona.person_id, "project": project, "noise": True}
+            payload: dict[str, Any] = {
+                "persona_id": persona.person_id,
+                "project": project,
+                "noise": True,
+            }
             if kind == "chat_message":
                 payload.update(
                     {
@@ -363,7 +367,7 @@ class WorkHistoryFactory:
     def _make_event(self, event_type: str, persona: Persona, ts: datetime) -> None:
         rng = self._rng
         project = rng.choice(persona.projects) if persona.projects else "general"
-        payload: dict = {
+        payload: dict[str, Any] = {
             "persona_id": persona.person_id,
             "persona_name": persona.name,
             "project": project,
