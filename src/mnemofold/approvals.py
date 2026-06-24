@@ -366,3 +366,17 @@ class ApprovalQueue:
                 source = stats.setdefault(request.escalated_from, {})
                 source["escalated_away"] = source.get("escalated_away", 0) + 1
         return {name: dict(sorted(stats[name].items())) for name in sorted(stats)}
+
+    def purge_expired(self) -> int:
+        """Drop EXPIRED requests from the queue; returns the removal count.
+
+        Expiry is terminal: keeping expired requests around forever
+        grows the queue without informing any decision. Purging keeps
+        ``pending``, ``audit_metrics`` and serialization focused on live
+        and decided history. Requests in any other status — including
+        still-past-due PENDING ones — are untouched; run
+        :meth:`tick_expirations` first when the clock should decide.
+        """
+        before = len(self.requests)
+        self.requests = [r for r in self.requests if r.status != ApprovalStatus.EXPIRED]
+        return before - len(self.requests)
