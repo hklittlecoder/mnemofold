@@ -250,6 +250,28 @@ class TriggerEngine:
             "by_suppress_reason": dict(sorted(by_suppress_reason.items())),
         }
 
+    def import_fired(self, fired: list[FiredTrigger]) -> int:
+        """Restore previously fired triggers into session memory.
+
+        A reopened session loses its fire history unless the persisted
+        log is read back; importing keeps ``summary_report``,
+        ``active_triggers`` and — crucially — cooldown/dedupe clocks
+        consistent with what already fired. Only the newest ``fired_at``
+        per rule and per (target, kind) pair moves the clocks, so the
+        import is order-independent. Returns the number of entries
+        imported.
+        """
+        for entry in fired:
+            self._fired.append(entry)
+            last_fire = self._last_fire.get(entry.rule_id)
+            if last_fire is None or entry.fired_at > last_fire:
+                self._last_fire[entry.rule_id] = entry.fired_at
+            key = (entry.target_id, entry.kind)
+            last_dedupe = self._last_dedupe.get(key)
+            if last_dedupe is None or entry.fired_at > last_dedupe:
+                self._last_dedupe[key] = entry.fired_at
+        return len(fired)
+
 
 # --- Persistent trigger log -----------------------------------------------------
 
