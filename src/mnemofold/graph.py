@@ -603,3 +603,35 @@ def contradiction_pairs(graph: WorkstreamGraph) -> list[tuple[str, str]]:
         pair = tuple(sorted((edge.source_id, edge.target_id)))
         pairs.add((pair[0], pair[1]))
     return sorted(pairs)
+
+
+def graph_stats(graph: WorkstreamGraph) -> dict[str, Any]:
+    """Census of the graph: totals, per-type counts, activity split.
+
+    Deterministic (sorted type keys) and allocation-light, suitable for
+    dashboards, export manifests, and before/after comparisons around
+    merges or deletions. Complements :func:`audit_graph`, which answers
+    validity; this answers composition.
+    """
+    nodes_by_type: dict[str, int] = {}
+    edges_by_type: dict[str, int] = {}
+    active_nodes = 0
+    active_edges = 0
+    for node in graph.nodes.values():
+        key = str(node.node_type)
+        nodes_by_type[key] = nodes_by_type.get(key, 0) + 1
+        if node.active:
+            active_nodes += 1
+    for edge in graph.edges.values():
+        key = str(edge.edge_type)
+        edges_by_type[key] = edges_by_type.get(key, 0) + 1
+        if edge.active:
+            active_edges += 1
+    return {
+        "nodes": len(graph.nodes),
+        "edges": len(graph.edges),
+        "active_nodes": active_nodes,
+        "active_edges": active_edges,
+        "nodes_by_type": dict(sorted(nodes_by_type.items())),
+        "edges_by_type": dict(sorted(edges_by_type.items())),
+    }
