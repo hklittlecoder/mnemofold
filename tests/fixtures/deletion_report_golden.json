@@ -1,0 +1,28 @@
+{
+  "blocked": [
+    "held-1"
+  ],
+  "deleted": [
+    {
+      "cascade_depth": 0,
+      "deleted_at": "2026-03-10T12:00:00+00:00",
+      "key": "evt_abc",
+      "kind": "memory",
+      "reason": "user_request"
+    },
+    {
+      "cascade_depth": 1,
+      "deleted_at": "2026-03-10T12:00:00+00:00",
+      "key": "edge-1",
+      "kind": "edge",
+      "reason": "user_request"
+    }
+  ],
+  "errors": [
+    "target not found: ghost"
+  ],
+  "reason": "user_request",
+  "requested_at": "2026-03-10T12:00:00+00:00",
+  "requested_key": "evt_abc",
+  "total_deleted": 2
+}
