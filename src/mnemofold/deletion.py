@@ -8,6 +8,7 @@ check that deleted content never reappears through any query path.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -78,6 +79,72 @@ class DeletionReport:
             "error_count": len(self.errors),
             "deleted_by_kind": dict(sorted(by_kind.items())),
         }
+
+    def to_dict(self) -> dict[str, Any]:
+        """Full audit payload: summary fields plus every deleted entry.
+
+        Unlike :meth:`summary_dict` this keeps the per-entry detail
+        (key, kind, cascade depth, instant), so a compliance team can
+        reconstruct exactly what a forget request touched.
+        """
+        return {
+            "requested_key": self.requested_key,
+            "reason": str(self.reason),
+            "requested_at": self.requested_at.isoformat(),
+            "total_deleted": self.total_deleted,
+            "deleted": [
+                {
+                    "key": entry.key,
+                    "kind": entry.kind,
+                    "reason": str(entry.reason),
+                    "deleted_at": entry.deleted_at.isoformat(),
+                    "cascade_depth": entry.cascade_depth,
+                }
+                for entry in self.deleted
+            ],
+            "blocked": list(self.blocked),
+            "errors": list(self.errors),
+        }
+
+    def to_json(self, indent: int = 2) -> str:
+        """JSON export of :meth:`to_dict` (sorted keys, UTF-8 kept)."""
+        return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False, sort_keys=True)
+
+    def to_markdown(self) -> str:
+        """Human-readable audit report; empty sections are omitted."""
+        lines = [
+            "# Deletion Report",
+            "",
+            f"- requested key: `{self.requested_key}`",
+            f"- reason: {self.reason.value}",
+            f"- requested at: {self.requested_at.isoformat()}",
+            f"- deleted: {self.total_deleted}",
+            "",
+        ]
+        if self.deleted:
+            lines.extend(
+                [
+                    "## Deleted",
+                    "",
+                    "| key | kind | depth | deleted at |",
+                    "| --- | --- | --- | --- |",
+                ]
+            )
+            for entry in self.deleted:
+                lines.append(
+                    f"| {entry.key} | {entry.kind} | {entry.cascade_depth} "
+                    f"| {entry.deleted_at.isoformat()} |"
+                )
+            lines.append("")
+        if self.blocked:
+            lines.extend(["## Blocked (protected)", ""])
+            lines.extend(f"- `{key}`" for key in self.blocked)
+            lines.append("")
+        if self.errors:
+            lines.extend(["## Errors", ""])
+            lines.extend(f"- {err}" for err in self.errors)
+            lines.append("")
+        return "\n".join(lines)
 
 
 class TombstoneIndex:
