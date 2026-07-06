@@ -171,6 +171,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_forget.add_argument(
         "--preview", action="store_true", help="show the impact report without deleting"
     )
+    p_forget.add_argument(
+        "--report",
+        default="text",
+        choices=["text", "json", "markdown"],
+        help="deletion report format",
+    )
     p_forget.set_defaults(func=_cmd_forget)
 
     # recall
@@ -1050,7 +1056,12 @@ def _cmd_forget(args: argparse.Namespace) -> int:
     if report.total_deleted == 0 and report.errors:
         print(f"ERROR: {args.item_id}: {'; '.join(report.errors)}", file=sys.stderr)
         return 1
-    print(f"forgotten {report.total_deleted} item(s); tombstone recorded")
+    if args.report == "json":
+        print(report.to_json())
+    elif args.report == "markdown":
+        print(report.to_markdown())
+    else:
+        print(f"forgotten {report.total_deleted} item(s); tombstone recorded")
     return 0
 
 
