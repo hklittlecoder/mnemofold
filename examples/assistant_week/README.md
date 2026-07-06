@@ -29,3 +29,8 @@ python examples/assistant_week/run.py
 所有数字都是**这次合成运行实测**的结果（打印 seed 与 checksum 以便
 复现），不代表任何真实用户或真实语料上的效果。`RESULT: OK` 表示工作区
 非空、分诊不丢项、上下文包不超预算、评估套件全部通过。
+
+
+评估环节除整套 scorecard 外，还输出**按 persona 角色切片**的承诺召回
+（`run_role_slices`）：每个角色一行 `role slice ...: recall=...`，同样
+只基于合成植入的 ground truth，逐 seed 可复现。

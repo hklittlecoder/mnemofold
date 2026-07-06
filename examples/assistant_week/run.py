@@ -21,7 +21,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from mnemofold.context import ContextItem, ContextPacker, PackingProfile, estimate_tokens
-from mnemofold.evaluation import ScenarioConfig, run_suite
+from mnemofold.evaluation import ScenarioConfig, run_role_slices, run_suite
 from mnemofold.factory import WorkHistoryFactory
 from mnemofold.ingest import CommitmentExtractor
 from mnemofold.prep import MeetingPrepper
@@ -149,6 +149,11 @@ def main() -> int:
     # 6. Evaluation suite against planted ground truth (synthetic only).
     suite = run_suite(ScenarioConfig(seed=SEED, days=DAYS))
     aggregate = {m.name: m.value for m in suite.aggregate.metrics}
+    role_slices = run_role_slices(ScenarioConfig(seed=SEED, days=DAYS))
+    role_recalls = {
+        result.scorecard.scenario: {m.name: m.value for m in result.scorecard.metrics}
+        for result in role_slices
+    }
 
     print("=== assistant_week: full offline assistant loop ===")
     print(f"seed={SEED} days={DAYS} checksum={manifest.checksum}")
@@ -171,6 +176,9 @@ def main() -> int:
     print(f"suite overall_pass: {suite.overall_pass()}")
     for name in sorted(aggregate):
         print(f"  aggregate {name}: {aggregate[name]:.4f}")
+    for scenario in sorted(role_recalls):
+        recall = role_recalls[scenario].get("role_commitment_recall", 0.0)
+        print(f"  role slice {scenario}: recall={recall:.4f}")
 
     ok = (
         stats.memories > 0
@@ -178,6 +186,7 @@ def main() -> int:
         and packet.total_items > 0
         and pack.total_tokens <= pack.budget
         and suite.overall_pass()
+        and all(result.scorecard.overall_pass() for result in role_slices)
     )
     print(f"RESULT: {'OK' if ok else 'CHECK FAILED'}")
     return 0 if ok else 1
