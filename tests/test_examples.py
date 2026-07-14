@@ -215,3 +215,20 @@ class TestPlaybookLifecycleExample:
         module.main()
         second = capsys.readouterr().out
         assert first == second
+
+
+class TestAssistantWeekRoleSlices:
+    def test_role_slices_reported(self, capsys):
+        rc = load_example("assistant_week").main()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "role slice commitments[role:" in out
+        assert "recall=" in out
+
+    @pytest.mark.slow
+    def test_role_slice_output_deterministic(self, capsys):
+        module = load_example("assistant_week")
+        module.main()
+        first = capsys.readouterr().out
+        module.main()
+        assert capsys.readouterr().out == first
