@@ -151,6 +151,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--db", required=True, help="workspace directory")
     p_export.add_argument("--format", default="json", choices=["json", "markdown"])
     p_export.add_argument("--out", help="write to file instead of stdout")
+    p_export.add_argument(
+        "--bundle",
+        metavar="DIR",
+        help="write a self-describing workspace bundle (ledger, snapshot, manifest) into DIR",
+    )
     p_export.set_defaults(func=_cmd_export)
 
     # remember
@@ -981,6 +986,17 @@ def _cmd_export(args: argparse.Namespace) -> int:
     workspace = _open_workspace(args.db)
     if workspace is None:
         return 1
+    if args.bundle:
+        try:
+            manifest = workspace.export_bundle(args.bundle)
+        finally:
+            workspace.close()
+        print(f"Wrote workspace bundle to {args.bundle}")
+        print(
+            f"  events={manifest['events']} memories={manifest['memories']} "
+            f"commitments={manifest['commitments']} tombstones={manifest['tombstones']}"
+        )
+        return 0
     try:
         stats = workspace.stats()
         if args.format == "json":
