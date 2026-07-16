@@ -1,0 +1,4 @@
+{"entry": {"entry_id": "", "kind": "event", "payload": {"a": 1}, "timestamp": "2026-03-01T09:00:00+00:00"}, "hash": "62dfcff646a33a6ec624444d526e1179f7c9b0177dfbeb2991ae2bb1e3594de5"}
+{"entry": {"entry_id": "", "kind": "receipt", "payload": {"action": "fold", "merged": 2}, "timestamp": "2026-03-01T09:05:00+00:00"}, "hash": "9a65fd860e13a09203a12d17d9fc0507942eb3a334c0a91a6d664228b6b5a8b5"}
+{"entry": {"entry_id": "ckpt-2", "kind": "checkpoint", "payload": {"stage": "fold"}, "timestamp": "2026-03-01T09:10:00+00:00"}, "hash": "5a355b613089415d26ad4d5d20695b7812b193d1c5ce6c15a183a34129e08dd0"}
+{"entry": {"entry_id": "", "kind": "event", "payload": {"b": 2}, "timestamp": "2026-03-01T09:15:00+00:00"}, "hash": "2d6c6c88a19a096e8c77ae6875a976a093f459778b7b52839188b205cb06aa15"}
