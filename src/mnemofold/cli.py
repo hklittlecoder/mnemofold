@@ -136,6 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_triggers.add_argument("--seed", type=int, default=42, help="seed for demo data")
     p_triggers.add_argument("--days", type=int, default=30, help="days of history")
     p_triggers.add_argument("--json", action="store_true", help="output JSON")
+    p_triggers.add_argument(
+        "--db", help="derive from this workspace (commitments + journal threads)"
+    )
+    p_triggers.add_argument(
+        "--now", default="", help="ISO instant for the tick (default: last journal event)"
+    )
     p_triggers.set_defaults(func=_cmd_triggers)
 
     # ingest
@@ -861,32 +867,54 @@ def _cmd_triggers(args: argparse.Namespace) -> int:
         TriggerKind,
         TriggerRule,
         TriggerSeverity,
+        derive_followup_rules,
+        derive_stale_thread_rules,
     )
 
-    factory = WorkHistoryFactory(seed=args.seed, days=args.days)
-    events, _manifest = factory.generate()
+    if args.db:
+        workspace = _open_workspace(args.db)
+        if workspace is None:
+            return 1
+        try:
+            now_text = args.now or _last_event_ts(workspace)
+            moment = _parse_ts(now_text)
+            journal_events = list(workspace.journal.iter_events())
+            # commitment rules run through the workspace (receipted tick),
+            # thread rules derive from journal events and join the engine
+            fired = workspace.triggers_tick(now_text)
+            derived = derive_stale_thread_rules(journal_events, moment)
+            derived += derive_followup_rules(journal_events, moment)
+            for rule in derived:
+                workspace.trigger_engine.add_rule(rule)
+            fired = fired + workspace.trigger_engine.tick(moment)
+        finally:
+            workspace.close()
+    else:
+        factory = WorkHistoryFactory(seed=args.seed, days=args.days)
+        events, _manifest = factory.generate()
 
-    if not events:
-        print("No events generated.")
-        return 0
+        if not events:
+            print("No events generated.")
+            return 0
 
-    engine = TriggerEngine()
-    now = _parse_ts(events[-1].timestamp)
-    # Create sample triggers for planted commitments
-    planted = [p for p in factory.planted_items() if p.kind == "commitment"]
-    for i, item in enumerate(planted):
-        engine.add_rule(
-            TriggerRule(
-                rule_id=f"deadline-{i}",
-                kind=TriggerKind.DEADLINE_REMINDER,
-                target_id=item.item_id,
-                fire_at=_parse_ts(item.data["due_date"]),
-                severity=TriggerSeverity.WARNING,
-                message=f"Deadline approaching: {item.data['description'][:40]}",
+        engine = TriggerEngine()
+        now = _parse_ts(events[-1].timestamp)
+        # Create sample triggers for planted commitments
+        planted = [p for p in factory.planted_items() if p.kind == "commitment"]
+        for i, item in enumerate(planted):
+            engine.add_rule(
+                TriggerRule(
+                    rule_id=f"deadline-{i}",
+                    kind=TriggerKind.DEADLINE_REMINDER,
+                    target_id=item.item_id,
+                    fire_at=_parse_ts(item.data["due_date"]),
+                    severity=TriggerSeverity.WARNING,
+                    message=f"Deadline approaching: {item.data['description'][:40]}",
+                )
             )
-        )
 
-    fired = engine.tick(now)
+        fired = engine.tick(now)
+
     active = [f for f in fired if not f.suppressed]
 
     if args.json:
