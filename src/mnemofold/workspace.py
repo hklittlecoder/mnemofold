@@ -224,6 +224,7 @@ class Workspace:
             "tombstones": sorted(t.event_id for t in self.journal.iter_tombstones()),
             "head": self.journal.head_checksum(),
             "digest": self.projection_digest(),
+            "journal": self.journal.stats(),
         }
 
     # -- mutations -----------------------------------------------------------
