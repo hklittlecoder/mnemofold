@@ -415,3 +415,48 @@ def render_burndown_svg(
         )
     parts.append("</svg>")
     return "".join(parts)
+
+
+def render_scorecard_svg(
+    rows: list[tuple[str, float, bool]],
+    *,
+    width: int = 640,
+    bar_height: int = 18,
+    gap: int = 6,
+    label_width: int = 180,
+) -> str:
+    """Horizontal bar chart of scorecard metrics.
+
+    ``rows`` are ``(metric_name, value, passed)`` triples. Values are
+    clamped to [0, 1] — the chart renders ratios to scale and does not
+    invent a scale for raw counts (normalize before calling). Passing
+    metrics render green, failing ones red; names are HTML-escaped.
+    Coordinates are rounded to 2 decimals so identical input renders
+    byte-identical SVG. An empty row list renders a minimal frame.
+    """
+    height = 2 * gap + max(len(rows), 1) * (bar_height + gap)
+    bar_span = width - label_width - 2 * gap
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="scorecard metrics">',
+    ]
+    y = gap
+    for name, value, passed in rows:
+        clamped = min(1.0, max(0.0, value))
+        bar_w = round(clamped * bar_span, 2)
+        color = "#2f855a" if passed else "#c53030"
+        parts.append(
+            f'<text x="{gap}" y="{y + bar_height - 5}" font-size="11" fill="#2d3748">'
+            f"{html.escape(str(name))}</text>"
+        )
+        parts.append(
+            f'<rect x="{label_width}" y="{y}" width="{bar_w}" height="{bar_height}" '
+            f'fill="{color}"/>'
+        )
+        parts.append(
+            f'<rect x="{label_width}" y="{y}" width="{bar_span}" height="{bar_height}" '
+            'fill="none" stroke="#e2e8f0"/>'
+        )
+        y += bar_height + gap
+    parts.append("</svg>")
+    return "".join(parts)
