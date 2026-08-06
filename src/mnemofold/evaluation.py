@@ -1004,3 +1004,24 @@ def triage_calibration(
             for b in report
         ],
     }
+
+
+def scorecard_svg_rows(card: Scorecard) -> list[tuple[str, float, bool]]:
+    """Rows for ``reports.render_scorecard_svg`` from a scorecard.
+
+    Thresholded metrics render as attainment (``value / threshold``,
+    clamped to [0, 1]); metrics without a threshold render their raw
+    value clamped to the same range. ``passed`` mirrors each metric's
+    own status, so bar colors can never disagree with the card.
+    """
+    rows: list[tuple[str, float, bool]] = []
+    for metric in card.metrics:
+        value = metric.value / metric.threshold if metric.threshold else metric.value
+        rows.append(
+            (
+                metric.name,
+                min(1.0, max(0.0, value)),
+                metric.status == MetricStatus.PASS,
+            )
+        )
+    return rows

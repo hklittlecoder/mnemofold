@@ -46,6 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="none",
         help="also run per-slice commitment scorecards",
     )
+    p_eval.add_argument(
+        "--svg", metavar="OUT", help="write an aggregate scorecard SVG chart to OUT"
+    )
     p_eval.set_defaults(func=_cmd_eval)
 
     # demo
@@ -274,6 +277,16 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         slices = run_commitment_slices(ScenarioConfig(seed=args.seed, days=args.days))
     elif args.slices == "roles":
         slices = run_role_slices(ScenarioConfig(seed=args.seed, days=args.days))
+    if args.svg:
+        from pathlib import Path
+
+        from .evaluation import scorecard_svg_rows
+        from .reports import render_scorecard_svg
+
+        svg = render_scorecard_svg(scorecard_svg_rows(suite.aggregate))
+        Path(args.svg).write_text(svg, encoding="utf-8")
+        # stderr keeps stdout machine-readable (JSON mode)
+        print(f"Wrote scorecard SVG to {args.svg}", file=sys.stderr)
 
     if args.json:
         import json
