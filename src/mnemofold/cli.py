@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from . import __version__
 
 if TYPE_CHECKING:
+    from .fold import FoldReport
     from .workspace import Workspace
 
 
@@ -86,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_fold.add_argument("--seed", type=int, default=42, help="seed for demo data")
     p_fold.add_argument("--days", type=int, default=30, help="days of history to fold")
     p_fold.add_argument("--json", action="store_true", help="output JSON fold report")
+    p_fold.add_argument("--db", help="fold this workspace instead of demo data")
+    p_fold.add_argument(
+        "--now", default="", help="ISO fold timestamp with --db (default: last event)"
+    )
+    p_fold.add_argument("--html", metavar="OUT", help="write the HTML fold report to OUT")
     p_fold.set_defaults(func=_cmd_fold)
 
     # asof
@@ -608,30 +614,14 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_fold(args: argparse.Namespace) -> int:
-    from .factory import WorkHistoryFactory
-    from .fold import Folder
-    from .memory import MemoryItem, MemoryStore, MemoryTier
+def _print_fold_report(report: FoldReport, args: argparse.Namespace) -> None:
+    """Shared fold-report output for the demo and workspace modes."""
+    if args.html:
+        from pathlib import Path
 
-    factory = WorkHistoryFactory(seed=args.seed, days=args.days)
-    events, _manifest = factory.generate()
-
-    store = MemoryStore()
-    for i, ev in enumerate(events):
-        store.add(
-            MemoryItem(
-                item_id=f"mem-{i:05d}",
-                tier=MemoryTier.EPISODIC,
-                content=ev.payload.get("subject", ev.payload.get("title", "")),
-                title=ev.payload.get("subject", ev.payload.get("title", "")),
-                created_at=ev.timestamp,
-            )
-        )
-
-    folder = Folder()
-    last_ts = events[-1].timestamp if events else "2026-01-01T00:00:00+00:00"
-    report = folder.fold(store, timestamp=last_ts)
-
+        Path(args.html).write_text(report.to_html(), encoding="utf-8")
+        print(f"Wrote fold report HTML to {args.html}")
+        return
     if args.json:
         import json
 
@@ -656,6 +646,42 @@ def _cmd_fold(args: argparse.Namespace) -> int:
         print(f"New semantic:  {len(report.new_semantic)}")
         print(f"Playbook props:{len(report.recurrence_proposals)}")
 
+
+def _cmd_fold(args: argparse.Namespace) -> int:
+    from .factory import WorkHistoryFactory
+    from .fold import Folder
+    from .memory import MemoryItem, MemoryStore, MemoryTier
+
+    if args.db:
+        workspace = _open_workspace(args.db)
+        if workspace is None:
+            return 1
+        try:
+            report = workspace.fold(args.now or _last_event_ts(workspace))
+        finally:
+            workspace.close()
+        _print_fold_report(report, args)
+        return 0
+
+    factory = WorkHistoryFactory(seed=args.seed, days=args.days)
+    events, _manifest = factory.generate()
+
+    store = MemoryStore()
+    for i, ev in enumerate(events):
+        store.add(
+            MemoryItem(
+                item_id=f"mem-{i:05d}",
+                tier=MemoryTier.EPISODIC,
+                content=ev.payload.get("subject", ev.payload.get("title", "")),
+                title=ev.payload.get("subject", ev.payload.get("title", "")),
+                created_at=ev.timestamp,
+            )
+        )
+
+    folder = Folder()
+    last_ts = events[-1].timestamp if events else "2026-01-01T00:00:00+00:00"
+    report = folder.fold(store, timestamp=last_ts)
+    _print_fold_report(report, args)
     return 0
 
 
