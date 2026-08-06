@@ -242,6 +242,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--json", action="store_true", help="output the JSON report")
     p_verify.set_defaults(func=_cmd_verify)
 
+    # decay
+    p_decay = sub.add_parser("decay", help="apply retention decay to a workspace")
+    p_decay.add_argument("--db", required=True, help="workspace directory")
+    p_decay.add_argument("--now", required=True, help="ISO instant for the decay pass")
+    p_decay.add_argument("--json", action="store_true", help="output counters as JSON")
+    p_decay.set_defaults(func=_cmd_decay)
+
     return parser
 
 
@@ -1340,6 +1347,25 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         print(f"Tombstones: {report['tombstones']}")
         print(f"Result: {'PASS' if report['ok'] else 'FAIL'}")
     return 0 if report["ok"] else 1
+
+
+def _cmd_decay(args: argparse.Namespace) -> int:
+    workspace = _open_workspace(args.db)
+    if workspace is None:
+        return 1
+    try:
+        counters = workspace.apply_decay(args.now)
+    finally:
+        workspace.close()
+    if args.json:
+        import json
+
+        print(json.dumps(counters, indent=2, sort_keys=True))
+    else:
+        print("=== Decay pass ===")
+        for key in sorted(counters):
+            print(f"  {key}: {counters[key]}")
+    return 0
 
 
 if __name__ == "__main__":

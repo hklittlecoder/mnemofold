@@ -691,6 +691,7 @@ EXPECTED_SUBCOMMANDS = {
     "review",
     "playbooks",
     "verify",
+    "decay",
 }
 
 
