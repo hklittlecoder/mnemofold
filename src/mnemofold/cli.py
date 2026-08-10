@@ -119,6 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_prep.add_argument("--days", type=int, default=14, help="days of history to include")
     p_prep.add_argument("--meeting", default="sync", help="meeting identifier")
     p_prep.add_argument("--json", action="store_true", help="output JSON")
+    p_prep.add_argument("--html", metavar="OUT", help="write the prep packet HTML to OUT")
     p_prep.set_defaults(func=_cmd_prep)
 
     # privacy
@@ -821,8 +822,16 @@ def _cmd_prep(args: argparse.Namespace) -> int:
         context_text=args.meeting,
     )
 
+    if args.html:
+        from pathlib import Path
+
+        Path(args.html).write_text(packet.to_html(), encoding="utf-8")
+        print(f"Wrote meeting prep HTML to {args.html}")
+        return 0
     if args.json:
-        print(packet.to_json() if hasattr(packet, "to_json") else str(packet))
+        import json
+
+        print(json.dumps(packet.to_dict(), indent=2, sort_keys=True))
     else:
         print(f"=== Meeting Prep: {args.meeting} ===")
         print(f"Meeting ID: {packet.meeting_id}")
