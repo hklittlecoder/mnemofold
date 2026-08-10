@@ -48,6 +48,27 @@ class FactoryConfig:
             "event_types": sorted(self.event_types),
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FactoryConfig:
+        """Rebuild a config from :meth:`to_dict` (or a manifest's config).
+
+        Unknown keys raise instead of being ignored, and the rebuilt
+        config is validated exactly like a constructed one. Tuple fields
+        come back sorted — :meth:`to_dict` is the canonical form.
+        """
+        known = set(cls.__dataclass_fields__)
+        unknown = sorted(set(data) - known)
+        if unknown:
+            raise ValueError(f"unknown factory config keys: {unknown}")
+        kwargs = dict(data)
+        if "contradiction_kinds" in kwargs:
+            kwargs["contradiction_kinds"] = tuple(kwargs["contradiction_kinds"])
+        if "event_types" in kwargs:
+            kwargs["event_types"] = tuple(kwargs["event_types"])
+        config = cls(**kwargs)
+        config.validate()
+        return config
+
     def validate(self) -> None:
         if not 0.0 <= self.noise_level <= 1.0:
             raise ValueError("noise_level must be within [0, 1]")
@@ -131,6 +152,39 @@ class HistoryManifest:
     planted_contradictions: int
     checksum: str = ""
     config: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable form of the whole manifest."""
+        return {
+            "seed": self.seed,
+            "days": self.days,
+            "start_date": self.start_date,
+            "personas": list(self.personas),
+            "projects": list(self.projects),
+            "event_count": self.event_count,
+            "planted_commitments": self.planted_commitments,
+            "planted_decisions": self.planted_decisions,
+            "planted_contradictions": self.planted_contradictions,
+            "checksum": self.checksum,
+            "config": dict(self.config),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HistoryManifest:
+        """Rebuild a manifest from :meth:`to_dict` output."""
+        return cls(
+            seed=int(data["seed"]),
+            days=int(data["days"]),
+            start_date=str(data["start_date"]),
+            personas=[str(p) for p in data.get("personas", [])],
+            projects=[str(p) for p in data.get("projects", [])],
+            event_count=int(data["event_count"]),
+            planted_commitments=int(data["planted_commitments"]),
+            planted_decisions=int(data["planted_decisions"]),
+            planted_contradictions=int(data["planted_contradictions"]),
+            checksum=str(data.get("checksum", "")),
+            config=dict(data.get("config", {})),
+        )
 
 
 class WorkHistoryFactory:
