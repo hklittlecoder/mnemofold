@@ -17,7 +17,7 @@ from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
 from mnemofold.events import Event, EventType
-from mnemofold.textsim import bigram_jaccard
+from mnemofold.textsim import bigram_jaccard, rank_candidates
 
 
 @dataclass(slots=True)
@@ -215,6 +215,37 @@ class AliasTable:
     def merge_history(self) -> list[MergeRecord]:
         """All merges applied so far, in application order."""
         return list(self._history)
+
+    def resolve_fuzzy(self, name: str, threshold: float = 0.85) -> str | None:
+        """Resolve a name: exact alias first, then best fuzzy name match.
+
+        The fuzzy fallback ranks canonical entity names with the shared
+        bigram similarity, so a typo'd or lightly rephrased mention
+        ("Ana Chenn") still lands on the right entity while unrelated
+        names return None. Ties break alphabetically by entity id.
+        """
+        exact = self.resolve(name)
+        if exact is not None:
+            return exact
+        names = {eid: entity.name for eid, entity in self._entities.items()}
+        matches = rank_candidates(name, names, threshold=threshold)
+        return matches[0].candidate_id if matches else None
+
+    def auto_merge_candidates(self, threshold: float = 0.9) -> list[MergeRecord]:
+        """Merge every high-similarity candidate pair, deterministically.
+
+        Candidates come from :meth:`merge_candidates` (id-sorted); each
+        merge folds the later id into the earlier one with reason
+        ``auto:<similarity>``. Pairs whose source already retired in an
+        earlier merge of the same pass are skipped, so every entity is
+        consumed at most once and reruns merge nothing new.
+        """
+        applied: list[MergeRecord] = []
+        for id1, id2, sim in self.merge_candidates(threshold=threshold):
+            if id1 not in self._entities or id2 not in self._entities:
+                continue
+            applied.append(self.merge(id2, id1, reason=f"auto:{round(sim, 6)}"))
+        return applied
 
 
 def _name_similarity(a: str, b: str) -> float:
