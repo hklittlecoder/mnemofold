@@ -203,6 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_recall = sub.add_parser("recall", help="fetch one memory by id")
     p_recall.add_argument("--db", required=True, help="workspace directory")
     p_recall.add_argument("item_id", help="memory id to recall")
+    p_recall.add_argument("--json", action="store_true", help="output JSON")
     p_recall.set_defaults(func=_cmd_recall)
 
     # ask
@@ -1164,6 +1165,19 @@ def _cmd_recall(args: argparse.Namespace) -> int:
     if item is None:
         print(f"ERROR: no live memory for {args.item_id}", file=sys.stderr)
         return 1
+    if args.json:
+        import json
+
+        payload = {
+            "item_id": item.item_id,
+            "tier": item.tier.value,
+            "title": item.title,
+            "created_at": item.created_at,
+            "tags": sorted(item.tags),
+            "content": item.content,
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
     print(f"id: {item.item_id}")
     print(f"tier: {item.tier.value}")
     print(f"title: {item.title}")
