@@ -47,7 +47,12 @@ from mnemofold.retrieval import (
 from mnemofold.review import StandupData, StandupGenerator, WeeklyReview, WeeklyReviewGenerator
 from mnemofold.storage import Journal
 from mnemofold.triage import BatchPlan, TriageBatcher, TriageItem, TriageResult, TriageScorer
-from mnemofold.triggers import FiredTrigger, TriggerEngine, derive_commitment_rules
+from mnemofold.triggers import (
+    FiredTrigger,
+    QuietHours,
+    TriggerEngine,
+    derive_commitment_rules,
+)
 
 
 @dataclass(slots=True)
@@ -107,9 +112,10 @@ class Workspace:
     byte-identically. ``close()`` releases the journal and trace files.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, quiet_hours: tuple[int, int] | None = None) -> None:
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
+        self.quiet_hours = quiet_hours
         self.journal = Journal(self.path / "journal.db")
         self.trace = TraceRecorder(self.path / "trace.jsonl")
         self.store = MemoryStore()
@@ -118,7 +124,9 @@ class Workspace:
         self.ledger = CommitmentLedger()
         self._extractor = CommitmentExtractor()
         self.decay_engine = DecayEngine()
-        self.trigger_engine = TriggerEngine()
+        self.trigger_engine = TriggerEngine(
+            quiet_hours=QuietHours(quiet_hours[0], quiet_hours[1]) if quiet_hours else None
+        )
         self.rebuild()
 
     # -- lifecycle -----------------------------------------------------------
