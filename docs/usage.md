@@ -175,3 +175,35 @@ mnemofold privacy "<sealed 文本>" --unseal --vault vault.json
 
 同一 vault 重复封存同一值会得到相同 token（可交叉引用）；
 `--mode mask/hash/remove` 的一次性脱敏行为保持不变。
+
+
+## 命令行参考（工作区相关）
+
+所有工作区命令在目录缺失时统一返回退出码 1 并输出
+`workspace not found`（`remember` 例外——它会就地创建新工作区）。
+
+| 命令 | 关键参数 | 说明 |
+| --- | --- | --- |
+| `ingest` | `--db --seed --days / --jsonl` | 合成历史或 JSONL 事件入库 |
+| `ask` | `--db QUERY [--top --as-of --json --explain]` | 结构化查询；`--explain` 附逐项 BM25 贡献 |
+| `recall` | `--db ID [--json]` | 单条记忆读取（尊重墓碑） |
+| `remember` | `--db --text --now [--title --tags]` | 记录笔记（无工作区则创建） |
+| `forget` | `--db ID --now [--reason --preview --report {text,json,markdown}]` | 右被遗忘：`--preview` 先看影响面 |
+| `fold` | `[--db --now] [--json \| --html OUT]` | 夜间折叠：demo 数据或真实工作区 |
+| `decay` | `--db --now [--json]` | 保留衰减一次，输出计数器 |
+| `standup` | `--db [--today --html --json]` | 站立会（JSON 优先于 HTML） |
+| `review` | `--db --start --end [--html --json]` | 周报；HTML 内嵌 burndown 图 |
+| `prep` | `[--seed --days --meeting] [--json \| --html OUT]` | 会议准备包 |
+| `triage` | `[--seed --days --top] [--json]` | 收件箱分诊 |
+| `context` | `[--budget --profile] [--json]` | 预算上下文包（含 headroom） |
+| `ledger` | `[--status] [--json] [--aging]` | 台账与账龄分桶 |
+| `triggers` | `[--db --now] \| [--seed --days] [--json]` | 工作区模式派生承诺/陈旧线程/跟进规则 |
+| `export` | `--db [--format --out \| --bundle DIR]` | 台账导出或完整工作区 bundle |
+| `verify` | `--db [--json]` | 四层完整性审计，失败返回非零 |
+| `eval` | `[--seed --days] [--json] [--slices {none,projects,roles}] [--svg OUT]` | 评估套件 + 切片 + 记分卡 SVG |
+| `privacy` | `[TEXT \| --demo] [--mode {mask,hash,remove,seal}] [--vault F] [--unseal] [--salt]` | PII 扫描、脱敏、vault 封存/还原 |
+| `replay` / `diff` | `TRACE [TRACE_B] [--json]` | 回放校验 / trace 对比 |
+| `demo` | `[--seed --days]` | 全流程离线演示并打印实测分数 |
+
+退出码约定：`0` 成功；`1` 业务失败（缺失工作区、审计失败、trace 不一致）；
+`2` 参数错误（argparse）。
