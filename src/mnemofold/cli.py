@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_diff = sub.add_parser("diff", help="diff two trace files")
     p_diff.add_argument("trace_a", help="first trace file")
     p_diff.add_argument("trace_b", help="second trace file")
+    p_diff.add_argument("--json", action="store_true", help="output the diff as JSON")
     p_diff.set_defaults(func=_cmd_diff)
 
     # ledger
@@ -514,6 +515,11 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     from .replay import trace_diff
 
     result = trace_diff(args.trace_a, args.trace_b)
+    if args.json:
+        import json
+
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        return 0 if result["equal"] else 1
     print(f"A: {args.trace_a} ({result['a_count']} entries)")
     print(f"B: {args.trace_b} ({result['b_count']} entries)")
     print(f"Matching: {result['matching']}")
