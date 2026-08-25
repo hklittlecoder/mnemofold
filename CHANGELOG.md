@@ -3,6 +3,34 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本处于 0.x 阶段，每次发布仅递增补丁号。
 
+## [0.1.6] - 2026-11-18
+
+聚焦 CLI 工作区闭环、实体解析与序列化补全。
+
+### Added
+
+- CLI：`fold --db/--now/--html`（真实工作区折叠 + HTML 报告）、新增
+  `decay` 子命令、`export --bundle`、`triggers --db`（承诺 + 陈旧线程 +
+  跟进规则全派生）、`eval --svg` 记分卡图表、`recall --json`、
+  `diff --json`、`prep --html`
+- 实体解析：`AliasTable.resolve_fuzzy`（精确别名优先，模糊名兜底）与
+  `auto_merge_candidates`（确定性成对合并，全程留审计记录）
+- 工厂：`FactoryConfig.from_dict`、`HistoryManifest.to_dict/from_dict`
+- 评估：`scorecard_svg_rows` 达成度映射（阈值归一 + 状态着色）
+- 台账：`verify_history` 历史一致性审计
+- 删除：`DeletionReport.to_dict/to_json/to_markdown` 与 golden 冻结
+- 快照：`Workspace.snapshot` 并入日志计数器
+
+### Fixed
+
+- `prep --json` 之前打印 Python repr，现在输出真正的 JSON
+  （`MeetingPrep.to_dict`）
+
+### Golden 冻结（新增）
+
+- 删除报告 JSON/Markdown、周报 Markdown、检查点 trace 字节、
+  触发日志链、事件存储 JSONL
+
 ## [0.1.5] - 2026-11-18
 
 聚焦机器可读输出、golden 冻结与可解释性。
