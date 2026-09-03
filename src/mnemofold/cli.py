@@ -76,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_ledger.add_argument("--status", help="filter by status (open/done/overdue)")
     p_ledger.add_argument("--json", action="store_true", help="output JSON")
     p_ledger.add_argument("--aging", action="store_true", help="report due-time aging buckets")
+    p_ledger.add_argument(
+        "--nudges", action="store_true", help="list reminder nudges instead of the ledger"
+    )
+    p_ledger.add_argument(
+        "--now", default="", help="ISO instant for --aging/--nudges (default: last event)"
+    )
     p_ledger.set_defaults(func=_cmd_ledger)
 
     # triage
@@ -567,10 +573,27 @@ def _cmd_ledger(args: argparse.Namespace) -> int:
     else:
         ledger.by_status(CommitmentStatus.OPEN)
 
+    if args.nudges:
+        import json
+
+        now = args.now or (events[-1].timestamp if events else "2026-01-01T00:00:00+00:00")
+        nudges = ledger.nudges(now)
+        if args.json:
+            from dataclasses import asdict
+
+            print(json.dumps([asdict(n) for n in nudges], indent=2, sort_keys=True))
+        else:
+            print(f"=== Nudges as of {now} ===")
+            if not nudges:
+                print("  (none)")
+            for n in nudges:
+                print(f"  [{n.kind}] {n.commitment_id}: {n.message}")
+        return 0
+
     if args.aging:
         import json as json_mod
 
-        now = events[-1].timestamp if events else "2026-01-01T00:00:00+00:00"
+        now = args.now or (events[-1].timestamp if events else "2026-01-01T00:00:00+00:00")
         report = ledger.aging_report(now)
         if args.json:
             print(json_mod.dumps(report, indent=2, sort_keys=True))
