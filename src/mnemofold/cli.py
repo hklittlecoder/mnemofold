@@ -96,6 +96,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--now", default="", help="ISO fold timestamp with --db (default: last event)"
     )
     p_fold.add_argument("--html", metavar="OUT", help="write the HTML fold report to OUT")
+    p_fold.add_argument(
+        "--similarity", type=float, default=0.75, help="near-duplicate merge threshold"
+    )
+    p_fold.add_argument("--min-repeats", type=int, default=3, help="recurrence mining floor")
     p_fold.set_defaults(func=_cmd_fold)
 
     # asof
@@ -685,7 +689,11 @@ def _cmd_fold(args: argparse.Namespace) -> int:
         if workspace is None:
             return 1
         try:
-            report = workspace.fold(args.now or _last_event_ts(workspace))
+            report = workspace.fold(
+                args.now or _last_event_ts(workspace),
+                similarity_threshold=args.similarity,
+                min_episodes_for_recurrence=args.min_repeats,
+            )
         finally:
             workspace.close()
         _print_fold_report(report, args)
@@ -706,7 +714,10 @@ def _cmd_fold(args: argparse.Namespace) -> int:
             )
         )
 
-    folder = Folder()
+    folder = Folder(
+        similarity_threshold=args.similarity,
+        min_episodes_for_recurrence=args.min_repeats,
+    )
     last_ts = events[-1].timestamp if events else "2026-01-01T00:00:00+00:00"
     report = folder.fold(store, timestamp=last_ts)
     _print_fold_report(report, args)
