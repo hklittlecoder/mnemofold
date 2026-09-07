@@ -49,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument(
         "--svg", metavar="OUT", help="write an aggregate scorecard SVG chart to OUT"
     )
+    p_eval.add_argument(
+        "--noise",
+        default="",
+        help="comma-separated noise levels for a recall sweep (e.g. 0,0.25,0.5)",
+    )
     p_eval.set_defaults(func=_cmd_eval)
 
     # demo
@@ -277,6 +282,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     from .evaluation import (
         ScenarioConfig,
         run_commitment_slices,
+        run_noise_sweep,
         run_role_slices,
         run_suite,
     )
@@ -290,6 +296,19 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         slices = run_commitment_slices(ScenarioConfig(seed=args.seed, days=args.days))
     elif args.slices == "roles":
         slices = run_role_slices(ScenarioConfig(seed=args.seed, days=args.days))
+    noise_cards = []
+    if args.noise:
+        try:
+            levels = tuple(float(part) for part in args.noise.split(",") if part.strip())
+        except ValueError:
+            print("ERROR: --noise takes comma-separated floats", file=sys.stderr)
+            return 2
+        noise_cards = [
+            result.scorecard.to_dict()
+            for result in run_noise_sweep(
+                ScenarioConfig(seed=args.seed, days=args.days), noise_levels=levels
+            )
+        ]
     if args.svg:
         from pathlib import Path
 
@@ -323,6 +342,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             "aggregate": suite.aggregate.to_dict(),
             "overall_pass": suite.overall_pass(),
             "slices": [result.scorecard.to_dict() for result in slices],
+            "noise_sweep": noise_cards,
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -341,6 +361,9 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         for result in slices:
             verdict = "PASS" if result.scorecard.overall_pass() else "FAIL"
             print(f"[{verdict}] slice {result.scorecard.scenario}")
+        for card in noise_cards:
+            recall = {m["name"]: m["value"] for m in card["metrics"]}["noisy_commitment_recall"]
+            print(f"  noise {card['details']['noise_level']}: recall={recall:.4f}")
 
     return 0 if suite.overall_pass() else 1
 
