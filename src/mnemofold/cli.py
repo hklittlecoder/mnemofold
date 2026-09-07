@@ -127,6 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_context.add_argument("--budget", type=int, default=2000, help="token budget")
     p_context.add_argument("--profile", default="meeting_prep", help="packing profile")
     p_context.add_argument("--json", action="store_true", help="output the pack as JSON")
+    p_context.add_argument(
+        "--ordering",
+        default="priority",
+        choices=["priority", "chronological", "category_grouped"],
+        help="ordering rule for the packed items",
+    )
     p_context.set_defaults(func=_cmd_context)
 
     # prep
@@ -834,7 +840,7 @@ def _cmd_context(args: argparse.Namespace) -> int:
     }
     profile = profile_map.get(args.profile, PackingProfile.MEETING_PREP)
 
-    packer = ContextPacker(budget=args.budget, profile=profile)
+    packer = ContextPacker(budget=args.budget, profile=profile, ordering=args.ordering)
     pack = packer.pack(items)
 
     within = pack.total_tokens <= pack.budget
