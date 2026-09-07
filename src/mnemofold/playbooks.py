@@ -5,11 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from mnemofold.approvals import ApprovalQueue, ApprovalRequest, ApprovalStatus
 from mnemofold.canon import sha256_hex
+from mnemofold.persist import read_envelope, write_envelope
 from mnemofold.tools import ToolPolicyError, ToolRegistry, ToolValidationError
+
+PLAYBOOK_LIBRARY_SCHEMA = "playbook_library"
+PLAYBOOK_LIBRARY_VERSION = 1
 
 
 class PlaybookStatus(StrEnum):
@@ -356,6 +361,31 @@ class PlaybookLibrary:
 
     def total_count(self) -> int:
         return len(self._playbooks)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Deterministic dict: playbooks sorted by id, statuses as strings."""
+        return {"playbooks": [self._playbooks[pid].to_dict() for pid in sorted(self._playbooks)]}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PlaybookLibrary:
+        """Rebuild a library from :meth:`to_dict` output."""
+        library = cls()
+        for payload in data.get("playbooks", []):
+            library.add(Playbook.from_dict(payload))
+        return library
+
+    def save(self, path: str | Path) -> None:
+        """Write the library to ``path`` as a versioned envelope."""
+        write_envelope(
+            path, PLAYBOOK_LIBRARY_SCHEMA, self.to_dict(), version=PLAYBOOK_LIBRARY_VERSION
+        )
+
+    @classmethod
+    def load(cls, path: str | Path) -> PlaybookLibrary:
+        """Load a library written by :meth:`save`."""
+        return cls.from_dict(
+            read_envelope(path, PLAYBOOK_LIBRARY_SCHEMA, version=PLAYBOOK_LIBRARY_VERSION)
+        )
 
 
 @dataclass(slots=True)
