@@ -560,3 +560,30 @@ class RedactionVault:
         """Load a vault written by :meth:`save`."""
         data = read_envelope(path, REDACTION_VAULT_SCHEMA, version=REDACTION_VAULT_VERSION)
         return cls.from_dict(data)
+
+
+def scan_lines(lines: list[str]) -> list[dict[str, Any]]:
+    """Per-line PII scan report for auditing files and exports.
+
+    One entry per line containing at least one match: the 1-based line
+    number, per-kind counts, and match spans. Match VALUES are never
+    copied into the report, so the report itself is safe to store or
+    attach to an audit trail. Lines are processed as given; joining or
+    splitting is the caller's decision.
+    """
+    report: list[dict[str, Any]] = []
+    for number, line in enumerate(lines, start=1):
+        matches = detect_pii(line)
+        if not matches:
+            continue
+        kinds: dict[str, int] = {}
+        for match in matches:
+            kinds[match.kind.value] = kinds.get(match.kind.value, 0) + 1
+        report.append(
+            {
+                "line": number,
+                "kinds": dict(sorted(kinds.items())),
+                "spans": [{"start": m.start, "end": m.end, "kind": m.kind.value} for m in matches],
+            }
+        )
+    return report
