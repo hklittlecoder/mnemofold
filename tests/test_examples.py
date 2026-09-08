@@ -232,3 +232,33 @@ class TestAssistantWeekRoleSlices:
         first = capsys.readouterr().out
         module.main()
         assert capsys.readouterr().out == first
+
+
+class TestIntegrityAuditExample:
+    def test_runs_and_reports_ok(self, capsys):
+        rc = load_example("integrity_audit").main()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "RESULT: OK" in out
+
+    def test_all_audit_checks_reported(self, capsys):
+        load_example("integrity_audit").main()
+        out = capsys.readouterr().out
+        for marker in (
+            "healthy_verify_ok",
+            "tamper_detected",
+            "original_trace_intact",
+            "forgotten_not_recallable",
+            "resurrection_detected",
+            "repaired_verify_ok",
+            "bundle_events_match",
+        ):
+            assert marker in out
+
+    @pytest.mark.slow
+    def test_output_is_deterministic(self, capsys):
+        module = load_example("integrity_audit")
+        module.main()
+        first = capsys.readouterr().out
+        module.main()
+        assert capsys.readouterr().out == first
