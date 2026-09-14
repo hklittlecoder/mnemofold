@@ -55,8 +55,9 @@ class Playbook:
     def __post_init__(self) -> None:
         if isinstance(self.status, str):
             self.status = PlaybookStatus(self.status)
-        if isinstance(self.tags, list):
-            self.tags = set(self.tags)
+        raw_tags: object = self.tags
+        if isinstance(raw_tags, list):
+            self.tags = set(raw_tags)
         if not self.playbook_id:
             raise ValueError("playbook_id must not be empty")
         if not self.name:

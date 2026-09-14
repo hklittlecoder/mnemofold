@@ -66,8 +66,9 @@ class Commitment:
     def __post_init__(self) -> None:
         if isinstance(self.status, str):
             self.status = CommitmentStatus(self.status)
-        if isinstance(self.tags, list):
-            self.tags = set(self.tags)
+        raw_tags: object = self.tags
+        if isinstance(raw_tags, list):
+            self.tags = set(raw_tags)
 
     def can_transition_to(self, new_status: CommitmentStatus) -> bool:
         """Check if a status transition is valid."""

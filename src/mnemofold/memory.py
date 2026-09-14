@@ -53,8 +53,9 @@ class MemoryItem:
     def __post_init__(self) -> None:
         if isinstance(self.tier, str):
             self.tier = MemoryTier(self.tier)
-        if isinstance(self.tags, list):
-            self.tags = set(self.tags)
+        raw_tags: object = self.tags
+        if isinstance(raw_tags, list):
+            self.tags = set(raw_tags)
 
 
 @dataclass(frozen=True, slots=True)
