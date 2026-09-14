@@ -535,3 +535,16 @@ class CommitmentLedger:
             "replayed_statuses": {cid: replayed[cid] for cid in sorted(replayed)},
             "history_only": sorted(cid for cid in replayed if cid not in live_ids),
         }
+
+    def overdue_by_person(self, now: str, grace_hours: float | None = None) -> dict[str, list[str]]:
+        """Overdue commitment ids grouped by owner (``owed_by``), sorted.
+
+        A workload view for standups and escalations: who is carrying
+        what past due. Honors per-commitment grace exactly like
+        :meth:`overdue`; persons and ids are sorted so the report is
+        deterministic. Empty when nothing is overdue.
+        """
+        grouped: dict[str, list[str]] = {}
+        for commitment in self.overdue(now, grace_hours=grace_hours):
+            grouped.setdefault(commitment.owed_by, []).append(commitment.commitment_id)
+        return {person: sorted(ids) for person, ids in sorted(grouped.items())}
