@@ -367,9 +367,12 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         for result in slices:
             verdict = "PASS" if result.scorecard.overall_pass() else "FAIL"
             print(f"[{verdict}] slice {result.scorecard.scenario}")
-        for card in noise_cards:
-            recall = {m["name"]: m["value"] for m in card["metrics"]}["noisy_commitment_recall"]
-            print(f"  noise {card['details']['noise_level']}: recall={recall:.4f}")
+        for noise_card in noise_cards:
+            recall = {m["name"]: m["value"] for m in noise_card["metrics"]}[
+                "noisy_commitment_recall"
+            ]
+            level = noise_card["details"]["noise_level"]
+            print(f"  noise {level}: recall={recall:.4f}")
 
     return 0 if suite.overall_pass() else 1
 
