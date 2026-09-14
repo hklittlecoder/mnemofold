@@ -675,3 +675,30 @@ def facts_expiring_within(
                 expiring.append(fact)
     expiring.sort(key=lambda f: (f.valid_to or "", f.fact_key))
     return expiring
+
+
+def facts_expired_at(store: TemporalStore[Any], now: str) -> list[IntervalFact[Any]]:
+    """Facts whose validity ended at or before ``now`` — an audit view.
+
+    The store never deletes: superseded history stays queryable as-of
+    forever. This helper only LISTS what has already ended (closed
+    intervals with ``valid_to <= now``), sorted by (valid_to, fact_key),
+    e.g. to drive a retention review. It is the past-tense complement
+    of :func:`facts_expiring_within`. Malformed ``valid_to`` values are
+    skipped; an unparseable ``now`` raises ValueError.
+    """
+    moment = _parse_instant(now)
+    expired: list[IntervalFact[Any]] = []
+    fact_keys = store.keys()
+    for key in fact_keys:
+        for fact in store.history(key):
+            if fact.valid_to is None:
+                continue
+            try:
+                end = _parse_instant(fact.valid_to)
+            except (ValueError, TypeError):
+                continue
+            if end <= moment:
+                expired.append(fact)
+    expired.sort(key=lambda f: (f.valid_to or "", f.fact_key))
+    return expired
