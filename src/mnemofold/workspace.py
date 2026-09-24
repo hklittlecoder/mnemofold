@@ -625,11 +625,13 @@ class Workspace:
         verification never re-projects, repairs, or records.
         """
         audit = self.journal.audit_chain()
-        resurrected = sorted(
-            tomb.key
-            for tomb in self.deletion.tombstones.all()
-            if self.store.peek(tomb.key) is not None
-        )
+        # The journal is the durable tombstone source; the in-memory
+        # deletion index only covers the current session. Probe the
+        # union so a reopened workspace still catches smuggled-back
+        # content instead of reporting a vacuous pass.
+        tombstoned = {tomb.key for tomb in self.deletion.tombstones.all()}
+        tombstoned.update(t.event_id for t in self.journal.iter_tombstones())
+        resurrected = sorted(key for key in tombstoned if self.store.peek(key) is not None)
         digest = self.projection_digest()
         checks = {
             "journal_chain": audit.ok,
@@ -642,7 +644,7 @@ class Workspace:
             "checks": checks,
             "frames_checked": audit.checked,
             "first_bad_frame": audit.first_bad_seq,
-            "tombstones": self.deletion.tombstones.count(),
+            "tombstones": len(tombstoned),
             "resurrected_keys": resurrected,
             "projection_digest": digest,
             "journal": self.journal.stats(),
