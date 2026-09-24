@@ -203,6 +203,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_remember.add_argument("--title", default="", help="optional title")
     p_remember.add_argument("--tags", default="", help="comma-separated tags")
     p_remember.add_argument("--now", required=True, help="ISO instant for the note")
+    p_remember.add_argument(
+        "--seal", action="store_true", help="seal PII through a vault before journaling"
+    )
+    p_remember.add_argument("--vault", help="vault file for --seal (created when absent)")
+    p_remember.add_argument("--salt", default="", help="salt when creating a new vault")
     p_remember.set_defaults(func=_cmd_remember)
 
     # forget
@@ -1182,18 +1187,37 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_remember(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
     from .workspace import Workspace
 
+    if args.seal and not args.vault:
+        print("ERROR: --seal requires --vault", file=sys.stderr)
+        return 1
+    vault = None
+    if args.seal:
+        from .privacy import RedactionVault
+
+        vault_path = Path(args.vault)
+        vault = (
+            RedactionVault.load(vault_path)
+            if vault_path.exists()
+            else RedactionVault(salt=args.salt)
+        )
     tags = [tag.strip() for tag in args.tags.split(",") if tag.strip()]
     try:
         workspace = Workspace(args.db)
         try:
-            item_id = workspace.remember(args.text, now=args.now, title=args.title, tags=tags)
+            item_id = workspace.remember(
+                args.text, now=args.now, title=args.title, tags=tags, seal_with=vault
+            )
         finally:
             workspace.close()
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+    if vault is not None:
+        vault.save(args.vault)
     print(f"remembered {item_id}")
     return 0
 
