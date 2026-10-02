@@ -613,6 +613,38 @@ class Workspace:
             self.trace.record_recall(now, {"item_id": item_id})
         return item
 
+    def session_summary(self) -> dict[str, Any]:
+        """One-call operational summary for dashboards and handoffs.
+
+        Aggregates the existing read-only views — stats, ledger aging,
+        integrity checks, journal counters and the trace summary — into
+        a single JSON-safe dict. The aging window ends at the newest
+        journal event, so the summary never reads a wall clock.
+        Non-mutating by contract; meant for end-of-session reporting
+        rather than hot paths.
+        """
+        stats = self.stats()
+        integrity = self.verify_integrity()
+        last_ts = ""
+        for event in self.journal.iter_events(reverse=True):
+            last_ts = event.timestamp.isoformat()
+            break
+        aging = self.ledger.aging_report(last_ts) if last_ts else {}
+        return {
+            "stats": {
+                "events": stats.events,
+                "memories": stats.memories,
+                "commitments": stats.commitments,
+                "tombstones": stats.tombstones,
+                "head_checksum": stats.head_checksum,
+                "digest": stats.digest,
+            },
+            "integrity": {"ok": integrity["ok"], "checks": integrity["checks"]},
+            "aging": aging,
+            "journal": self.journal.stats(),
+            "trace": TraceReader(self.trace.path).summary(),
+        }
+
     def verify_integrity(self) -> dict[str, Any]:
         """Cross-check every durability layer without mutating state.
 
