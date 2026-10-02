@@ -460,3 +460,59 @@ def render_scorecard_svg(
         y += bar_height + gap
     parts.append("</svg>")
     return "".join(parts)
+
+
+def render_integrity_html(report: dict[str, Any]) -> str:
+    """Self-contained HTML view of a workspace integrity report.
+
+    Renders each check as a pass/fail row, plus journal counters, the
+    projection digest, resurrected keys (when any) and the trace
+    summary when present. Values are escaped; the fixed report schema
+    keeps the layout stable. Missing optional keys are skipped rather
+    than rendered as blanks.
+    """
+    checks = report.get("checks", {})
+    rows = "".join(
+        f"<tr><td>{escape_text(str(name))}</td><td>{'PASS' if checks[name] else 'FAILED'}</td></tr>"
+        for name in sorted(checks)
+    )
+    sections: list[tuple[str, str]] = [
+        (
+            "Verdict",
+            f"<p><strong>{'PASS' if report.get('ok') else 'FAILED'}</strong></p>",
+        ),
+        (
+            "Checks",
+            f"<table><tr><th>check</th><th>result</th></tr>{rows}</table>",
+        ),
+    ]
+    counters = {
+        "frames_checked": report.get("frames_checked"),
+        "tombstones": report.get("tombstones"),
+        "first_bad_frame": report.get("first_bad_frame"),
+    }
+    counter_rows = "".join(
+        f"<tr><td>{escape_text(str(key))}</td><td>{escape_text(str(value))}</td></tr>"
+        for key, value in sorted(counters.items())
+        if value is not None
+    )
+    sections.append(
+        ("Counters", f"<table><tr><th>counter</th><th>value</th></tr>{counter_rows}</table>")
+    )
+    digest = report.get("projection_digest")
+    if digest:
+        sections.append(("Projection digest", f"<p><code>{escape_text(str(digest))}</code></p>"))
+    resurrected = report.get("resurrected_keys") or []
+    if resurrected:
+        items = "".join(f"<li><code>{escape_text(str(k))}</code></li>" for k in resurrected)
+        sections.append(("Resurrected keys", f"<ul>{items}</ul>"))
+    journal = report.get("journal")
+    if journal:
+        journal_rows = "".join(
+            f"<tr><td>{escape_text(str(k))}</td><td>{escape_text(str(v))}</td></tr>"
+            for k, v in sorted(journal.items())
+        )
+        sections.append(
+            ("Journal", f"<table><tr><th>field</th><th>value</th></tr>{journal_rows}</table>")
+        )
+    return wrap_html("Workspace integrity report", sections)
