@@ -692,6 +692,7 @@ EXPECTED_SUBCOMMANDS = {
     "playbooks",
     "verify",
     "decay",
+    "session",
 }
 
 

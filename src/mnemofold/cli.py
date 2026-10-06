@@ -281,6 +281,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_decay.add_argument("--json", action="store_true", help="output counters as JSON")
     p_decay.set_defaults(func=_cmd_decay)
 
+    # session
+    p_session = sub.add_parser(
+        "session", help="summarize a workspace session (stats, audit, aging)"
+    )
+    p_session.add_argument("--db", required=True, help="workspace directory")
+    p_session.add_argument("--json", action="store_true", help="output the full JSON summary")
+    p_session.set_defaults(func=_cmd_session)
+
     return parser
 
 
@@ -1497,6 +1505,42 @@ def _cmd_decay(args: argparse.Namespace) -> int:
         print("=== Decay pass ===")
         for key in sorted(counters):
             print(f"  {key}: {counters[key]}")
+    return 0
+
+
+def _cmd_session(args: argparse.Namespace) -> int:
+    import json
+
+    workspace = _open_workspace(args.db)
+    if workspace is None:
+        return 1
+    try:
+        summary = workspace.session_summary()
+    finally:
+        workspace.close()
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
+    stats = summary["stats"]
+    integrity = summary["integrity"]
+    print("=== Session summary ===")
+    print(
+        f"events={stats['events']} memories={stats['memories']} "
+        f"commitments={stats['commitments']} tombstones={stats['tombstones']}"
+    )
+    print(f"integrity: {'PASS' if integrity['ok'] else 'FAIL'}")
+    for name in sorted(integrity["checks"]):
+        mark = "ok" if integrity["checks"][name] else "FAILED"
+        print(f"  {name}: {mark}")
+    aging = summary["aging"]
+    if aging:
+        counts = aging["counts"]
+        print(
+            f"aging: overdue={counts['overdue']} due_today={counts['due_today']} "
+            f"due_this_week={counts['due_this_week']} later={counts['later']} "
+            f"no_due={counts['no_due']}"
+        )
+    print(f"trace: {summary['trace']['entries']} entries")
     return 0
 
 
