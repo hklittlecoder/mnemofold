@@ -1,0 +1,1 @@
+{"blocked":["held"],"missing":["ghost"],"total":3,"would_delete":[{"depth":0,"key":"root","kind":"memory"},{"depth":1,"key":"child","kind":"edge"},{"depth":2,"key":"leaf","kind":"memory"}]}
