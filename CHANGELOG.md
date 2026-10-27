@@ -3,6 +3,42 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 版本处于 0.x 阶段，每次发布仅递增补丁号。
 
+## [0.1.7] - 2026-11-18
+
+聚焦会话运维、审计呈现与类型严格度的收口版本。
+
+### Added
+
+- CLI：`session` 子命令（stats/完整性/账龄/trace 一次汇总，`--json`
+  全量输出）；`verify --html` 输出完整性报告页面；`remember --seal
+  --vault` 落盘前封存 PII
+- 工作区：`session_summary()` 只读会话汇总（时间锚定最新日志事件，
+  不查墙上时钟）
+- 报表：`render_integrity_html` 完整性报告渲染（PASS/FAILED 徽章、
+  复活键点名、日志计数）
+- 隐私：`scan_lines` 按行 PII 审计报告（只含 span 与类型，绝不复制
+  原文值）
+- 时间：`facts_expired_at` 已到期事实审计视图（与 `facts_expiring_within`
+  互补，历史仍可 as-of 查询）
+- 台账：`overdue_by_person` 按责任人分组的逾期视图
+- 触发器：工作区级静默时段（`Workspace(quiet_hours=...)`），CRITICAL
+  告警穿透静默
+- 示例：`integrity_audit` 完整性审计走查（验证/篡改/遗忘/复活/导出）
+
+### Changed
+
+- mypy 全量严格化：`disallow_untyped_calls`、`warn_unreachable`、
+  `disallow_subclassing_any`、`disallow_untyped_decorators`
+
+### Fixed
+
+- `eval --noise` 文本输出中的循环变量遮蔽（mypy 严格化后暴露）
+
+### Golden 冻结（新增）
+
+- 冲突审计报告、图审计报告、删除预览计划、pack 解释、工作量热力条、
+  playbook 库序列化
+
 ## [0.1.6] - 2026-11-18
 
 聚焦 CLI 工作区闭环、实体解析与序列化补全。
