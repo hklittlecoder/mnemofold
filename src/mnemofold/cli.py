@@ -272,6 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify = sub.add_parser("verify", help="verify workspace integrity (chains, tombstones)")
     p_verify.add_argument("--db", required=True, help="workspace directory")
     p_verify.add_argument("--json", action="store_true", help="output the JSON report")
+    p_verify.add_argument("--html", metavar="OUT", help="write the integrity report as HTML to OUT")
     p_verify.set_defaults(func=_cmd_verify)
 
     # decay
@@ -1477,7 +1478,14 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     finally:
         workspace.close()
 
-    if args.json:
+    if args.html:
+        from pathlib import Path
+
+        from .reports import render_integrity_html
+
+        Path(args.html).write_text(render_integrity_html(report), encoding="utf-8")
+        print(f"Wrote integrity report HTML to {args.html}")
+    elif args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print("=== mnemofold verify ===")
