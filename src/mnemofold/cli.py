@@ -1103,7 +1103,13 @@ def _open_workspace(db: str) -> Workspace | None:
     if not Path(db).exists():
         print(f"ERROR: workspace not found: {db} (run 'ingest' first)", file=sys.stderr)
         return None
-    return Workspace(db)
+    try:
+        return Workspace(db)
+    except ValueError as exc:
+        # A corrupted hash chain refuses to open (fail-fast resume);
+        # surface that as a clean CLI error instead of a traceback.
+        print(f"ERROR: workspace corrupted: {exc}", file=sys.stderr)
+        return None
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
@@ -1462,15 +1468,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _cmd_verify(args: argparse.Namespace) -> int:
     import json
-    from pathlib import Path
 
-    from .workspace import Workspace
-
-    if not Path(args.db).is_dir():
-        print(f"ERROR: workspace not found: {args.db}", file=sys.stderr)
+    workspace = _open_workspace(args.db)
+    if workspace is None:
         return 1
-
-    workspace = Workspace(args.db)
     try:
         report = workspace.verify_integrity()
     finally:
