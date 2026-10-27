@@ -95,3 +95,45 @@ cli / examples / evaluation
 
 `factory` 只被测试、示例、评估与 CLI demo 使用，核心管道不依赖它——
 这保证框架可以接入真实事件源，而合成工厂只承担离线验证的职责。
+
+
+## 完整性与持久化层
+
+### 哈希链
+
+框架内所有追加式记录都带 SHA-256 链，任何编辑、重排或截断都可被检出：
+
+| 记录 | 位置 | 校验入口 |
+| --- | --- | --- |
+| 日志帧 | `journal.db`（SQLite） | `Journal.audit_chain` / `verify_chain` |
+| 行为 trace | `trace.jsonl` | `TraceReader.verify`（打开即校验，篡改即拒绝恢复） |
+| 工具收据 | `ReceiptLog` | `verify_chain(head)` / `digest()` |
+| 访问日志 | `AccessLog` | `verify()` / `export_jsonl` + `import_jsonl`（导入时逐行验链） |
+| 触发日志 | trigger log | `write_trigger_log` / `read_trigger_log` |
+
+### 版本化持久化 envelope
+
+`mnemofold.persist` 统一落盘格式：`{schema, schema_version, payload}`，
+canonical JSON 字节确定。schema 或版本不符一律抛 `PersistError`——
+陈旧文件永远不会被静默误读。已登记 schema：`bm25_index`、
+`temporal_store`、`redaction_vault`、`approval_queue`、`plan`、
+`playbook_library`，每个都有 golden 字节测试冻结。
+
+### 四层工作区审计
+
+`Workspace.verify_integrity()`（CLI：`mnemofold verify`）只读地交叉验证：
+
+1. `journal_chain` — 日志帧链完整；
+2. `trace_chain` — 行为 trace 链完整；
+3. `no_resurrection` — 绕过守卫直接探查存储，确认没有墓碑键复活；
+4. `projection_stable` — 投影摘要连续两次计算一致。
+
+删除遵循 **preview → execute → audit** 模式：`forget_preview` /
+`DeletionEngine.preview` 先给出与真实执行逐条一致的干跑计划，
+执行后 `DeletionReport`（JSON/Markdown）留档。
+
+### 会话汇总
+
+`Workspace.session_summary()`（CLI：`mnemofold session`）把 stats、
+完整性检查、台账账龄、日志计数与 trace 摘要聚合为一份 JSON 安全的
+交接报告，全程只读、不查墙上时钟（时间锚定在最新日志事件）。
