@@ -2,7 +2,11 @@
 
 import json
 
+import pytest
+
 from mnemofold.cli import main
+
+pytestmark = pytest.mark.slow
 
 
 def ingest(db, seed: int = 5, days: int = 10) -> None:

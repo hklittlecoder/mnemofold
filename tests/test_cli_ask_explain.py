@@ -2,8 +2,12 @@
 
 import json
 
+import pytest
+
 from mnemofold.cli import main
 from mnemofold.retrieval import tokenize
+
+pytestmark = pytest.mark.slow
 
 
 def ingest(db, days: int = 14) -> None:
