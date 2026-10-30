@@ -12,6 +12,7 @@ labels: bug
 
 ```python
 from mnemofold.factory import WorkHistoryFactory
+
 factory = WorkHistoryFactory(seed=42, days=7)
 events, manifest = factory.generate()
 ```

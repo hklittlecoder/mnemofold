@@ -34,20 +34,30 @@ result = IngestPipeline().run([e.to_event() for e in events])
 # 3. 入库 + 夜间折叠（近重复合并、复发挖掘）
 store = MemoryStore()
 for episode in result.episodes:
-    store.add(MemoryItem(episode.episode_id, MemoryTier.EPISODIC,
-                         episode.title, title=episode.title))
+    store.add(
+        MemoryItem(episode.episode_id, MemoryTier.EPISODIC, episode.title, title=episode.title)
+    )
 report = Folder().fold(store, "2025-07-01T02:00:00+00:00")
 
 # 4. 检索（结构化查询 + 融合权重）+ 预算内上下文打包
 engine = RetrievalEngine(store=store)
 engine.build_index()
-hits = engine.search_parsed(parse_query("budget tag:alpha"),
-                            fusion=FusionWeights(relevance=1.0, recency=0.3),
-                            now="2025-07-01T09:00:00+00:00")
+hits = engine.search_parsed(
+    parse_query("budget tag:alpha"),
+    fusion=FusionWeights(relevance=1.0, recency=0.3),
+    now="2025-07-01T09:00:00+00:00",
+)
 pack = ContextPacker(budget=1200, profile=PackingProfile.MEETING_PREP).pack(
-    [ContextItem(h.item_id, h.snippet, title=h.title,
-                 token_estimate=len(h.snippet) // 4 + 1,
-                 priority=h.score) for h in hits]
+    [
+        ContextItem(
+            h.item_id,
+            h.snippet,
+            title=h.title,
+            token_estimate=len(h.snippet) // 4 + 1,
+            priority=h.score,
+        )
+        for h in hits
+    ]
 )
 print(pack.to_markdown())
 ```
@@ -159,8 +169,8 @@ mnemofold verify --db ./ws --json   # 机器可读报告
 ```python
 vault = RedactionVault(salt="user-secret")
 note_id = ws.remember(raw_text, now=now, seal_with=vault)
-item = ws.recall(note_id)          # 内容是 <sealed:...> token
-vault.unseal(item.content)         # 仅 vault 可还原
+item = ws.recall(note_id)  # 内容是 <sealed:...> token
+vault.unseal(item.content)  # 仅 vault 可还原
 ```
 
 ### CLI 的 seal / unseal
